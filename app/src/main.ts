@@ -1371,6 +1371,21 @@ function onItemClick(it: Item, x: number, y: number): boolean {
       toast(`${HOLD_ITEMS[kind].emoji} ${HOLD_ITEMS[kind].label} na mão`);
     });
   switch (it.type) {
+    case "cleiton": {
+      const falas = [
+        "Cleiton anotou sua reclamação. Prazo de resposta: 15 dias úteis.",
+        "Cleiton: \"Protocolo nº " + Math.floor(100000 + Math.random() * 899999) + ". Aguarde na linha.\"",
+        "Cleiton mexeu as antenas. Isso quer dizer sim. Ou não.",
+        "Ouvidoria fechada para o almoço do Cleiton. Volte em 5 minutos.",
+        "Cleiton encaminhou sua demanda para o setor responsável (ele mesmo).",
+        "Cleiton: \"Sua opinião é muito importante para nós.\"",
+      ];
+      menu(x, y, "Ouvidoria · Cleiton", [
+        ["chat", "Fazer uma reclamação", () => nearItem(it, () => { notify("emote"); toast("🪳 " + falas[Math.floor(Math.random() * falas.length)]); })],
+        ["plus", "Fazer um elogio", () => nearItem(it, () => { notify("emote"); toast("🪳 Cleiton ficou vermelho. Obrigado pelo elogio!"); })],
+      ]);
+      return true;
+    }
     case "coffee":
       menu(x, y, "Café", [["plus", "Pegar um café", take("cafe")]]);
       return true;
@@ -1788,15 +1803,18 @@ else showLogin();
 // ------------------------------------------------------------ sala do cargo
 /** Sala do meu cargo e uma cadeira livre nela. */
 function roleSeat() {
-  const zn = world.layout?.zones.find((z) => z.role && z.role === prefs.role);
-  if (!zn) return null;
-  const inside = (x: number, z: number) => Math.abs(x - zn.x) <= zn.w / 2 && Math.abs(z - zn.z) <= zn.d / 2;
+  // um cargo pode ter mais de uma sala (ex.: duas salas de gestão): vale a primeira com mesa livre
+  const zones = world.layout?.zones.filter((z) => z.role && z.role === prefs.role) ?? [];
+  if (!zones.length) return null;
   const taken = (x: number, z: number) => [...world.others.values()].some((a) => Math.hypot(a.target.x - x, a.target.z - z) < 0.5);
-  // cadeira de trabalho primeiro (giratória), depois qualquer uma
-  const seats = world.layout.items
-    .filter((i) => SEATS[i.type] && inside(i.x, i.z) && !taken(i.x, i.z))
-    .sort((a, b) => (a.type === "office_chair" ? 0 : 1) - (b.type === "office_chair" ? 0 : 1));
-  return { zone: zn, seat: seats[0] ?? null };
+  // a cadeira atrás da mesa (giratória) primeiro, depois qualquer uma; sala mais vazia antes
+  for (const workOnly of [true, false])
+    for (const zn of zones) {
+      const inside = (x: number, z: number) => Math.abs(x - zn.x) <= zn.w / 2 && Math.abs(z - zn.z) <= zn.d / 2;
+      const seat = world.layout.items.find((i) => SEATS[i.type] && (!workOnly || i.type === "office_chair") && inside(i.x, i.z) && !taken(i.x, i.z));
+      if (seat) return { zone: zn, seat };
+    }
+  return { zone: zones[0], seat: null };
 }
 
 /** Vai para a sala do cargo: ao entrar, já nasce sentado; pelo botão, vai andando. */

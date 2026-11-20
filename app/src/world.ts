@@ -1417,6 +1417,16 @@ export class World {
       this.onMove?.(pos.x, pos.z, this.me.targetDir, moving, zone);
     }
     this.janitor?.update(dt);
+    // itens animados (Cleiton mexe as antenas e dá uma tremidinha de vez em quando)
+    const tt = performance.now() / 1000;
+    for (const o of this.itemGroup.children) {
+      const an = o.userData.anim;
+      if (an?.kind !== "cleiton") continue;
+      an.antL.rotation.x = Math.sin(tt * 5.3) * 0.25;
+      an.antR.rotation.x = Math.sin(tt * 4.7 + 1) * 0.25;
+      const twitch = Math.sin(tt * 0.9) > 0.97 ? Math.sin(tt * 60) * 0.04 : 0;
+      an.bug.rotation.y = twitch + Math.sin(tt * 0.6) * 0.15;
+    }
     this.updateDoors(dt);
     this.onFrame?.();
   }

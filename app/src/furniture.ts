@@ -438,6 +438,46 @@ export const DEFS: Record<string, Def> = {
         box(1.2, 0.7, 0.1, M.woodDark, 0, 0, -1.02),
       ),
   },
+  cleiton: {
+    label: "Cleiton (Ouvidoria)",
+    w: 0.8,
+    d: 0.8,
+    blocks: true,
+    interactive: true,
+    build: () => cleiton(),
+  },
+  ouvidoria_sign: {
+    label: "Placa da Ouvidoria",
+    w: 1.2,
+    d: 0.1,
+    blocks: false,
+    build: () => {
+      const tex = (() => {
+        const c = document.createElement("canvas");
+        c.width = 256;
+        c.height = 96;
+        const g = c.getContext("2d")!;
+        g.fillStyle = "#1d2433";
+        g.fillRect(0, 0, 256, 96);
+        g.strokeStyle = "#C8F501";
+        g.lineWidth = 6;
+        g.strokeRect(5, 5, 246, 86);
+        g.fillStyle = "#C8F501";
+        g.font = "bold 40px sans-serif";
+        g.textAlign = "center";
+        g.fillText("OUVIDORIA", 128, 50);
+        g.fillStyle = "#f2f0ea";
+        g.font = "20px sans-serif";
+        g.fillText("atendente: Cleiton", 128, 80);
+        const t = new THREE.CanvasTexture(c);
+        t.colorSpace = THREE.SRGBColorSpace;
+        return t;
+      })();
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.42), new THREE.MeshBasicMaterial({ map: tex }));
+      face.position.set(0, 1.75, 0.04);
+      return group(box(0.05, 1.52, 0.05, M.steel, -0.5, 0, -0.03), box(0.05, 1.52, 0.05, M.steel, 0.5, 0, -0.03), box(1.16, 0.46, 0.04, M.dark, 0, 1.52, 0), face);
+    },
+  },
   sofa: {
     label: "Sofá",
     w: 3,
@@ -995,4 +1035,51 @@ export function wallRects(it: Item, nb: WallLinks) {
   if (nb.zn) r.push({ x0: it.x - T / 2, x1: it.x + T / 2, z0: it.z - 0.5, z1: it.z });
   if (!nb.xp && !nb.xn && !nb.zp && !nb.zn) r.push({ x0: it.x - 0.5, x1: it.x + 0.5, z0: it.z - T / 2, z1: it.z + T / 2 });
   return r;
+}
+
+
+// ------------------------------------------------------------------ Cleiton, a barata da Ouvidoria (meme da VERKZ)
+/** Barata de voxel sentada no balcão da Ouvidoria. As antenas e o corpo mexem (world anima `userData.anim`). */
+function cleiton(): THREE.Object3D {
+  const brown = toon("#6b3a1f");
+  const dark = toon("#3d2010");
+  const shine = toon("#9a5a2e");
+  const g = new THREE.Group();
+  // balcão de atendimento
+  g.add(box(0.8, 0.75, 0.5, M.wood, 0, 0, -0.1), box(0.84, 0.05, 0.56, M.woodDark, 0, 0.75, -0.1));
+  // carimbo e papéis
+  g.add(box(0.22, 0.02, 0.3, M.white, -0.2, 0.8, -0.1), box(0.06, 0.08, 0.06, M.red, 0.22, 0.8, -0.05));
+  // a barata
+  const bug = new THREE.Group();
+  bug.position.set(0, 0.84, 0.1);
+  bug.scale.setScalar(1.6);
+  const body = box(0.34, 0.12, 0.5, brown, 0, 0.02, 0);
+  const wings = box(0.3, 0.04, 0.42, shine, 0, 0.14, -0.03);
+  const head = box(0.2, 0.12, 0.14, dark, 0, 0.04, 0.3);
+  const eyeL = box(0.04, 0.04, 0.02, M.white, -0.06, 0.1, 0.37);
+  const eyeR = box(0.04, 0.04, 0.02, M.white, 0.06, 0.1, 0.37);
+  bug.add(body, wings, head, eyeL, eyeR);
+  for (const side of [-1, 1])
+    for (const z of [-0.14, 0.02, 0.18]) {
+      const leg = box(0.16, 0.025, 0.03, dark, side * 0.24, 0, z);
+      leg.rotation.z = side * -0.5;
+      bug.add(leg);
+    }
+  const antL = new THREE.Group();
+  const antR = new THREE.Group();
+  antL.position.set(-0.05, 0.12, 0.36);
+  antR.position.set(0.05, 0.12, 0.36);
+  for (const [a, s] of [[antL, -1], [antR, 1]] as const) {
+    const st = box(0.02, 0.02, 0.4, dark, 0, 0, 0.2);
+    st.position.set(s * 0.06, 0.08, 0.18);
+    st.rotation.x = -0.5;
+    st.rotation.y = s * 0.35;
+    a.add(st);
+  }
+  bug.add(antL, antR);
+  // gravatinha (é atendente, né)
+  bug.add(box(0.05, 0.03, 0.06, M.red, 0, 0.03, 0.4));
+  g.add(bug);
+  g.userData.anim = { kind: "cleiton", bug, antL, antR };
+  return g;
 }
