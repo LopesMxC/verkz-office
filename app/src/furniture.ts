@@ -322,6 +322,120 @@ export const DEFS: Record<string, Def> = {
     blocks: true,
     build: () => model("table_low", 1.4, 0.8) ?? group(box(1.4, 0.08, 0.8, M.wood, 0, 0.32, 0), box(1.2, 0.32, 0.6, M.woodDark), box(0.3, 0.04, 0.22, M.blue, -0.3, 0.4, 0), box(0.24, 0.06, 0.18, M.yellow, 0.3, 0.4, 0.05)),
   },
+  toilet: {
+    label: "Vaso sanitário",
+    w: 0.5,
+    d: 0.7,
+    blocks: true,
+    build: () =>
+      group(
+        box(0.42, 0.4, 0.5, M.white, 0, 0, 0.06),
+        box(0.46, 0.06, 0.56, M.offwhite, 0, 0.4, 0.06),
+        box(0.46, 0.42, 0.18, M.white, 0, 0.3, -0.24),
+        box(0.1, 0.04, 0.06, M.steel, 0.12, 0.72, -0.24),
+      ),
+  },
+  sink: {
+    label: "Pia do banheiro",
+    w: 0.8,
+    d: 0.5,
+    blocks: true,
+    build: () =>
+      group(
+        box(0.8, 0.82, 0.48, M.offwhite),
+        box(0.56, 0.05, 0.34, M.white, 0, 0.82, 0.02),
+        box(0.06, 0.18, 0.06, M.steel, 0, 0.84, -0.17),
+        box(0.06, 0.04, 0.14, M.steel, 0, 0.98, -0.12),
+        box(0.7, 0.6, 0.04, M.glass, 0, 1.1, -0.24),
+      ),
+  },
+  stall: {
+    label: "Divisória de banheiro",
+    w: 1,
+    d: 0.1,
+    blocks: true,
+    build: () => group(box(1, 1.7, 0.06, M.steel, 0, 0.15, 0), box(0.06, 0.15, 0.06, M.dark, -0.45), box(0.06, 0.15, 0.06, M.dark, 0.45)),
+  },
+  beanbag: {
+    label: "Puff",
+    w: 0.9,
+    d: 0.9,
+    blocks: false,
+    build: () => {
+      const b = blob(0.45, M.purple, 0, 0.3, 0);
+      b.scale.set(1, 0.65, 1);
+      const t = blob(0.3, M.purple, 0, 0.5, -0.18);
+      t.scale.set(1.2, 0.8, 0.7);
+      return group(b, t);
+    },
+  },
+  pool_table: {
+    label: "Mesa de sinuca",
+    w: 2.4,
+    d: 1.4,
+    blocks: true,
+    build: () => {
+      const felt = toon("#2f8a5a");
+      return group(
+        box(0.14, 0.62, 0.14, M.woodDark, -1.05, 0, -0.55),
+        box(0.14, 0.62, 0.14, M.woodDark, 1.05, 0, -0.55),
+        box(0.14, 0.62, 0.14, M.woodDark, -1.05, 0, 0.55),
+        box(0.14, 0.62, 0.14, M.woodDark, 1.05, 0, 0.55),
+        box(2.4, 0.14, 1.4, M.woodDark, 0, 0.62, 0),
+        box(2.16, 0.04, 1.16, felt, 0, 0.76, 0),
+        blob(0.05, M.white, 0.5, 0.82, 0),
+        blob(0.05, M.red, -0.4, 0.82, 0.1),
+        blob(0.05, M.yellow, -0.48, 0.82, -0.05),
+        blob(0.05, M.blue, -0.32, 0.82, -0.08),
+        box(1.4, 0.03, 0.03, M.beige, 0.1, 0.84, 0.3),
+      );
+    },
+  },
+  ping_pong: {
+    label: "Mesa de pingue-pongue",
+    w: 2.6,
+    d: 1.5,
+    blocks: true,
+    build: () => {
+      const top = toon("#2e5fa8");
+      return group(
+        box(0.1, 0.7, 0.1, M.dark, -1.1, 0, -0.6),
+        box(0.1, 0.7, 0.1, M.dark, 1.1, 0, -0.6),
+        box(0.1, 0.7, 0.1, M.dark, -1.1, 0, 0.6),
+        box(0.1, 0.7, 0.1, M.dark, 1.1, 0, 0.6),
+        box(2.6, 0.06, 1.5, top, 0, 0.7, 0),
+        box(2.6, 0.065, 0.02, M.white, 0, 0.7, 0),
+        box(0.02, 0.065, 1.5, M.white, 0, 0.7, 0),
+        box(0.02, 0.16, 1.6, M.white, 0, 0.76, 0),
+      );
+    },
+  },
+  arcade: {
+    label: "Fliperama",
+    w: 0.8,
+    d: 0.8,
+    blocks: true,
+    build: () => {
+      const screen = new THREE.MeshBasicMaterial({ color: 0x5ec8ff });
+      const scr = box(0.56, 0.42, 0.04, screen, 0, 1.1, 0.26);
+      scr.rotation.x = -0.2;
+      return group(box(0.72, 1.7, 0.7, M.purple), box(0.74, 0.12, 0.3, M.dark, 0, 0.88, 0.3), scr, box(0.72, 0.16, 0.66, M.neonToon, 0, 1.6, 0.02), blob(0.04, M.red, -0.15, 1.02, 0.36), blob(0.04, M.yellow, 0.05, 1.02, 0.36));
+    },
+  },
+  bed: {
+    label: "Cama de descanso",
+    w: 1.2,
+    d: 2.1,
+    blocks: true,
+    build: () =>
+      group(
+        box(1.2, 0.3, 2.1, M.woodDark),
+        box(1.12, 0.18, 2.0, M.white, 0, 0.3, 0),
+        box(0.9, 0.12, 0.4, M.offwhite, 0, 0.48, -0.75),
+        box(1.14, 0.08, 1.2, M.blue, 0, 0.48, 0.38),
+        box(1.2, 0.7, 0.1, M.woodDark, 0, 0, -1.02),
+      ),
+  },
   sofa: {
     label: "Sofá",
     w: 3,
@@ -783,4 +897,100 @@ export function buildItem(it: Item): THREE.Object3D {
   obj.rotation.y = -(it.rot * Math.PI) / 180;
   obj.userData.itemId = it.id;
   return obj;
+}
+
+// ------------------------------------------------------------------ paredes (visão isométrica)
+/** Altura das paredes do fundo (inteiras) e das cortadas (frente e internas, para não tapar a vista). */
+export const WALL_H = 2.7;
+export const WALL_CUT = 0.55;
+export const WALL_T = 0.22;
+export const WALL_TYPES = new Set(["wall", "window_wall"]);
+
+const wallMats = {
+  face: toon("#efe9de"),
+  side: toon("#ddd5c6"),
+  base: toon("#8f8676"),
+  cap: toon("#5e5a6b"),
+  frame: toon("#f7f5f0"),
+  sill: toon("#cfc8ba"),
+  glass: toon("#a9dcf2", { transparent: true, opacity: 0.55 }),
+};
+
+/** Vizinhos de uma parede (há parede encostada em cada lado?). */
+export interface WallLinks {
+  xp: boolean;
+  xn: boolean;
+  zp: boolean;
+  zn: boolean;
+}
+
+/**
+ * Parede fina ligada às vizinhas (cantos e "T" se encaixam sozinhos).
+ * `tall`: parede inteira com janela de verdade; senão, mureta cortada (estilo The Sims).
+ */
+export function buildWall(it: Item, nb: WallLinks, tall: boolean): THREE.Object3D {
+  const g = new THREE.Group();
+  const H = tall ? WALL_H : WALL_CUT;
+  const T = WALL_T;
+  const isWindow = tall && it.type === "window_wall";
+  // braços: do centro até a borda da célula na direção de cada vizinha
+  const arms: { dx: number; dz: number }[] = [];
+  if (nb.xp) arms.push({ dx: 1, dz: 0 });
+  if (nb.xn) arms.push({ dx: -1, dz: 0 });
+  if (nb.zp) arms.push({ dx: 0, dz: 1 });
+  if (nb.zn) arms.push({ dx: 0, dz: -1 });
+  if (!arms.length) arms.push({ dx: 1, dz: 0 }, { dx: -1, dz: 0 });
+  const alongX = nb.xp || nb.xn || !(nb.zp || nb.zn);
+  const mats = [wallMats.side, wallMats.side, wallMats.cap, wallMats.base, wallMats.face, wallMats.face];
+  const piece = (w: number, h: number, d: number, x: number, y: number, z: number, m: THREE.Material | THREE.Material[] = mats) => {
+    const b = box(w, h, d, m, x, y, z);
+    g.add(b);
+    return b;
+  };
+  // pilar central
+  piece(T, H, T, 0, 0, 0);
+  for (const a of arms) {
+    const len = 0.5 - T / 2;
+    const cx = a.dx * (T / 2 + len / 2);
+    const cz = a.dz * (T / 2 + len / 2);
+    const w = a.dx ? len : T;
+    const d = a.dz ? len : T;
+    if (isWindow && (alongX ? a.dx : a.dz)) {
+      // janela: parapeito, vidro com moldura, verga
+      piece(w, 0.9, d, cx, 0, cz);
+      piece(w, H - 2.15, d, cx, 2.15, cz);
+    } else piece(w, H, d, cx, 0, cz);
+    // rodapé escuro
+    piece(a.dx ? len : T + 0.02, 0.1, a.dz ? len : T + 0.02, cx, 0, cz, wallMats.base);
+  }
+  if (isWindow) {
+    const span = 1 - T * 0.2;
+    const sx = alongX ? span : T * 0.5;
+    const sz = alongX ? T * 0.5 : span;
+    // vidro
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(alongX ? span : 0.04, 1.25, alongX ? 0.04 : span), wallMats.glass);
+    glass.position.set(0, 0.9 + 0.625, 0);
+    g.add(glass);
+    // moldura e divisória
+    const fr = (w: number, h: number, d: number, x: number, y: number, z: number) => piece(w, h, d, x, y, z, wallMats.frame);
+    fr(sx, 0.06, sz, 0, 0.88, 0); // peitoril
+    fr(sx, 0.06, sz, 0, 2.1, 0);
+    fr(alongX ? 0.05 : T * 0.55, 1.25, alongX ? T * 0.55 : 0.05, 0, 0.92, 0); // divisória do meio
+    piece(alongX ? span : T + 0.12, 0.05, alongX ? T + 0.12 : span, 0, 0.86, 0, wallMats.sill);
+  }
+  g.position.set(it.x, 0, it.z);
+  g.userData.itemId = it.id;
+  return g;
+}
+
+/** Retângulos de colisão de uma parede fina (pilar + braços), em coordenadas do mundo. */
+export function wallRects(it: Item, nb: WallLinks) {
+  const T = WALL_T + 0.06;
+  const r = [{ x0: it.x - T / 2, x1: it.x + T / 2, z0: it.z - T / 2, z1: it.z + T / 2 }];
+  if (nb.xp) r.push({ x0: it.x, x1: it.x + 0.5, z0: it.z - T / 2, z1: it.z + T / 2 });
+  if (nb.xn) r.push({ x0: it.x - 0.5, x1: it.x, z0: it.z - T / 2, z1: it.z + T / 2 });
+  if (nb.zp) r.push({ x0: it.x - T / 2, x1: it.x + T / 2, z0: it.z, z1: it.z + 0.5 });
+  if (nb.zn) r.push({ x0: it.x - T / 2, x1: it.x + T / 2, z0: it.z - 0.5, z1: it.z });
+  if (!nb.xp && !nb.xn && !nb.zp && !nb.zn) r.push({ x0: it.x - 0.5, x1: it.x + 0.5, z0: it.z - T / 2, z1: it.z + T / 2 });
+  return r;
 }

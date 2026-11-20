@@ -10,7 +10,7 @@ import { logoEl } from "./logo";
 import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, NowPlaying, openTarget, Shortcut, activeApp, ytm, YtmState, appVersion, checkUpdate, UpdateInfo } from "./integrations";
 import type { Item, Layout, Zone } from "./furniture";
 import { DEFS } from "./furniture";
-import { soundPrefs, SoundPrefs, notify, approachChime, footstep, kitchenSound, PAD_SOUNDS, listCustom, addCustom, removeCustom, playPad, PadSound } from "./sound";
+import { soundPrefs, SoundPrefs, notify, approachChime, doorChime, footstep, kitchenSound, PAD_SOUNDS, listCustom, addCustom, removeCustom, playPad, PadSound } from "./sound";
 import { EnvConfig, WEATHERS, SEASONS, HOLIDAYS, seasonByDate, weatherFromCode, resolveHoliday, Weather, Season } from "./env";
 import { DEFAULT_GOAL, DEFAULT_CUSTOM, GoalCfg, CustomCfg, financeData, weatherData, customValue, weatherText, fmtBRL, fmtNum, refreshWidgets } from "./widgets";
 import { loadModels } from "./models";
@@ -192,6 +192,8 @@ function start() {
       if (soundPrefs.approach) approachChime();
     };
     media.onLocalState = (patch) => sendState(patch);
+    world.onSit = (on) => sendState({ sit: on || null });
+    world.onEnterMyRoom = () => doorChime();
     world.onStep = (run, vol) => {
       if (soundPrefs.steps) footstep(run, vol);
     };

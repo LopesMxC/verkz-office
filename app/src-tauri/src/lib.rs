@@ -9,6 +9,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // microfone e câmera: o app é do próprio escritório, libera direto (sem o aviso do WebView,
+        // que no Windows às vezes nem aparece e o pedido falha calado). O sistema operacional ainda pode
+        // bloquear nas configurações de privacidade; aí o app mostra o que fazer.
+        .on_permission_request(|_, kind| {
+            use tauri::webview::{PermissionKind, PermissionResponse};
+            match kind {
+                PermissionKind::Microphone | PermissionKind::Camera | PermissionKind::ClipboardRead | PermissionKind::Notifications => PermissionResponse::Allow,
+                _ => PermissionResponse::Default,
+            }
+        })
         .setup(|app| {
             let st = integrations::State::load(app.handle());
             app.manage(st);

@@ -41,10 +41,15 @@ export function soundpadStream(): MediaStream {
   return padOut.stream;
 }
 
+const noiseCache = new Map<number, AudioBuffer>();
 function noiseBuffer(c: AudioContext, secs: number) {
+  const key = Math.round(secs * 1000);
+  const hit = noiseCache.get(key);
+  if (hit) return hit;
   const b = c.createBuffer(1, Math.max(1, Math.floor(c.sampleRate * secs)), c.sampleRate);
   const d = b.getChannelData(0);
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  if (noiseCache.size < 40) noiseCache.set(key, b);
   return b;
 }
 
@@ -91,6 +96,15 @@ export function footstep(run: boolean, vol = 1) {
   const base = run ? 0.16 : 0.1;
   noise(out, t, run ? 0.07 : 0.06, base * vol, "lowpass", stepAlt ? 900 : 750, 0.7);
   tone(out, t, stepAlt ? 95 : 85, 0.05, "sine", base * 0.8 * vol);
+}
+
+/** Alguém entrou na sala onde estou: "ding-dong" de porta. */
+export function doorChime() {
+  if (!soundPrefs.notify) return;
+  const { ctx, out } = audio();
+  const t = ctx.currentTime;
+  tone(out, t, 784, 0.5, "sine", 0.09);
+  tone(out, t + 0.32, 622, 0.7, "sine", 0.08);
 }
 
 export function approachChime() {

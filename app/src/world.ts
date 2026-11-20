@@ -3,7 +3,7 @@ import { CSS2DObject, CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPixelatedPass } from "three/addons/postprocessing/RenderPixelatedPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { buildItem, DEFS, footprint, Item, Layout, Zone } from "./furniture";
+import { buildItem, buildWall, DEFS, footprint, Item, Layout, WALL_CUT, WALL_H, WALL_TYPES, wallRects, WallLinks, Zone } from "./furniture";
 import { LOGO_PATH, NEON } from "./logo";
 import { icon } from "./icons";
 import { pixelTexture, rng, toon } from "./toon";
@@ -77,6 +77,13 @@ export interface PeerInfo {
   extra?: any;
 }
 
+/** Tamanho do personagem (1 = modelo base). */
+export const AVATAR_SCALE = 0.82;
+/** Altura do assento das cadeiras (m). */
+const SEAT_Y = 0.46;
+/** Móveis em que dá para sentar e a distância do clique até eles. */
+export const SEATS: Record<string, number> = { chair: 0.55, office_chair: 0.55, wood_chair: 0.55, stool: 0.5, armchair: 0.8 };
+
 export class Avatar {
   root = new THREE.Group();
   body = new THREE.Group();
@@ -106,14 +113,21 @@ export class Avatar {
   holding: string | null = null;
   private holiday: Holiday | null = null;
   /** Para sons de passo dos outros: posição anterior e ritmo. */
-  stepAcc = 0;
+  /** Sentado numa cadeira (o meu vem do mundo, o dos outros vem da rede em extra.sit). */
+  sitting = false;
+  private hipY = -1;
+  /** true no quadro em que um pé toca o chão (para o som do passo). */
+  footfall = false;
+  private lastFoot = 0;
   private lastTarget = new THREE.Vector3();
   private lastTargetAt = 0;
+  private netSpeed = 0;
 
   constructor(public info: PeerInfo, private isMe: boolean) {
     this.look = normalizeLook(info.look, info.color);
     this.root.add(this.body);
-    this.body.scale.setScalar(1.25); // personagem um pouco maior, legível de longe
+    // escala real em relação aos móveis: ~1,45 m (cabeça grande de jogo, mas cabe na cadeira e na mesa)
+    this.body.scale.setScalar(AVATAR_SCALE);
     this.setLook(this.look);
 
     // sombra redonda no chão (estilo jogo 2D)
@@ -145,7 +159,7 @@ export class Avatar {
     this.activityEl.className = "activity-tag hidden";
     this.label.append(this.emoteEl, this.bubble, this.nameEl, this.statusEl, this.activityEl, this.recEl);
     const lbl = new CSS2DObject(this.label);
-    lbl.position.set(0, 1.95, 0);
+    lbl.position.set(0, 1.38, 0);
     lbl.center.set(0.5, 1);
     this.root.add(lbl);
 
@@ -168,6 +182,7 @@ export class Avatar {
     this.activityEl.classList.toggle("hidden", !act?.app);
     if (act?.app) this.activityEl.textContent = act.app;
     this.label.classList.toggle("cam-on", !!this.extra.cam);
+    if (!this.isMe) this.sitting = !!this.extra.sit;
   }
 
   setHoliday(h: Holiday | null) {
@@ -208,6 +223,7 @@ export class Avatar {
       if (this.holiday.face) shown.face = this.holiday.face;
     }
     this.char = buildCharacter(shown);
+    this.hipY = -1;
     this.body.add(this.char.root);
     if (this.holding) {
       const h = this.holding;
@@ -250,15 +266,33 @@ export class Avatar {
       const now = performance.now();
       if (!this.target.equals(this.lastTarget)) {
         const dtt = (now - this.lastTargetAt) / 1000;
-        if (dtt > 0.02 && dtt < 1) this.running = this.target.distanceTo(this.lastTarget) / dtt > 5.6;
+        if (dtt > 0.02 && dtt < 1) {
+          // média suavizada + histerese: um pacote atrasado não troca andar/correr
+          const v = this.target.distanceTo(this.lastTarget) / dtt;
+          this.netSpeed += (Math.min(v, 12) - this.netSpeed) * 0.35;
+          if (!this.running && this.netSpeed > 6.0) this.running = true;
+          else if (this.running && this.netSpeed < 5.0) this.running = false;
+        }
         this.lastTarget.copy(this.target);
         this.lastTargetAt = now;
       }
-      if (!this.moving) this.running = false;
+      if (!this.moving) {
+        this.running = false;
+        this.netSpeed = 0;
+      }
     }
     const c = this.char;
     const pace = this.running ? 17 : 11;
     this.phase += dt * (this.moving ? pace : 2);
+    // o pé toca o chão quando a perna chega no ponto mais aberto do passo (4 quadros por passo)
+    this.footfall = false;
+    if (this.moving) {
+      const foot = Math.floor((this.phase - Math.PI / 2 + 0.72) / Math.PI);
+      if (foot !== this.lastFoot) {
+        this.footfall = true;
+        this.lastFoot = foot;
+      }
+    } else this.lastFoot = Math.floor((this.phase - Math.PI / 2 + 0.72) / Math.PI);
     const stepped = this.moving ? Math.round(Math.sin(this.phase) * 2) / 2 : 0;
     this.body.position.y = this.moving ? Math.abs(stepped) * (this.running ? 0.09 : 0.05) : 0;
     const sw = stepped * (this.running ? 0.9 : 0.6);
@@ -268,6 +302,24 @@ export class Avatar {
     c.armR.rotation.set(sw * 0.8, 0, 0);
     c.head.rotation.set(0, 0, 0);
     c.root.rotation.set(this.running && this.moving ? 0.12 : 0, 0, 0);
+    if (this.sitting && !this.moving) {
+      // altura do quadril em pé (medida uma vez por visual) para encaixar no assento
+      if (this.hipY < 0) {
+        const by = this.body.position.y;
+        this.body.position.y = 0;
+        this.root.updateMatrixWorld(true);
+        const v = new THREE.Vector3();
+        c.legL.getWorldPosition(v);
+        this.hipY = v.y - this.root.position.y;
+        this.body.position.y = by;
+      }
+      this.body.position.y = SEAT_Y - this.hipY + 0.04;
+      c.legL.rotation.set(-1.5, 0, 0);
+      c.legR.rotation.set(-1.5, 0, 0);
+      c.armL.rotation.set(-0.45, 0, 0);
+      c.armR.rotation.set(-0.45, 0, 0);
+      c.root.rotation.set(0, 0, 0);
+    }
     const mouth = c.head.getObjectByName("mouth");
     if (mouth) mouth.scale.y = 1;
 
@@ -384,7 +436,16 @@ export class World {
   walkSpeed = 4.2;
   runSpeed = 7.4;
   running = false;
-  private stepAcc = 0;
+  private stuck = 0;
+  /** Onde o último clique mandou andar (para sentar ao chegar numa cadeira). */
+  private walkGoal: THREE.Vector3 | null = null;
+  /** Sentei / levantei (para avisar os outros). */
+  onSit?: (on: boolean) => void;
+  /** Alguém entrou na sala onde eu estou. */
+  onEnterMyRoom?: (id: string) => void;
+  private wallLinks = new Map<string, WallLinks>();
+  private doors: { pivots: THREE.Object3D[]; sign: number[]; x: number; z: number; zone: string; open: number }[] = [];
+  private doorGroup = new THREE.Group();
   currentZone: Zone | null = null;
   inputEnabled = true;
   private lastSent = 0;
@@ -424,7 +485,7 @@ export class World {
     sun.shadow.normalBias = 0.02;
     this.scene.add(sun);
 
-    this.scene.add(this.itemGroup, this.zoneGroup, this.decorGroup);
+    this.scene.add(this.itemGroup, this.zoneGroup, this.decorGroup, this.doorGroup);
     this.env = new Environment(
       this.scene,
       hemi,
@@ -509,8 +570,10 @@ export class World {
     }
 
     this.blockers = [];
+    this.computeWallLinks();
     for (const it of layout.items) this.addItemMesh(it);
     for (const z of layout.zones) this.addZoneMesh(z);
+    this.buildDoors();
     this.currentZone = null;
     this.placeDecor();
   }
@@ -667,7 +730,36 @@ export class World {
     return t;
   }
 
+  private wallKey(x: number, z: number) {
+    return `${Math.round(x)},${Math.round(z)}`;
+  }
+
+  /** Quais paredes encostam em quais (para desenhar paredes finas ligadas). */
+  private computeWallLinks() {
+    const set = new Set(this.layout.items.filter((i) => WALL_TYPES.has(i.type)).map((i) => this.wallKey(i.x, i.z)));
+    this.wallLinks.clear();
+    for (const it of this.layout.items) {
+      if (!WALL_TYPES.has(it.type)) continue;
+      const x = Math.round(it.x);
+      const z = Math.round(it.z);
+      this.wallLinks.set(it.id, { xp: set.has(`${x + 1},${z}`), xn: set.has(`${x - 1},${z}`), zp: set.has(`${x},${z + 1}`), zn: set.has(`${x},${z - 1}`) });
+    }
+  }
+
+  /** Paredes do fundo (norte e oeste do prédio) ficam inteiras; as outras são cortadas para não tapar a vista. */
+  private wallIsTall(it: Item) {
+    const { w, d } = this.layout.size;
+    return Math.round(it.z) === -Math.round(d / 2) || Math.round(it.x) === -Math.round(w / 2);
+  }
+
   addItemMesh(it: Item) {
+    if (WALL_TYPES.has(it.type)) {
+      const nb = this.wallLinks.get(it.id) ?? { xp: false, xn: false, zp: false, zn: false };
+      const obj = buildWall(it, nb, this.wallIsTall(it));
+      this.itemGroup.add(obj);
+      this.blockers.push(...wallRects(it, nb));
+      return obj;
+    }
     const obj = buildItem(it);
     this.itemGroup.add(obj);
     const def = DEFS[it.type];
@@ -680,10 +772,109 @@ export class World {
 
   rebuildBlockers() {
     this.blockers = [];
+    this.computeWallLinks();
     for (const it of this.layout.items) {
+      if (WALL_TYPES.has(it.type)) {
+        this.blockers.push(...wallRects(it, this.wallLinks.get(it.id)!));
+        continue;
+      }
       if (!DEFS[it.type]?.blocks) continue;
       const f = footprint(it);
       this.blockers.push({ x0: it.x - f.w / 2, x1: it.x + f.w / 2, z0: it.z - f.d / 2, z1: it.z + f.d / 2 });
+    }
+  }
+
+  /**
+   * Portas das salas privadas: cada vão na linha de parede da sala vira uma porta (dupla se tiver 2 m).
+   * Abrem com animação quando alguém chega perto e fecham depois.
+   */
+  private buildDoors() {
+    this.doorGroup.clear();
+    this.doors = [];
+    const walls = new Set(this.layout.items.filter((i) => WALL_TYPES.has(i.type)).map((i) => this.wallKey(i.x, i.z)));
+    const has = (x: number, z: number) => walls.has(`${x},${z}`);
+    const { d } = this.layout.size;
+    const wood = new THREE.MeshToonMaterial({ color: 0x9a6b45 });
+    const woodDark = new THREE.MeshToonMaterial({ color: 0x6f4a2e });
+    const metal = new THREE.MeshToonMaterial({ color: 0xd9d4c8 });
+    for (const zn of this.layout.zones) {
+      if (!zn.private) continue;
+      const x0 = Math.round(zn.x - zn.w / 2 - 0.5);
+      const x1 = Math.round(zn.x + zn.w / 2 + 0.5);
+      const z0 = Math.round(zn.z - zn.d / 2 - 0.5);
+      const z1 = Math.round(zn.z + zn.d / 2 + 0.5);
+      const lines: { alongX: boolean; fixed: number; from: number; to: number }[] = [
+        { alongX: true, fixed: z0, from: x0, to: x1 },
+        { alongX: true, fixed: z1, from: x0, to: x1 },
+        { alongX: false, fixed: x0, from: z0, to: z1 },
+        { alongX: false, fixed: x1, from: z0, to: z1 },
+      ];
+      for (const ln of lines) {
+        const at = (k: number) => (ln.alongX ? has(k, ln.fixed) : has(ln.fixed, k));
+        let k = ln.from;
+        while (k <= ln.to) {
+          if (at(k)) {
+            k++;
+            continue;
+          }
+          let e = k;
+          while (e + 1 <= ln.to && !at(e + 1)) e++;
+          // vão de verdade: parede dos dois lados, até 3 m
+          if (k > ln.from && e < ln.to && at(k - 1) && at(e + 1) && e - k + 1 <= 3) {
+            const width = e - k + 1;
+            const cx = ln.alongX ? (k + e) / 2 : ln.fixed;
+            const cz = ln.alongX ? ln.fixed : (k + e) / 2;
+            const tall = ln.alongX ? ln.fixed === -Math.round(d / 2) : ln.fixed === -Math.round(this.layout.size.w / 2);
+            const h = tall ? 2.15 : WALL_CUT + 0.35;
+            const leaves = width >= 2 ? 2 : 1;
+            const leafW = width / leaves - 0.04;
+            const door = { pivots: [] as THREE.Object3D[], sign: [] as number[], x: cx, z: cz, zone: zn.id, open: 0 };
+            for (let l = 0; l < leaves; l++) {
+              const side = leaves === 1 ? -1 : l === 0 ? -1 : 1;
+              const pivot = new THREE.Group();
+              const hinge = side * (width / 2 - 0.02);
+              if (ln.alongX) pivot.position.set(cx + hinge, 0, cz);
+              else pivot.position.set(cx, 0, cz + hinge);
+              const leaf = new THREE.Group();
+              const panel = new THREE.Mesh(new THREE.BoxGeometry(leafW, h, 0.07), wood);
+              panel.position.set(0, h / 2, 0);
+              panel.castShadow = true;
+              const inset = new THREE.Mesh(new THREE.BoxGeometry(leafW * 0.7, h * 0.35, 0.08), woodDark);
+              inset.position.set(0, h * 0.68, 0);
+              const handle = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.04, 0.12), metal);
+              handle.position.set(-side * (leafW / 2 - 0.12), Math.min(1.0, h * 0.6), 0);
+              leaf.add(panel, inset, handle);
+              // a folha vai da dobradiça para o meio do vão
+              leaf.position.set(-side * (leafW / 2), 0, 0);
+              if (!ln.alongX) {
+                pivot.rotation.y = Math.PI / 2;
+              }
+              pivot.add(leaf);
+              this.doorGroup.add(pivot);
+              door.pivots.push(pivot);
+              door.sign.push(side);
+            }
+            this.doors.push(door);
+          }
+          k = e + 1;
+        }
+      }
+    }
+  }
+
+  /** Porta abre quando alguém está a menos de 1,6 m dela; fecha sozinha depois. */
+  private updateDoors(dt: number) {
+    if (!this.doors.length) return;
+    const people = [this.me, ...this.others.values()].filter(Boolean).map((a) => a!.root.position);
+    for (const dr of this.doors) {
+      const near = people.some((p) => Math.hypot(p.x - dr.x, p.z - dr.z) < 1.6);
+      const target = near ? 1 : 0;
+      dr.open += (target - dr.open) * Math.min(1, dt * 6);
+      const ang = dr.open * 1.75;
+      dr.pivots.forEach((pv, i) => {
+        const base = pv.userData.base ?? (pv.userData.base = pv.rotation.y);
+        pv.rotation.y = base + dr.sign[i] * ang;
+      });
     }
   }
 
@@ -750,6 +941,8 @@ export class World {
     a.moving = moving;
     a.info.x = x;
     a.info.z = z;
+    // entrou na sala onde eu estou (não vale o corredor/escritório aberto)
+    if (zone && zone !== a.info.zone && zone === this.currentZone?.id) this.onEnterMyRoom?.(id);
     a.info.zone = zone;
   }
 
@@ -778,7 +971,8 @@ export class World {
     const free = (i: number, j: number) => {
       if (i < 0 || j < 0 || i >= nx || j >= nz) return false;
       const [x, z] = center(i, j);
-      return !this.blocked(x, z, 0.22);
+      // mesma folga do movimento: se o caminho passa, o personagem passa
+      return !this.blocked(x, z, 0.3);
     };
     if (!free(ti, tj)) {
       // procura a célula livre mais próxima do destino
@@ -815,9 +1009,8 @@ export class World {
           out.unshift(new THREE.Vector3(x, 0, z));
           k = came.get(k);
         }
-        if (out.length) out[out.length - 1].set(to.x, 0, to.z);
-        if (out.length && this.blocked(to.x, to.z)) out.pop();
-        return out;
+        if (out.length && !this.blocked(to.x, to.z)) out[out.length - 1].set(to.x, 0, to.z);
+        return this.smoothPath(from, out);
       }
       if (closed.has(ck)) continue;
       closed.add(ck);
@@ -838,8 +1031,57 @@ export class World {
     return [];
   }
 
+  /** Linha reta livre entre dois pontos (amostra a cada 0,15 m). */
+  private clearLine(a: THREE.Vector3, b: THREE.Vector3) {
+    const d = Math.hypot(b.x - a.x, b.z - a.z);
+    const n = Math.ceil(d / 0.15);
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      if (this.blocked(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t)) return false;
+    }
+    return true;
+  }
+
+  /** Tira os zigue-zagues da grade: vai direto ao ponto mais distante que dá para ver. */
+  private smoothPath(from: THREE.Vector3, pts: THREE.Vector3[]) {
+    const out: THREE.Vector3[] = [];
+    let cur = from.clone();
+    let i = 0;
+    while (i < pts.length) {
+      let j = pts.length - 1;
+      while (j > i && !this.clearLine(cur, pts[j])) j--;
+      out.push(pts[j]);
+      cur = pts[j];
+      i = j + 1;
+    }
+    return out;
+  }
+
+  /** Cadeira (ou banqueta, poltrona) perto do ponto clicado. */
+  seatNear(p: THREE.Vector3): Item | null {
+    let best: Item | null = null;
+    let bd = Infinity;
+    for (const it of this.layout.items) {
+      const r = SEATS[it.type];
+      if (!r) continue;
+      const dd = Math.hypot(it.x - p.x, it.z - p.z);
+      if (dd < r && dd < bd) {
+        bd = dd;
+        best = it;
+      }
+    }
+    return best;
+  }
+
   walkTo(x: number, z: number) {
-    this.path = this.findPath(this.me.root.position, new THREE.Vector3(x, 0, z));
+    const goal = new THREE.Vector3(x, 0, z);
+    const seat = this.seatNear(goal);
+    // clicou numa cadeira: anda até ela (ela não bloqueia a passagem)
+    const dest = seat ? new THREE.Vector3(seat.x, 0, seat.z) : goal;
+    this.path = this.findPath(this.me.root.position, dest);
+    if (!this.path.length && seat && this.me.root.position.distanceTo(dest) < 1.2) this.path = [dest];
+    this.walkGoal = seat ? dest : null;
+    this.stuck = 0;
   }
 
   // ---------- entrada
@@ -858,7 +1100,10 @@ export class World {
       }
     });
     window.addEventListener("keyup", (e) => this.keys.delete(e.key.toLowerCase()));
-    window.addEventListener("blur", () => this.keys.clear());
+    window.addEventListener("blur", () => {
+      this.keys.clear();
+      this.running = false;
+    });
     const shift = (e: KeyboardEvent) => (this.running = e.shiftKey);
     window.addEventListener("keydown", shift);
     window.addEventListener("keyup", shift);
@@ -969,56 +1214,110 @@ export class World {
     let vx = 0;
     let vz = 0;
     const k = this.keys;
-    // W/S andam para cima/baixo da tela, A/D para os lados
-    if (k.has("w") || k.has("arrowup")) vz -= 1;
-    if (k.has("s") || k.has("arrowdown")) vz += 1;
-    if (k.has("a") || k.has("arrowleft")) vx -= 1;
-    if (k.has("d") || k.has("arrowright")) vx += 1;
+    // W/S andam para cima/baixo da TELA, A/D para os lados (a câmera é diagonal)
+    let kUp = 0;
+    let kRight = 0;
+    if (k.has("w") || k.has("arrowup")) kUp += 1;
+    if (k.has("s") || k.has("arrowdown")) kUp -= 1;
+    if (k.has("a") || k.has("arrowleft")) kRight -= 1;
+    if (k.has("d") || k.has("arrowright")) kRight += 1;
+    vx = kRight - kUp;
+    vz = -kRight - kUp;
 
-    if (!vx && !vz && this.path.length) {
-      const next = this.path[0];
-      const dx = next.x - pos.x;
-      const dz = next.z - pos.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < 0.08) this.path.shift();
-      else { vx = dx / dist; vz = dz / dist; }
+    const keyMove = vx !== 0 || vz !== 0;
+    if (keyMove) {
+      this.path = [];
+      this.walkGoal = null;
     }
-
-    const run = this.running && (vx !== 0 || vz !== 0 || this.path.length > 0);
+    const hadPath = this.path.length > 0;
+    if ((keyMove || hadPath) && this.me.sitting) {
+      this.me.sitting = false;
+      this.onSit?.(false);
+    }
+    const run = this.running && (keyMove || this.path.length > 0);
     const speed = run ? this.runSpeed : this.walkSpeed;
-    const len = Math.hypot(vx, vz);
-    const moving = len > 0;
-    if (moving) {
+    let moving = false;
+    if (keyMove) {
+      const len = Math.hypot(vx, vz);
       vx = (vx / len) * speed * dt;
       vz = (vz / len) * speed * dt;
+      const ox = pos.x;
+      const oz = pos.z;
       if (!this.blocked(pos.x + vx, pos.z)) pos.x += vx;
       if (!this.blocked(pos.x, pos.z + vz)) pos.z += vz;
       this.me.targetDir = Math.atan2(vx, vz);
+      // encostado na parede segurando a tecla: não fica "andando no lugar"
+      moving = Math.hypot(pos.x - ox, pos.z - oz) > speed * dt * 0.2;
+    } else if (this.path.length) {
+      // segue o caminho gastando a distância do quadro inteira, sem parar em cada ponto
+      let budget = speed * dt;
+      const sx = pos.x;
+      const sz = pos.z;
+      while (budget > 1e-4 && this.path.length) {
+        const next = this.path[0];
+        const dx = next.x - pos.x;
+        const dz = next.z - pos.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist < 1e-4) {
+          this.path.shift();
+          continue;
+        }
+        const k = Math.min(1, budget / dist);
+        const nx = pos.x + dx * k;
+        const nz = pos.z + dz * k;
+        let ok = false;
+        if (!this.blocked(nx, nz)) {
+          pos.x = nx;
+          pos.z = nz;
+          ok = true;
+        } else if (!this.blocked(nx, pos.z)) {
+          pos.x = nx;
+          ok = true;
+        } else if (!this.blocked(pos.x, nz)) {
+          pos.z = nz;
+          ok = true;
+        }
+        this.me.targetDir = Math.atan2(dx, dz);
+        if (!ok) break;
+        budget -= dist * k;
+        if (k >= 1) this.path.shift();
+      }
+      const moved = Math.hypot(pos.x - sx, pos.z - sz);
+      moving = moved > 1e-4;
+      // preso (alguém mudou um móvel no caminho, por exemplo): desiste em vez de ficar tremendo
+      this.stuck = moved < speed * dt * 0.2 ? this.stuck + dt : 0;
+      if (this.stuck > 0.35) {
+        this.path = [];
+        this.stuck = 0;
+      }
     }
     let d = this.me.targetDir - this.me.body.rotation.y;
     d = Math.atan2(Math.sin(d), Math.cos(d));
     this.me.body.rotation.y += d * Math.min(1, dt * 14);
-    this.me.moving = moving;
+    // chegou onde clicou: se foi numa cadeira, senta virado para a frente dela
+    if (hadPath && !this.path.length && this.walkGoal) {
+      const seat = this.seatNear(this.walkGoal);
+      if (seat && Math.hypot(seat.x - pos.x, seat.z - pos.z) < 1.2) {
+        pos.set(seat.x, 0, seat.z);
+        this.me.targetDir = -(seat.rot * Math.PI) / 180;
+        this.me.body.rotation.y = this.me.targetDir;
+        this.me.sitting = true;
+        this.onSit?.(true);
+        moving = true; // manda a posição final para os outros
+      }
+      this.walkGoal = null;
+    }
+    this.me.moving = moving && !this.me.sitting;
     this.me.running = run && moving;
     this.me.update(dt, false);
-    // passos: os meus e os de quem anda por perto (mais baixo com a distância)
-    if (moving) {
-      this.stepAcc += dt * (run ? 3.4 : 2.2);
-      if (this.stepAcc >= 1) {
-        this.stepAcc = 0;
-        this.onStep?.(run, 1);
-      }
-    } else this.stepAcc = 0.6;
+    // passos: tocam quando o pé encosta no chão na animação (os meus e os de quem anda por perto)
+    if (this.me.footfall) this.onStep?.(this.me.running, 1);
     for (const a of this.others.values()) {
       a.update(dt, true);
-      if (a.moving) {
-        a.stepAcc += dt * (a.running ? 3.4 : 2.2);
-        if (a.stepAcc >= 1) {
-          a.stepAcc = 0;
-          const dist = Math.hypot(a.root.position.x - pos.x, a.root.position.z - pos.z);
-          const vol = Math.max(0, 1 - dist / 7) * 0.6;
-          if (vol > 0) this.onStep?.(a.running, vol);
-        }
+      if (a.footfall) {
+        const dist = Math.hypot(a.root.position.x - pos.x, a.root.position.z - pos.z);
+        const vol = Math.max(0, 1 - dist / 7) * 0.6;
+        if (vol > 0) this.onStep?.(a.running, vol);
       }
     }
 
@@ -1030,8 +1329,8 @@ export class World {
 
     // câmera segue com suavidade
     this.camTarget.lerp(pos, Math.min(1, dt * 4));
-    // vista de cima, levemente inclinada (frente dos móveis aparece, como num jogo 2D)
-    this.camera.position.set(this.camTarget.x, 26, this.camTarget.z + 24);
+    // vista isométrica (diagonal, de cima), como em jogos de escritório/The Sims
+    this.camera.position.set(this.camTarget.x + 24, 24, this.camTarget.z + 24);
     this.camera.lookAt(this.camTarget);
     // encaixa a câmera na grade de pixels para o pixel art não "tremer"
     this.camera.updateMatrixWorld();
@@ -1050,6 +1349,7 @@ export class World {
       this.lastState = state;
       this.onMove?.(pos.x, pos.z, this.me.targetDir, moving, zone);
     }
+    this.updateDoors(dt);
     this.onFrame?.();
   }
 }

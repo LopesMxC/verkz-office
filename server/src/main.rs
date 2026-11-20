@@ -432,10 +432,23 @@ async fn main() {
     };
     tokio::fs::create_dir_all(&cfg.data_dir).await.ok();
 
-    let layout = match tokio::fs::read(cfg.data_dir.join("layout.json")).await {
+    let mut layout: Value = match tokio::fs::read(cfg.data_dir.join("layout.json")).await {
         Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|_| default_layout()),
         Err(_) => default_layout(),
     };
+    // mapa novo (versão maior que a salva): troca pelo novo e guarda o antigo como backup
+    let def = default_layout();
+    let ver = |v: &Value| v["version"].as_u64().unwrap_or(0);
+    if ver(&layout) < ver(&def) {
+        let old = cfg.data_dir.join("layout.json");
+        if old.exists() {
+            let bak = cfg.data_dir.join(format!("layout.v{}.backup.json", ver(&layout)));
+            tokio::fs::copy(&old, &bak).await.ok();
+            info!("mapa atualizado para a versão {}; o antigo ficou em {}", ver(&def), bak.display());
+        }
+        layout = def;
+        tokio::fs::write(&old, serde_json::to_vec(&layout).unwrap()).await.ok();
+    }
 
     let state = Arc::new(AppState {
         cfg,
