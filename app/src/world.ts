@@ -30,6 +30,8 @@ export class Avatar {
   bubble: HTMLDivElement;
   statusEl: HTMLDivElement;
   nameEl: HTMLDivElement;
+  recEl: HTMLDivElement;
+  recording = false;
   ring: THREE.Mesh;
   target = new THREE.Vector3();
   targetDir = 0;
@@ -64,7 +66,10 @@ export class Avatar {
     this.nameEl.querySelector(".nm")!.textContent = info.name;
     this.statusEl = document.createElement("div");
     this.statusEl.className = "status";
-    this.label.append(this.bubble, this.nameEl, this.statusEl);
+    this.recEl = document.createElement("div");
+    this.recEl.className = "rec-badge";
+    this.recEl.textContent = "Gravando";
+    this.label.append(this.bubble, this.nameEl, this.statusEl, this.recEl);
     const lbl = new CSS2DObject(this.label);
     lbl.position.set(0, 1.95, 0);
     lbl.center.set(0.5, 1);
@@ -87,6 +92,11 @@ export class Avatar {
     this.info.status = s;
     this.statusEl.textContent = s;
     this.statusEl.style.display = s ? "" : "none";
+  }
+
+  setRecording(v: boolean) {
+    this.recording = v;
+    this.label.classList.toggle("recording", v);
   }
 
   setMuted(v: boolean) {

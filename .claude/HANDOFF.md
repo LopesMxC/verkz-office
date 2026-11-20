@@ -60,12 +60,34 @@ Depois: "os personagens devem poder ser personalizados, e a estética deve ser e
             contornos limpos, remover listras do logo no piso.
 - [ ] Teste real de áudio/vídeo com LiveKit (no sandbox não foi possível rodar o binário do LiveKit).
 
+## Gravação e transcrição de reuniões (20/11)
+- Pedido do Alifer: gravar no servidor, guardar no máximo 15 dias, transcrever + resumir com Google AI Studio (Gemini).
+- App (`app/src/recorder.ts`): quem clica em "Gravar" mixa o áudio que OUVE (mesmos ganhos da proximidade/salas
+  privadas, a própria voz e o áudio de tela) + vídeo de um canvas 1280x720 a 8 fps (tela compartilhada ou cartão com
+  os participantes). MediaRecorder webm (mp4 no Mac) em partes de 10 s enviadas em ordem para o servidor.
+  Fonte de silêncio sempre ligada (sem ela o Chrome não gera o arquivo quando ninguém fala).
+  Aviso "Gravando" no personagem e no topo de todos (`{t:"rec",on}` no WebSocket). Painel "Reuniões gravadas".
+- Servidor (`server/src/rec.rs`): /api/rec (lista), /start, /{id}/chunk, /{id}/finish, /{id}/retry, /{id}/file,
+  /{id}/notes. Auth: header `x-office-key` ou `?key=`. Guarda em DATA_DIR/rec/<id>. Ao finalizar: ffmpeg `-c copy`
+  (corrige duração), extrai áudio opus 16 kHz, envia ao Gemini (Files API), generateContent com JSON
+  {resumo, decisoes, tarefas, transcricao}. `GEMINI_API_KEY` e `GEMINI_MODEL` (padrão `gemini-flash-latest`;
+  modelos novos não aceitam `temperature`). Limpeza a cada hora apaga o que passou de 15 dias.
+- Testado: build Rust sem avisos, endpoints com curl, fluxo de 2 usuários no Chrome (aviso, envio, lista, download),
+  mixagem com microfone falso (-21 dB médio). Chamada real ao Gemini só testável na VPS (Google bloqueado no sandbox).
+
+## Produção (VPS do Portainer, 20/11)
+- Swarm com Traefik (rede InwNet, certresolver letsencryptresolver). Stack `verkz-office` separada (livekit + office),
+  imagem `verkz-office-server` construída na própria VPS pela API do Portainer.
+- Domínios: office.verkzsystem.tech e rtc.verkzsystem.tech (DNS na Hostinger). Portas 7881/tcp e 7882/udp (host).
+- Repositório do build: github.com/LopesMxC/verkz-office (privado). Na 1ª vez o GitHub não registrou o workflow:
+  foi preciso um 2º push mexendo no build.yml.
+
 ## Protocolo WebSocket (server <-> app)
 Cliente → servidor: `{t:"join",key,name,color,look}`, `{t:"move",x,z,dir,moving,zone}`,
 `{t:"chat",text,zone|null}`, `{t:"status",text}`, `{t:"look",look}`, `{t:"layout_save",layout}`,
-`{t:"wave",to}`, `{t:"ping"}`.
+`{t:"wave",to}`, `{t:"rec",on}`, `{t:"ping"}`.
 Servidor → cliente: `welcome{id,me,peers,layout,history,livekit{url,token}}`, `peer_join`,
-`peer_leave`, `peer_move`, `chat`, `status`, `look`, `layout`, `wave`, `error`, `pong`.
+`peer_leave`, `peer_move`, `chat`, `status`, `look`, `layout`, `wave`, `rec`, `rec_update`, `error`, `pong`.
 Identity no LiveKit = id do peer no servidor.
 
 ## Build local

@@ -10,6 +10,7 @@ import { logoEl } from "./logo";
 import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, NowPlaying, openTarget, Shortcut } from "./integrations";
 import type { Layout, Zone } from "./furniture";
 import { loadModels } from "./models";
+import { Recorder } from "./recorder";
 
 // começa a baixar os modelos 3D já na tela de entrada
 const modelsReady = loadModels();
@@ -156,7 +157,9 @@ let connected = false;
 let chatTab: "geral" | "sala" = "geral";
 let unread = 0;
 const chatLog: any[] = [];
-let rightPanel: "chat" | "apps" | null = null;
+let rightPanel: "chat" | "apps" | "meetings" | null = null;
+let recorder: Recorder;
+let recStarting = false;
 let leftOpen = true;
 let agenda: AgendaItem[] = [];
 let mailUnread: number | null = null;
@@ -164,6 +167,12 @@ let nowPlaying: NowPlaying | null = null;
 let integ = { google: false, spotify: false, google_configured: false, spotify_configured: false };
 let addingShortcut = false;
 let started = false;
+
+/** Endereço http(s) do servidor, a partir do endereço do WebSocket. */
+const httpBase = () => prefs.server.replace(/^ws/, "http").replace(/\/ws\/?$/, "");
+/** Chamada à API do servidor com a chave do escritório. */
+const api = (path: string, init: RequestInit = {}) =>
+  fetch(httpBase() + path, { ...init, headers: { ...(init.headers as Record<string, string>), "x-office-key": prefs.key } });
 
 function start() {
   if (!started) {
@@ -173,6 +182,13 @@ function start() {
     media.onError = (m) => toast(m, true);
     media.onStateChanged = renderDock;
     media.onScreensChanged = renderScreens;
+    recorder = new Recorder(media, api, () => prefs.name);
+    recorder.onError = (m) => toast(m, true);
+    recorder.onChange = () => {
+      world.me?.setRecording(recorder.active);
+      renderDock();
+      renderTop();
+    };
     editor = new Editor(world, hud, (layout) => net.send({ t: "layout_save", layout }), toast);
     editor.onClose = () => {
       renderLeft();
@@ -202,7 +218,14 @@ function start() {
     const sp = m.layout.spawn ?? { x: 0, z: 8 };
     const me: PeerInfo = { ...m.me, x: sp.x + (Math.random() * 4 - 2), z: sp.z + (Math.random() * 2 - 1), look: prefs.look };
     world.spawnMe(me);
-    for (const p of m.peers) world.addPeer(p);
+    for (const p of m.peers) {
+      world.addPeer(p);
+      if (p.recording) world.others.get(p.id)?.setRecording(true);
+    }
+    if (recorder.active) {
+      world.me.setRecording(true);
+      net.send({ t: "rec", on: true });
+    }
     chatLog.length = 0;
     chatLog.push(...m.history);
     lastStatus = null;
@@ -216,6 +239,7 @@ function start() {
   net.on("peer_join", (m) => {
     if (m.peer.id === myId) return;
     world.addPeer(m.peer);
+    if (m.peer.recording) world.others.get(m.peer.id)?.setRecording(true);
     blip("join");
     renderPeople();
   });
@@ -246,6 +270,16 @@ function start() {
       blip("msg");
     }
     renderChat();
+  });
+  net.on("rec", (m) => {
+    if (m.id === myId) return;
+    const a = world.others.get(m.id);
+    a?.setRecording(m.on);
+    if (m.on && a) toast(`${a.info.name} começou a gravar`);
+    renderTop();
+  });
+  net.on("rec_update", () => {
+    if (rightPanel === "meetings") renderMeetings();
   });
   net.on("wave", (m) => {
     blip("wave");
@@ -291,7 +325,16 @@ function renderTop() {
   const online = (world?.others.size ?? 0) + 1;
   el.innerHTML = `${logoEl(26)}<span class="t-m">Office</span><span class="divider"></span>
     <span class="chip accent">${z?.private ? icon("lock", 13) : '<span class="dot"></span>'}${esc(z ? z.name : "Área aberta")}</span>
-    <span class="chip" title="${connected ? "Conectado" : "Reconectando..."}"><span class="dot ${connected ? "ok" : "bad"}"></span>${online} online</span>`;
+    <span class="chip" title="${connected ? "Conectado" : "Reconectando..."}"><span class="dot ${connected ? "ok" : "bad"}"></span>${online} online</span>
+    ${recordingNames().length ? `<span class="chip rec" title="Gravando: ${esc(recordingNames().join(", "))}"><span class="dot"></span>Gravando</span>` : ""}`;
+}
+
+/** Quem está gravando agora (inclui você). */
+function recordingNames() {
+  if (!world) return [];
+  const n = [...world.others.values()].filter((a) => a.recording).map((a) => a.info.name);
+  if (recorder?.active) n.unshift("você");
+  return n;
 }
 
 function renderLeft() {
@@ -337,9 +380,11 @@ function renderDock() {
     b("mic", media?.micOn ? "mic" : "mic-off", media?.micOn ? "Desligar microfone (M)" : "Ligar microfone (M)", media?.micOn ? "" : "off"),
     b("cam", media?.camOn ? "video" : "video-off", media?.camOn ? "Desligar câmera" : "Ligar câmera", media?.camOn ? "active" : "off"),
     b("screen", "screen", media?.screenOn ? "Parar de compartilhar" : "Compartilhar tela", media?.screenOn ? "active" : ""),
+    b("rec", "record", recorder?.active ? "Parar gravação" : "Gravar reunião", recorder?.active ? "rec-on" : ""),
     `<span class="divider"></span>`,
     b("people", "users", "Pessoas", leftOpen && !editor?.active ? "active" : ""),
     b("chat", "chat", "Chat (Enter)", rightPanel === "chat" ? "active" : "", unread ? `<span class="badge">${unread > 9 ? "9+" : unread}</span>` : ""),
+    b("meetings", "file-text", "Reuniões gravadas", rightPanel === "meetings" ? "active" : ""),
     b("apps", "calendar", "Agenda e apps", rightPanel === "apps" ? "active" : "", mailUnread ? `<span class="badge">${mailUnread > 99 ? "99+" : mailUnread}</span>` : ""),
     `<span class="divider"></span>`,
     b("char", "shirt", "Personagem"),
@@ -360,6 +405,12 @@ async function dockAction(id: string) {
       break;
     case "screen":
       await media.setScreen(!media.screenOn);
+      break;
+    case "rec":
+      await toggleRecording();
+      break;
+    case "meetings":
+      openRight(rightPanel === "meetings" ? null : "meetings");
       break;
     case "people":
       if (editor.active) editor.cancel();
@@ -387,6 +438,7 @@ async function dockAction(id: string) {
       renderLeft();
       break;
     case "exit":
+      if (recorder.active) await toggleRecording();
       net.close();
       await media.disconnect();
       for (const pid of [...world.others.keys()]) world.removePeer(pid);
@@ -422,6 +474,7 @@ function openRight(p: typeof rightPanel) {
     renderApps();
     refreshIntegrations();
   }
+  if (p === "meetings") renderMeetings();
 }
 
 const closeRight = () => {
@@ -543,6 +596,159 @@ function openScreen(key: string) {
   const watch = setInterval(() => {
     if (!media.screens.has(key)) close();
   }, 500);
+}
+
+// ------------------------------------------------------------ gravação de reuniões
+async function toggleRecording() {
+  if (recStarting) return;
+  if (recorder.active) {
+    net.send({ t: "rec", on: false });
+    toast("Enviando a gravação...");
+    try {
+      await recorder.stop();
+      toast("Gravação salva. A transcrição e o resumo ficam prontos em alguns minutos.");
+    } catch (e: any) {
+      toast("A gravação não foi finalizada: " + (e?.message ?? e), true);
+    }
+    if (rightPanel === "meetings") renderMeetings();
+    return;
+  }
+  const z = world.currentZone;
+  const title = `${z ? z.name : "Reunião"} · ${new Date().toLocaleDateString("pt-BR")} ${hm(new Date())}`;
+  recStarting = true;
+  try {
+    await recorder.start(title);
+    net.send({ t: "rec", on: true });
+    toast("Gravando. Todos veem o aviso de gravação acima do seu personagem.");
+  } catch (e: any) {
+    toast("Não consegui começar a gravar: " + (e?.message ?? e), true);
+  }
+  recStarting = false;
+}
+
+const fmtDur = (s: number) => {
+  const m = Math.round((s || 0) / 60);
+  return m < 1 ? "menos de 1 min" : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+};
+const fmtSize = (b: number) => (b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
+const STATUS: Record<string, string> = { gravando: "Gravando", processando: "Transcrevendo...", pronto: "Pronto", erro: "Sem transcrição" };
+
+async function renderMeetings() {
+  if (rightPanel !== "meetings") return;
+  const el = $("#right");
+  const head = `<div class="panel-head"><div class="t-m">Reuniões gravadas</div><button class="x-btn" data-close>${icon("x", 18)}</button></div>`;
+  if (!el.querySelector("[data-meetings]")) {
+    el.innerHTML = `${head}<div class="scroll" data-meetings><div class="empty">Carregando...</div></div>`;
+    $("[data-close]", el).addEventListener("click", closeRight);
+  }
+  let data: any;
+  try {
+    const r = await api("/api/rec");
+    if (!r.ok) throw new Error(`servidor respondeu ${r.status}`);
+    data = await r.json();
+  } catch (e: any) {
+    if (rightPanel === "meetings") $("[data-meetings]", el).innerHTML = `<div class="empty">Não consegui carregar as gravações (${esc(e?.message ?? e)}).</div>`;
+    return;
+  }
+  if (rightPanel !== "meetings") return;
+  const list = data.recordings as any[];
+  const now = Date.now() / 1000;
+  $("[data-meetings]", el).innerHTML =
+    `<div class="note" style="margin-bottom:12px">Para gravar, clique no botão vermelho de gravação no dock. Cada gravação fica aqui por ${data.keep_days} dias e depois é apagada sozinha.${
+      data.ai ? "" : " <b>A transcrição está desligada:</b> falta a chave do Gemini no servidor."
+    }</div>` +
+    (list.length
+      ? `<div style="display:flex;flex-direction:column;gap:10px">${list
+          .map((m) => {
+            const left = Math.max(0, Math.ceil((m.expires - now) / 86400));
+            const st = m.status as string;
+            return `<div class="meeting">
+              <div class="t-m">${esc(m.title)}</div>
+              <div class="tm"><span>${new Date(m.started * 1000).toLocaleDateString("pt-BR")} ${hm(new Date(m.started * 1000))}</span><span>${fmtDur(m.duration)}</span>${
+                m.by ? `<span>por ${esc(m.by)}</span>` : ""
+              }<span class="chip ${st === "pronto" ? "accent" : st === "erro" ? "warn" : ""}">${STATUS[st] ?? esc(st)}</span></div>
+              ${st === "erro" && m.error ? `<div class="err-msg">${esc(m.error)}</div>` : ""}
+              <div class="row">
+                ${st === "pronto" ? `<button class="btn primary sm" data-notes="${m.id}">${icon("file-text", 15)} Resumo e transcrição</button>` : ""}
+                ${st !== "gravando" ? `<button class="btn secondary sm" data-dl="${m.id}">${icon("download", 15)} Baixar vídeo${m.size ? ` (${fmtSize(m.size)})` : ""}</button>` : ""}
+                ${st === "erro" ? `<button class="btn ghost sm" data-retry="${m.id}">Tentar de novo</button>` : ""}
+              </div>
+              <div class="note">Apagada em ${left} ${left === 1 ? "dia" : "dias"}</div>
+            </div>`;
+          })
+          .join("")}</div>`
+      : `<div class="empty">Nenhuma reunião gravada nos últimos ${data.keep_days} dias.</div>`);
+  el.querySelectorAll<HTMLElement>("[data-dl]").forEach((b) =>
+    b.addEventListener("click", () =>
+      openTarget(`${httpBase()}/api/rec/${b.dataset.dl}/file?key=${encodeURIComponent(prefs.key)}`).catch((err) => toast(String(err), true)),
+    ),
+  );
+  el.querySelectorAll<HTMLElement>("[data-notes]").forEach((b) => b.addEventListener("click", () => openNotes(b.dataset.notes!, list.find((m) => m.id === b.dataset.notes))));
+  el.querySelectorAll<HTMLElement>("[data-retry]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const r = await api(`/api/rec/${b.dataset.retry}/retry`, { method: "POST" });
+      if (!r.ok) toast((await r.json().catch(() => ({}))).error ?? "Não deu para tentar de novo", true);
+      renderMeetings();
+    }),
+  );
+}
+
+async function openNotes(id: string, meta: any) {
+  let n: any;
+  try {
+    const r = await api(`/api/rec/${id}/notes`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `servidor respondeu ${r.status}`);
+    n = await r.json();
+  } catch (e: any) {
+    toast(String(e?.message ?? e), true);
+    return;
+  }
+  const lines = (a: any[]) => (a?.length ? `<ul>${a.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<div class="note">Nada registrado.</div>`);
+  const tasks = (n.tarefas ?? []).map((t: any) => [t.tarefa, t.responsavel && `responsável: ${t.responsavel}`, t.prazo && `prazo: ${t.prazo}`].filter(Boolean).join(" · "));
+  const text = [
+    meta?.title ?? "Reunião",
+    "",
+    "RESUMO",
+    n.resumo ?? "",
+    "",
+    "DECISÕES",
+    ...(n.decisoes ?? []).map((d: string) => `- ${d}`),
+    "",
+    "TAREFAS",
+    ...tasks.map((t: string) => `- ${t}`),
+    "",
+    "TRANSCRIÇÃO",
+    ...(n.transcricao ?? []).map((f: any) => `[${f.tempo}] ${f.quem}: ${f.fala}`),
+  ].join("\n");
+  const bg = document.createElement("div");
+  bg.className = "modal-bg";
+  bg.innerHTML = `<div class="panel notes">
+      <div class="panel-head"><div class="t-m"></div><button class="x-btn" data-close>${icon("x", 18)}</button></div>
+      <div class="scroll">
+        <div class="section"><span class="label">Resumo</span><p>${esc(n.resumo ?? "")}</p></div>
+        <div class="section"><span class="label">Decisões</span>${lines(n.decisoes)}</div>
+        <div class="section"><span class="label">Tarefas</span>${lines(tasks)}</div>
+        <div class="section"><span class="label">Transcrição</span>${
+          (n.transcricao ?? []).map((f: any) => `<div class="fala"><span class="t">${esc(f.tempo)}</span><span><b>${esc(f.quem)}:</b> ${esc(f.fala)}</span></div>`).join("") ||
+          `<div class="note">Sem falas.</div>`
+        }</div>
+      </div>
+      <div class="foot"><button class="btn secondary sm" data-copy>${icon("copy", 15)} Copiar tudo</button><button class="btn primary sm" data-close2>Fechar</button></div>
+    </div>`;
+  $(".t-m", bg).textContent = meta?.title ?? "Reunião";
+  const close = () => bg.remove();
+  $("[data-close]", bg).addEventListener("click", close);
+  $("[data-close2]", bg).addEventListener("click", close);
+  bg.addEventListener("click", (e) => e.target === bg && close());
+  $("[data-copy]", bg).addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("Copiado");
+    } catch {
+      toast("Não consegui copiar", true);
+    }
+  });
+  document.body.appendChild(bg);
 }
 
 // ------------------------------------------------------------ integrações

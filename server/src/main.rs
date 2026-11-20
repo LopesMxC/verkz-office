@@ -16,10 +16,10 @@ use std::{
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        DefaultBodyLimit, State,
     },
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -29,6 +29,8 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{info, warn};
 
+mod rec;
+
 #[derive(Clone)]
 struct Config {
     office_key: String,
@@ -37,6 +39,8 @@ struct Config {
     livekit_api_secret: String,
     livekit_room: String,
     data_dir: PathBuf,
+    gemini_key: String,
+    gemini_model: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -52,6 +56,9 @@ struct Peer {
     zone: Option<String>,
     /// Aparência do personagem (cabelo, roupa, acessórios...), definida no app.
     look: Value,
+    /// Está gravando a reunião agora (todos veem o aviso).
+    #[serde(default)]
+    recording: bool,
 }
 
 struct Conn {
@@ -59,14 +66,14 @@ struct Conn {
     tx: mpsc::UnboundedSender<String>,
 }
 
-struct AppState {
+pub(crate) struct AppState {
     cfg: Config,
     conns: Mutex<HashMap<String, Conn>>,
     layout: RwLock<Value>,
     history: Mutex<Vec<Value>>,
 }
 
-type Shared = Arc<AppState>;
+pub(crate) type Shared = Arc<AppState>;
 
 /// Mensagens que o app envia.
 #[derive(Deserialize, Debug)]
@@ -79,6 +86,7 @@ enum ClientMsg {
     Status { text: String },
     LayoutSave { layout: Value },
     Wave { to: String },
+    Rec { on: bool },
     Ping,
 }
 
@@ -105,7 +113,7 @@ struct LkClaims {
     video: VideoGrant,
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
 
@@ -138,7 +146,7 @@ fn default_layout() -> Value {
 }
 
 impl AppState {
-    async fn broadcast(&self, msg: &Value, except: Option<&str>) {
+    pub(crate) async fn broadcast(&self, msg: &Value, except: Option<&str>) {
         let s = msg.to_string();
         for (id, c) in self.conns.lock().await.iter() {
             if Some(id.as_str()) != except {
@@ -211,6 +219,7 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                     status: String::new(),
                     zone: None,
                     look,
+                    recording: false,
                 };
                 let peers: Vec<Peer> = st.conns.lock().await.values().map(|c| c.peer.clone()).collect();
                 let welcome = json!({
@@ -302,6 +311,12 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                 let name = st.conns.lock().await.get(id).map(|c| c.peer.name.clone()).unwrap_or_default();
                 st.send_to(&to, &json!({"t":"wave","from":id,"name":name})).await;
             }
+            (ClientMsg::Rec { on }, Some(id)) => {
+                if let Some(c) = st.conns.lock().await.get_mut(id) {
+                    c.peer.recording = on;
+                }
+                st.broadcast(&json!({"t":"rec","id":id,"on":on}), None).await;
+            }
             (ClientMsg::Ping, Some(_)) => {
                 let _ = tx.send(json!({"t":"pong"}).to_string());
             }
@@ -333,6 +348,8 @@ async fn main() {
         livekit_api_secret: env("LIVEKIT_API_SECRET", "secret"),
         livekit_room: env("LIVEKIT_ROOM", "verkz-office"),
         data_dir: PathBuf::from(env("DATA_DIR", "./data")),
+        gemini_key: env("GEMINI_API_KEY", "").trim().to_string(),
+        gemini_model: env("GEMINI_MODEL", "gemini-flash-latest"),
     };
     tokio::fs::create_dir_all(&cfg.data_dir).await.ok();
 
@@ -348,8 +365,17 @@ async fn main() {
         history: Mutex::new(Vec::new()),
     });
 
+    tokio::spawn(rec::cleanup_loop(state.clone()));
+
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/api/rec", get(rec::list))
+        .route("/api/rec/start", post(rec::start))
+        .route("/api/rec/{id}/chunk", post(rec::chunk).layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
+        .route("/api/rec/{id}/finish", post(rec::finish))
+        .route("/api/rec/{id}/retry", post(rec::retry))
+        .route("/api/rec/{id}/file", get(rec::file))
+        .route("/api/rec/{id}/notes", get(rec::notes))
         .route("/health", get(|| async { "ok" }))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);

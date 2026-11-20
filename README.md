@@ -16,6 +16,9 @@ quem entra numa sala privada só é ouvido lá dentro.
     piso, largura, profundidade, mover, pôr/tirar paredes, apagar.
   - *Prédio:* aumentar ou diminuir o escritório, desenhar paredes arrastando, borracha para apagar itens.
   - "Salvar para todos" atualiza o escritório de todo mundo.
+- **Gravar reunião:** botão vermelho no dock. Grava o que você ouve (e a tela compartilhada) e envia ao servidor.
+  Todos veem o aviso "Gravando". Em "Reuniões gravadas" ficam o vídeo para baixar, o resumo, as decisões, as tarefas
+  e a transcrição (feitos pelo Gemini). Cada gravação é apagada sozinha depois de 15 dias.
 - **Agenda e apps:** botão do calendário: reuniões do dia com "Entrar no Meet", e-mails não lidos, Spotify
   (tocando agora e controles) e atalhos (YouTube Music, Gmail, Drive, Verkz System, ou qualquer link/programa).
   O status "Em reunião" e "Ouvindo: ..." aparece sozinho acima do personagem.

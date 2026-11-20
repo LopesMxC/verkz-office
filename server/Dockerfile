@@ -5,6 +5,8 @@ COPY src ./src
 RUN cargo build --release
 
 FROM debian:bookworm-slim
+# ffmpeg: extrai o áudio das gravações para a transcrição
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN useradd -m office && mkdir /data && chown office /data
 COPY --from=build /src/target/release/verkz-office-server /usr/local/bin/
 USER office
