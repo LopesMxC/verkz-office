@@ -1,5 +1,5 @@
 import "./style.css";
-import { World, PeerInfo, EMOTES, HOLD_ITEMS } from "./world";
+import { World, PeerInfo, EMOTES, HOLD_ITEMS, SEATS } from "./world";
 import { Net } from "./net";
 import { Media, MediaPrefs, RANGES } from "./media";
 import { Editor } from "./editor";
@@ -35,7 +35,11 @@ interface Prefs {
   weatherFx: boolean;
   media: MediaPrefs;
   sound: SoundPrefs;
+  role: string;
 }
+
+/** Cargos da equipe: cada um tem a sua sala no mapa (zona com `role`). */
+const ROLES = ["SDR", "Closer", "Editor", "Gestor", "Head", "CEO"];
 const PREFS_KEY = "verkz-office:prefs";
 function loadPrefs(): Prefs {
   let p: Partial<Prefs> = {};
@@ -59,6 +63,7 @@ function loadPrefs(): Prefs {
     weatherFx: p.weatherFx ?? true,
     media: { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio", ...(p.media ?? {}) },
     sound: { ...soundPrefs, ...(p.sound ?? {}) },
+    role: p.role ?? "",
   };
 }
 const prefs = loadPrefs();
@@ -116,6 +121,9 @@ function showLogin(error = "") {
           <button type="button" class="btn secondary" data-edit>Editar</button>
         </div>
         <label class="field"><span class="label">Seu nome</span><input class="input" name="name" maxlength="32" required value="${esc(prefs.name)}" autocomplete="name"></label>
+        <label class="field"><span class="label">Seu cargo</span><select class="input" name="role" required>
+          <option value="" disabled ${prefs.role ? "" : "selected"}>Escolha o seu cargo</option>
+          ${ROLES.map((r) => `<option ${prefs.role === r ? "selected" : ""}>${r}</option>`).join("")}</select></label>
         <label class="field"><span class="label">Chave do escritório</span><input class="input" name="key" type="password" required value="${esc(prefs.key)}"></label>
         <div>
           <button type="button" class="server-toggle ${serverOpen ? "open" : ""}" data-server>${icon("chevron-right", 14)} Servidor: ${esc(prefs.server.replace(/^wss?:\/\//, "").replace(/\/ws$/, ""))}</button>
@@ -144,6 +152,7 @@ function showLogin(error = "") {
     const f = new FormData(e.target as HTMLFormElement);
     prefs.name = String(f.get("name")).trim();
     prefs.key = String(f.get("key"));
+    prefs.role = String(f.get("role") ?? "");
     prefs.server = String(f.get("server")).trim();
     savePrefs();
     pv.dispose();
@@ -250,11 +259,14 @@ function start() {
     const sp = m.layout.spawn ?? { x: 0, z: 8 };
     const me: PeerInfo = { ...m.me, x: sp.x + (Math.random() * 4 - 2), z: sp.z + (Math.random() * 2 - 1), look: prefs.look };
     world.spawnMe(me);
+    // nasce sentado numa cadeira livre da sala do seu cargo
+    for (const p of m.peers) world.addPeer(p);
+    goToRoleRoom(true);
+    sendState({ role: prefs.role || null });
     applyEnv();
     lastActivity = "";
     if (world.me.holding) sendState({ hold: world.me.holding });
     for (const p of m.peers) {
-      world.addPeer(p);
       if (p.recording) world.others.get(p.id)?.setRecording(true);
     }
     if (recorder.active) {
@@ -446,6 +458,7 @@ function renderDock() {
     b("apps", "calendar", "Agenda e apps", rightPanel === "apps" ? "active" : "", mailUnread ? `<span class="badge">${mailUnread > 99 ? "99+" : mailUnread}</span>` : ""),
     `<span class="divider"></span>`,
     b("char", "shirt", "Personagem"),
+    prefs.role ? b("home", "home", `Ir para a minha sala (${prefs.role})`) : "",
     b("map", "map", "Ver o escritório todo (Tab)", world?.overview ? "active" : ""),
     b("edit", "pencil", "Editar escritório", editor?.active ? "active" : ""),
     isAdmin ? b("team", "activity", "Atividade da equipe", rightPanel === "team" ? "active" : "") : "",
@@ -496,6 +509,9 @@ async function dockAction(id: string) {
     }
     case "map":
       world.setOverview(!world.overview);
+      break;
+    case "home":
+      goToRoleRoom(false);
       break;
     case "edit":
       editor.toggle();
@@ -1188,6 +1204,7 @@ function openPersonCard(id: string, x: number, y: number) {
   el.innerHTML = `
     <div class="pc-head"><span class="avatar" style="background:${lookColor(a.look)}">${esc(initials(a.info.name))}</span>
       <div class="meta"><div class="t-m">${esc(a.info.name)}${id === myId ? " (você)" : ""}</div><div class="t-s c2">${esc(a.info.status || zn)}</div></div></div>
+    ${a.extra.role ? `<div class="pc-row"><span class="label">Cargo</span><span>${esc(a.extra.role)}</span></div>` : ""}
     <div class="pc-row"><span class="label">Onde</span><span>${esc(zn)}</span></div>
     <div class="pc-row"><span class="label">Atividade</span><span>${act?.app ? `${esc(act.app)}${act.title ? `<br><span class="t-s c2">${esc(act.title)}</span>` : ""}<br><span class="t-s c3">${since(act.since)}${act.share === false && isAdmin ? " · visível só para a gestão" : ""}</span>` : '<span class="c3">Não compartilhada</span>'}</span></div>
     ${hold ? `<div class="pc-row"><span class="label">Agora</span><span>${hold.emoji} ${esc(hold.status)}</span></div>` : ""}
@@ -1766,3 +1783,36 @@ void refreshWidgets;
 // ------------------------------------------------------------ início
 if (prefs.name && prefs.key && new URLSearchParams(location.search).has("auto")) start();
 else showLogin();
+
+
+// ------------------------------------------------------------ sala do cargo
+/** Sala do meu cargo e uma cadeira livre nela. */
+function roleSeat() {
+  const zn = world.layout?.zones.find((z) => z.role && z.role === prefs.role);
+  if (!zn) return null;
+  const inside = (x: number, z: number) => Math.abs(x - zn.x) <= zn.w / 2 && Math.abs(z - zn.z) <= zn.d / 2;
+  const taken = (x: number, z: number) => [...world.others.values()].some((a) => Math.hypot(a.target.x - x, a.target.z - z) < 0.5);
+  // cadeira de trabalho primeiro (giratória), depois qualquer uma
+  const seats = world.layout.items
+    .filter((i) => SEATS[i.type] && inside(i.x, i.z) && !taken(i.x, i.z))
+    .sort((a, b) => (a.type === "office_chair" ? 0 : 1) - (b.type === "office_chair" ? 0 : 1));
+  return { zone: zn, seat: seats[0] ?? null };
+}
+
+/** Vai para a sala do cargo: ao entrar, já nasce sentado; pelo botão, vai andando. */
+function goToRoleRoom(spawn: boolean) {
+  const r = roleSeat();
+  if (!r) {
+    if (!spawn) toast(prefs.role ? `Ainda não há sala para ${prefs.role} no mapa` : "Escolha seu cargo na tela de entrada", true);
+    return;
+  }
+  if (spawn) {
+    if (r.seat) world.sitAt(r.seat);
+    else world.me.root.position.set(r.zone.x, 0, r.zone.z);
+    world.camTarget.copy(world.me.root.position);
+  } else {
+    if (r.seat) world.walkTo(r.seat.x, r.seat.z);
+    else world.walkTo(r.zone.x, r.zone.z);
+    world.runToTarget();
+  }
+}

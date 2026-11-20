@@ -956,7 +956,7 @@ export class World {
     a.info.x = x;
     a.info.z = z;
     // entrou na sala onde eu estou (não vale o corredor/escritório aberto)
-    if (zone && zone !== a.info.zone && zone === this.currentZone?.id) this.onEnterMyRoom?.(id);
+    if (zone && zone !== a.info.zone && zone === this.currentZone?.id && this.currentZone?.private) this.onEnterMyRoom?.(id);
     a.info.zone = zone;
   }
 
@@ -1069,6 +1069,21 @@ export class World {
       i = j + 1;
     }
     return out;
+  }
+
+  /** Coloca o meu personagem sentado nessa cadeira (ao entrar no escritório). */
+  sitAt(seat: Item) {
+    this.me.root.position.set(seat.x, 0, seat.z);
+    this.me.targetDir = -(seat.rot * Math.PI) / 180;
+    this.me.body.rotation.y = this.me.targetDir;
+    this.me.sitting = true;
+    this.path = [];
+    this.onSit?.(true);
+  }
+
+  /** O caminho atual vai correndo (atalhos como "minha sala"). */
+  runToTarget() {
+    this.runPath = this.path.length > 0;
   }
 
   /** Zoom em que o prédio inteiro cabe na tela. */

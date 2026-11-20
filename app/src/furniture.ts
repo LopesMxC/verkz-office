@@ -27,6 +27,8 @@ export interface Zone {
   private: boolean;
   /** Piso da sala: carpete-azul, carpete-verde, carpete-lilas, carpete-grafite, madeira, ceramica. */
   floor?: string;
+  /** Cargo dono da sala (quem tem esse cargo nasce aqui). */
+  role?: string;
 }
 
 export interface Layout {
