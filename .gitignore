@@ -1,0 +1,12 @@
+node_modules/
+dist/
+target/
+app/src-tauri/gen/
+server/data/
+.env
+*.log
+instaladores/
+compilador.env
+deploy/livekit.yaml
+.chaves/
+*.key

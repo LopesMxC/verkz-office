@@ -1,0 +1,74 @@
+name: Build do app (Mac e Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      plataforma:
+        description: "Qual instalador gerar"
+        type: choice
+        options: [todas, mac, windows]
+        default: todas
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: build-${{ matrix.nome }}
+    strategy:
+      fail-fast: false
+      # Rodada manual pode pedir um sistema só (o compilador.bat pede só o Mac). Tag v* gera os dois.
+      matrix:
+        include: >-
+          ${{ fromJSON(
+          inputs.plataforma == 'mac' && '[{"nome":"mac","platform":"macos-latest","args":"--target universal-apple-darwin"}]'
+          || inputs.plataforma == 'windows' && '[{"nome":"windows","platform":"windows-latest","args":""}]'
+          || '[{"nome":"mac","platform":"macos-latest","args":"--target universal-apple-darwin"},{"nome":"windows","platform":"windows-latest","args":""}]'
+          ) }}
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_OFFICE_SERVER: ${{ vars.OFFICE_SERVER }}
+          VERKZ_GOOGLE_CLIENT_ID: ${{ secrets.VERKZ_GOOGLE_CLIENT_ID }}
+          VERKZ_GOOGLE_CLIENT_SECRET: ${{ secrets.VERKZ_GOOGLE_CLIENT_SECRET }}
+          VERKZ_SPOTIFY_CLIENT_ID: ${{ secrets.VERKZ_SPOTIFY_CLIENT_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          projectPath: app
+          # Release (rascunho) só quando sobe uma tag v*. Rodada manual só gera os arquivos abaixo.
+          tagName: ${{ github.ref_type == 'tag' && 'v__VERSION__' || '' }}
+          releaseName: ${{ github.ref_type == 'tag' && 'VERKZ Office v__VERSION__' || '' }}
+          releaseBody: "Instaladores para Mac (.dmg) e Windows (.exe)."
+          releaseDraft: true
+          args: ${{ matrix.args }}
+      # Instaladores ficam em "Artifacts" na página da rodada (o compilador.bat baixa daqui).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verkz-office-${{ matrix.nome }}
+          path: |
+            app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            app/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            app/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            app/src-tauri/target/release/bundle/nsis/*.exe.sig
+            app/src-tauri/target/release/bundle/nsis/*.exe
+            app/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 14

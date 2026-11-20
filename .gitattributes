@@ -1,0 +1,4 @@
+# Fins de linha fixos: .bat precisa de CRLF no Windows, scripts de Mac/Linux precisam de LF
+*.bat text eol=crlf
+*.sh text eol=lf
+*.command text eol=lf

@@ -1,0 +1,12 @@
+# Copie para livekit.yaml e troque a chave/segredo (os mesmos do .env).
+port: 7880
+bind_addresses: ["127.0.0.1"]
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50200
+  use_external_ip: true
+keys:
+  TROQUE_API_KEY: TROQUE_API_SECRET_COM_32_CARACTERES_OU_MAIS
+logging:
+  level: info

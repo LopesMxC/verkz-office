@@ -1,0 +1,40 @@
+# VERKZ Office na VPS (Hostinger KVM2).
+# Sobe: LiveKit (áudio/vídeo), servidor de presença e Caddy (HTTPS automático).
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    network_mode: host # necessário para o tráfego UDP de mídia
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    restart: unless-stopped
+
+  office:
+    build: ../server
+    environment:
+      OFFICE_KEY: ${OFFICE_KEY}
+      LIVEKIT_URL: wss://${RTC_DOMAIN}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_ROOM: verkz-office
+      BIND: 0.0.0.0:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - office-data:/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    network_mode: host
+    environment:
+      OFFICE_DOMAIN: ${OFFICE_DOMAIN}
+      RTC_DOMAIN: ${RTC_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    restart: unless-stopped
+
+volumes:
+  office-data:
+  caddy-data:
