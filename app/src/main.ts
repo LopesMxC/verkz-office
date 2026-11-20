@@ -46,7 +46,7 @@ function loadPrefs(): Prefs {
   }
   return {
     name: p.name ?? "",
-    server: p.server ?? (import.meta.env.VITE_OFFICE_SERVER || "ws://localhost:8080/ws"),
+    server: p.server ?? (import.meta.env.VITE_OFFICE_SERVER || "wss://office.verkzsystem.tech/ws"),
     key: p.key ?? "",
     look: normalizeLook(p.look ?? randomLook()),
     shareMusic: p.shareMusic ?? true,

@@ -51,10 +51,9 @@ if exist "compilador.env" (
 
 if not defined VITE_OFFICE_SERVER (
   echo.
-  set /p "DOMINIO=Dominio do escritorio (ex.: office.verkzcompany.com.br): "
-  if "!DOMINIO!"=="" (
-    echo Sem dominio, o app vai abrir apontando para ws://localhost:8080/ws
-  ) else (
+  set /p "DOMINIO=Dominio do escritorio [Enter = office.verkzsystem.tech]: "
+  if "!DOMINIO!"=="" set "DOMINIO=office.verkzsystem.tech"
+  (
     set "VITE_OFFICE_SERVER=wss://!DOMINIO!/ws"
     >>"compilador.env" echo VITE_OFFICE_SERVER=wss://!DOMINIO!/ws
     echo [ok] Salvo em compilador.env para as proximas vezes.
@@ -183,18 +182,20 @@ exit /b 0
 
 rem ---------------------------------------------------------------
 rem Chave que assina as atualizacoes (gera na primeira vez; NUNCA apague nem envie para o GitHub)
+rem Caminhos absolutos: esta rotina e chamada de dentro da pasta app
 rem ---------------------------------------------------------------
 :chave_assinatura
-if not exist ".chaves\verkz-office.key" (
+set "CHAVE=%~dp0.chaves\verkz-office.key"
+if not exist "%CHAVE%" (
   echo [..] Gerando a chave de assinatura das atualizacoes ^(so na primeira vez^)...
-  if not exist ".chaves" mkdir ".chaves"
-  pushd app
-  call npx tauri signer generate --ci -w "..\.chaves\verkz-office.key" -p ""
+  if not exist "%~dp0.chaves" mkdir "%~dp0.chaves"
+  pushd "%~dp0app"
+  call npx tauri signer generate --ci -w "%CHAVE%" -p ""
   popd
-  echo [!] ATENCAO: a chave publica mudou. Copie o conteudo de .chaves\verkz-office.key.pub
+  echo [!] ATENCAO: chave nova gerada. Copie o conteudo de .chaves\verkz-office.key.pub
   echo     para "pubkey" em app\src-tauri\tauri.conf.json e compile de novo.
 )
-set "TAURI_SIGNING_PRIVATE_KEY=%CD%\.chaves\verkz-office.key"
+set "TAURI_SIGNING_PRIVATE_KEY=%CHAVE%"
 set "TAURI_SIGNING_PRIVATE_KEY_PASSWORD="
 exit /b 0
 
@@ -275,7 +276,7 @@ if defined VERKZ_GOOGLE_CLIENT_ID gh secret set VERKZ_GOOGLE_CLIENT_ID --body "%
 if defined VERKZ_GOOGLE_CLIENT_SECRET gh secret set VERKZ_GOOGLE_CLIENT_SECRET --body "%VERKZ_GOOGLE_CLIENT_SECRET%" >nul || exit /b 1
 if defined VERKZ_SPOTIFY_CLIENT_ID gh secret set VERKZ_SPOTIFY_CLIENT_ID --body "%VERKZ_SPOTIFY_CLIENT_ID%" >nul || exit /b 1
 call :chave_assinatura
-gh secret set TAURI_SIGNING_PRIVATE_KEY < ".chaves\verkz-office.key" >nul || exit /b 1
+gh secret set TAURI_SIGNING_PRIVATE_KEY < "%~dp0.chaves\verkz-office.key" >nul || exit /b 1
 
 rem Pede o build so do Mac (guarda o ultimo build antes, para achar o novo depois)
 set "ANTES="

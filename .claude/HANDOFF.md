@@ -121,5 +121,7 @@ Identity no LiveKit = id do peer no servidor.
 - Updater: tauri-plugin-updater, endpoint https://verkzsystem.tech/apps/verkz-office/latest.json,
   chave em .chaves/ (pubkey no tauri.conf.json), deploy/gerar-update.ps1 monta instaladores/update.
 - Regra de UI: todo painel/modal novo com padding interno de 20px+, blocos a 16px e campos a 12px.
-- Pendente produção: TURN (turn.verkzsystem.tech) no LiveKit + liberar 7881/tcp, 7882/udp, 3478/udp no
-  firewall da Hostinger; ADMIN_KEY no stack; rebuild da imagem do servidor.
+- Produção (20/11/2026): imagem verkz-office-server:0.3.0 (build via Portainer API, contexto tar.xz enviado pelo
+  navegador com POST /api/endpoints/1/docker/build + header X-CSRF-Token). LiveKit com TURN (turn.verkzsystem.tech,
+  TLS terminado no Traefik por router TCP HostSNI -> 5349, udp 3478 host). ADMIN_KEY no stack (inline, como as outras).
+  Dockerfile agora usa rust:1-slim-bookworm (o rust:1-slim novo gerava aviso de GLIBC_2.39 no runtime bookworm).
