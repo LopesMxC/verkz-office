@@ -65,6 +65,15 @@ function toToon(root: THREE.Object3D) {
       return toon(std.color ?? 0xffffff, { map });
     };
     mesh.material = Array.isArray(mesh.material) ? mesh.material.map(conv) : conv(mesh.material);
+    // alguns modelos (Kenney) guardam as cores por vértice
+    if (mesh.geometry.getAttribute("color")) {
+      const withVc = (m: THREE.Material) => {
+        const c = m.clone() as THREE.MeshToonMaterial;
+        c.vertexColors = true;
+        return c;
+      };
+      mesh.material = Array.isArray(mesh.material) ? mesh.material.map(withVc) : withVc(mesh.material);
+    }
     mesh.castShadow = true;
     mesh.receiveShadow = true;
   });
@@ -80,6 +89,19 @@ export function loadModels(base = "./models/"): Promise<void> {
         const gltf = await loader.loadAsync(base + file);
         const root = gltf.scene;
         toToon(root);
+        // puxa a vegetação da Kenney (verde-água) para um verde mais quente, como o resto do cenário
+        if (/^(tree|bush)/.test(key)) {
+          root.traverse((o) => {
+            const mesh = o as THREE.Mesh;
+            if (!mesh.isMesh) return;
+            const tint = (mm: THREE.Material) => {
+              const c = mm.clone() as THREE.MeshToonMaterial;
+              c.color.multiply(new THREE.Color(0.95, 1.0, 0.62));
+              return c;
+            };
+            mesh.material = Array.isArray(mesh.material) ? mesh.material.map(tint) : tint(mesh.material);
+          });
+        }
         cache.set(key, root);
       } catch (e) {
         console.warn("modelo não carregou:", file, e);

@@ -494,7 +494,7 @@ export const DEFS: Record<string, Def> = {
     d: 1.6,
     blocks: true,
     outdoor: true,
-    build: () => model(Math.random() > 0.5 ? "tree_oak" : "tree_fat", 2.2, 2.2, { fit: "width" }) ?? group(cyl(0.16, 0.22, 1.1, M.trunk, 0, 0, 0, 6), blob(0.85, M.leaf, 0, 1.55, 0)),
+    build: () => model(Math.random() > 0.5 ? "tree_oak" : "tree_fat", 1.8, 1.8, { fit: "width" }) ?? group(cyl(0.16, 0.22, 1.1, M.trunk, 0, 0, 0, 6), blob(0.85, M.leaf, 0, 1.55, 0)),
   },
   pine: {
     label: "Pinheiro",
@@ -502,7 +502,7 @@ export const DEFS: Record<string, Def> = {
     d: 1.2,
     blocks: true,
     outdoor: true,
-    build: () => model(Math.random() > 0.5 ? "tree_pine" : "tree_pine_tall", 1.8, 1.8, { fit: "width" }) ?? group(cyl(0.12, 0.16, 0.8, M.trunk), blob(0.7, M.leafDark, 0, 1.4, 0)),
+    build: () => model(Math.random() > 0.5 ? "tree_pine" : "tree_pine_tall", 1.5, 1.5, { fit: "width" }) ?? group(cyl(0.12, 0.16, 0.8, M.trunk), blob(0.7, M.leafDark, 0, 1.4, 0)),
   },
   bush: {
     label: "Arbusto",

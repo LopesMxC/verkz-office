@@ -49,11 +49,11 @@ export class CharacterPreview {
     this.renderer.setSize(w, h, false);
     this.composer.setPixelRatio(this.renderer.getPixelRatio());
     this.composer.setSize(w, h);
-    const half = 1.05;
+    const half = 1.0;
     const a = w / h;
     Object.assign(this.camera, { left: -half * a, right: half * a, top: half, bottom: -half });
     this.camera.position.set(0, 2.2, 6);
-    this.camera.lookAt(0, 0.78, 0);
+    this.camera.lookAt(0, 0.68, 0);
     this.camera.updateProjectionMatrix();
   }
 
