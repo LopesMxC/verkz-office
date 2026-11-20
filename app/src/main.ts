@@ -9,6 +9,10 @@ import { icon } from "./icons";
 import { logoEl } from "./logo";
 import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, NowPlaying, openTarget, Shortcut } from "./integrations";
 import type { Layout, Zone } from "./furniture";
+import { loadModels } from "./models";
+
+// começa a baixar os modelos 3D já na tela de entrada
+const modelsReady = loadModels();
 
 // ------------------------------------------------------------ preferências locais
 interface Prefs {
@@ -27,7 +31,7 @@ function loadPrefs(): Prefs {
   try {
     p = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
   } catch {
-    /* nada */
+    /* sem preferências salvas */
   }
   return {
     name: p.name ?? "",
@@ -45,16 +49,18 @@ const savePrefs = () => {
   try {
     localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
   } catch {
-    /* nada */
+    /* armazenamento indisponível */
   }
 };
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+const esc = (s: string) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const hud = $("#hud");
 const overlay = $("#overlay");
+const hm = (d: Date) => d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+const initials = (n: string) => n.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? "").join("");
 
-// ------------------------------------------------------------ som 8-bit
+// ------------------------------------------------------------ sons curtos
 let actx: AudioContext | null = null;
 function blip(kind: "msg" | "wave" | "join" = "msg") {
   try {
@@ -63,13 +69,15 @@ function blip(kind: "msg" | "wave" | "join" = "msg") {
     notes.forEach((f, i) => {
       const o = actx!.createOscillator();
       const g = actx!.createGain();
-      o.type = "square";
+      o.type = "sine";
       o.frequency.value = f;
-      g.gain.value = 0.035;
+      const t = actx!.currentTime + i * 0.08;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.06, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
       o.connect(g).connect(actx!.destination);
-      const t = actx!.currentTime + i * 0.07;
       o.start(t);
-      o.stop(t + 0.06);
+      o.stop(t + 0.13);
     });
   } catch {
     /* sem áudio */
@@ -82,7 +90,7 @@ toasts.className = "toasts";
 hud.appendChild(toasts);
 function toast(msg: string, err = false) {
   const t = document.createElement("div");
-  t.className = "px-box toast" + (err ? " err" : "");
+  t.className = "panel toast" + (err ? " err" : "");
   t.textContent = msg;
   toasts.appendChild(t);
   setTimeout(() => t.remove(), 4200);
@@ -90,25 +98,33 @@ function toast(msg: string, err = false) {
 
 // ------------------------------------------------------------ tela de entrada
 function showLogin(error = "") {
+  let serverOpen = prefs.server.includes("localhost") || !!error;
   overlay.innerHTML = `
-    <div class="screen-center">
-      <form class="px-box login">
-        <div class="head">${logoEl(40)}<h1>Office</h1></div>
-        <div class="preview-row">
-          <canvas class="mini"></canvas>
-          <button type="button" class="px-btn" data-edit>${icon("user", 18)} Personagem</button>
+    <div class="login-bg"></div>
+    <div class="login-wrap">
+      <form class="panel login">
+        <div class="brand">${logoEl(40)}<div><div class="t-l">Office</div><div class="t-s c2">Escritório virtual da VERKZ</div></div></div>
+        <div class="char-row">
+          <canvas></canvas>
+          <div class="grow"><div class="t-m">Seu personagem</div><div class="t-s c2">Roupa, cabelo e acessórios</div></div>
+          <button type="button" class="btn secondary" data-edit>Editar</button>
         </div>
-        <label class="field"><span>Seu nome</span><input class="px-input" name="name" maxlength="32" required value="${esc(prefs.name)}"></label>
-        <label class="field"><span>Chave do escritório</span><input class="px-input" name="key" type="password" required value="${esc(prefs.key)}"></label>
-        <details ${prefs.server.includes("localhost") ? "open" : ""}><summary>Servidor</summary>
-          <label class="field" style="margin-top:8px"><span>Endereço</span><input class="px-input" name="server" value="${esc(prefs.server)}"></label>
-        </details>
+        <label class="field"><span class="label">Seu nome</span><input class="input" name="name" maxlength="32" required value="${esc(prefs.name)}" autocomplete="name"></label>
+        <label class="field"><span class="label">Chave do escritório</span><input class="input" name="key" type="password" required value="${esc(prefs.key)}"></label>
+        <div>
+          <button type="button" class="server-toggle ${serverOpen ? "open" : ""}" data-server>${icon("chevron-right", 14)} Servidor: ${esc(prefs.server.replace(/^wss?:\/\//, "").replace(/\/ws$/, ""))}</button>
+          <label class="field ${serverOpen ? "" : "hidden"}" style="margin-top:10px" data-server-field><input class="input" name="server" value="${esc(prefs.server)}"></label>
+        </div>
         <div class="err">${esc(error)}</div>
-        <button class="px-btn primary" style="width:100%;justify-content:center;margin-top:6px">Entrar</button>
+        <button class="btn primary block">Entrar no escritório</button>
       </form>
     </div>`;
-  const mini = $<HTMLCanvasElement>("canvas.mini", overlay);
-  let pv = new CharacterPreview(mini, prefs.look, 3);
+  const pv = new CharacterPreview($<HTMLCanvasElement>(".char-row canvas", overlay), prefs.look, 2);
+  $("[data-server]", overlay).addEventListener("click", (e) => {
+    serverOpen = !serverOpen;
+    (e.currentTarget as HTMLElement).classList.toggle("open", serverOpen);
+    $("[data-server-field]", overlay).classList.toggle("hidden", !serverOpen);
+  });
   $("[data-edit]", overlay).addEventListener("click", async () => {
     const l = await openCreator(document.body, prefs.look);
     if (l) {
@@ -128,15 +144,15 @@ function showLogin(error = "") {
     overlay.innerHTML = "";
     start();
   });
-  void pv;
 }
 
-// ------------------------------------------------------------ app
+// ------------------------------------------------------------ estado do app
 let world: World;
 let net: Net;
 let media: Media;
 let editor: Editor;
 let myId = "";
+let connected = false;
 let chatTab: "geral" | "sala" = "geral";
 let unread = 0;
 const chatLog: any[] = [];
@@ -146,6 +162,7 @@ let agenda: AgendaItem[] = [];
 let mailUnread: number | null = null;
 let nowPlaying: NowPlaying | null = null;
 let integ = { google: false, spotify: false, google_configured: false, spotify_configured: false };
+let addingShortcut = false;
 let started = false;
 
 function start() {
@@ -157,6 +174,10 @@ function start() {
     media.onStateChanged = renderDock;
     media.onScreensChanged = renderScreens;
     editor = new Editor(world, hud, (layout) => net.send({ t: "layout_save", layout }), toast);
+    editor.onClose = () => {
+      renderLeft();
+      renderDock();
+    };
     buildHud();
     world.onMove = (x, z, dir, moving, zone) => net.send({ t: "move", x, z, dir, moving, zone: zone?.id ?? null });
     world.onZoneChange = onZoneChange;
@@ -172,16 +193,19 @@ function start() {
     net.close();
     showLogin(m.msg);
   });
-  net.on("welcome", (m) => {
+  net.on("welcome", async (m) => {
+    await modelsReady;
     myId = m.id;
     for (const id of [...world.others.keys()]) world.removePeer(id);
     world.setLayout(m.layout as Layout);
     // nasce perto da entrada, com um pequeno desvio para não ficar em cima de ninguém
-    const me: PeerInfo = { ...m.me, x: (m.layout.spawn?.x ?? 0) + (Math.random() * 4 - 2), z: (m.layout.spawn?.z ?? 8) + (Math.random() * 2 - 1), look: prefs.look };
+    const sp = m.layout.spawn ?? { x: 0, z: 8 };
+    const me: PeerInfo = { ...m.me, x: sp.x + (Math.random() * 4 - 2), z: sp.z + (Math.random() * 2 - 1), look: prefs.look };
     world.spawnMe(me);
     for (const p of m.peers) world.addPeer(p);
     chatLog.length = 0;
     chatLog.push(...m.history);
+    lastStatus = null;
     renderChat();
     renderPeople();
     pushStatus();
@@ -231,72 +255,97 @@ function start() {
 }
 
 function setConn(ok: boolean) {
-  const d = $(".topbar .dot");
-  if (d) d.className = "dot" + (ok ? " ok" : "");
+  connected = ok;
+  renderTop();
 }
 
-function onZoneChange(z: Zone | null) {
-  const pill = $(".topbar .zone-pill");
-  pill.className = "pill zone-pill" + (z ? " zone" : "") + (z?.private ? " private" : "");
-  pill.textContent = z ? z.name : "Área aberta";
-  if (!z && chatTab === "sala") chatTab = "geral";
+function onZoneChange(_z: Zone | null) {
+  if (!world.currentZone && chatTab === "sala") chatTab = "geral";
+  renderTop();
   renderChat();
 }
 
 // ------------------------------------------------------------ HUD
 function buildHud() {
-  const top = document.createElement("div");
-  top.className = "px-box topbar";
-  top.innerHTML = `${logoEl(22)}<span class="t">Office</span><span class="dot"></span><span class="pill zone-pill">Área aberta</span><span class="pill online">0 online</span>`;
-  hud.appendChild(top);
+  for (const [cls, id] of [
+    ["panel topbar", "top"],
+    ["panel side left", "left"],
+    ["panel side right hidden", "right"],
+    ["screens", "screens"],
+    ["panel dock", "dock"],
+  ]) {
+    const el = document.createElement("div");
+    el.className = cls;
+    el.id = id;
+    hud.appendChild(el);
+  }
+  renderTop();
+  renderLeft();
+  renderDock();
+}
 
-  const left = document.createElement("div");
-  left.className = "px-box side left";
-  left.innerHTML = `
-    <div class="hd"><h3>Pessoas</h3></div>
-    <div style="padding:10px 12px 0"><input class="px-input" id="my-status" placeholder="Seu status (ex.: focado)" maxlength="60" value="${esc(prefs.manualStatus)}"></div>
-    <div class="bd" id="people"></div>`;
-  hud.appendChild(left);
+function renderTop() {
+  const el = $("#top");
+  if (!el) return;
+  const z = world?.currentZone;
+  const online = (world?.others.size ?? 0) + 1;
+  el.innerHTML = `${logoEl(26)}<span class="t-m">Office</span><span class="divider"></span>
+    <span class="chip accent">${z?.private ? icon("lock", 13) : '<span class="dot"></span>'}${esc(z ? z.name : "Área aberta")}</span>
+    <span class="chip" title="${connected ? "Conectado" : "Reconectando..."}"><span class="dot ${connected ? "ok" : "bad"}"></span>${online} online</span>`;
+}
+
+function renderLeft() {
+  const el = $("#left");
+  if (!el) return;
+  el.classList.toggle("hidden", !leftOpen || editor?.active);
+  if (el.dataset.built) return;
+  el.dataset.built = "1";
+  el.innerHTML = `
+    <div class="panel-head"><div class="t-m">Pessoas</div><button class="x-btn" data-close>${icon("x", 18)}</button></div>
+    <label class="status-input"><span class="dot"></span><input id="my-status" placeholder="Seu status (ex.: focado)" maxlength="60" value="${esc(prefs.manualStatus)}"></label>
+    <div class="scroll"><div class="people-list" id="people"></div></div>`;
+  $("[data-close]", el).addEventListener("click", () => {
+    leftOpen = false;
+    renderLeft();
+    renderDock();
+  });
   $<HTMLInputElement>("#my-status").addEventListener("change", (e) => {
     prefs.manualStatus = (e.target as HTMLInputElement).value.trim();
     savePrefs();
     pushStatus();
   });
-
-  const right = document.createElement("div");
-  right.className = "px-box side right hidden";
-  right.id = "right";
-  hud.appendChild(right);
-
-  const screens = document.createElement("div");
-  screens.className = "screens";
-  screens.id = "screens";
-  hud.appendChild(screens);
-
-  const dock = document.createElement("div");
-  dock.className = "px-box dock";
-  dock.id = "dock";
-  hud.appendChild(dock);
-  renderDock();
+  $("#people").addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    const w = t.closest("[data-wave]") as HTMLElement | null;
+    if (w) {
+      net.send({ t: "wave", to: w.dataset.wave });
+      toast("Aceno enviado");
+      return;
+    }
+    const row = t.closest(".person[data-id]") as HTMLElement | null;
+    const a = row && world.others.get(row.dataset.id!);
+    if (a) world.walkTo(a.root.position.x + 0.8, a.root.position.z + 0.8);
+  });
 }
 
 function renderDock() {
   const dock = $("#dock");
   if (!dock) return;
   const b = (id: string, ic: string, tip: string, cls = "", extra = "") =>
-    `<button class="px-btn tip ${cls}" data-id="${id}" data-tip="${tip}">${ic}${extra}</button>`;
+    `<button class="icon-btn ${cls}" data-id="${id}" data-tip="${tip}" aria-label="${tip}">${icon(ic, 20)}${extra}</button>`;
   dock.innerHTML = [
-    b("mic", icon(media.micOn ? "mic" : "mic-off", 20), media.micOn ? "Desligar microfone (M)" : "Ligar microfone (M)", media.micOn ? "on" : "off"),
-    b("cam", icon(media.camOn ? "video" : "video-off", 20), media.camOn ? "Desligar câmera" : "Ligar câmera", media.camOn ? "on" : ""),
-    b("screen", icon("screen", 22), media.screenOn ? "Parar de compartilhar" : "Compartilhar tela", media.screenOn ? "on" : ""),
-    `<span class="sep"></span>`,
-    b("people", icon("people", 22), "Pessoas", leftOpen ? "on" : ""),
-    b("chat", icon("chat", 22), "Chat (Enter)", rightPanel === "chat" ? "on" : "", unread ? `<span class="badge">${unread > 9 ? "9+" : unread}</span>` : ""),
-    b("apps", icon("calendar", 22), "Agenda, música e atalhos", rightPanel === "apps" ? "on" : "", mailUnread ? `<span class="badge">${mailUnread > 99 ? "99+" : mailUnread}</span>` : ""),
-    `<span class="sep"></span>`,
-    b("char", icon("user", 22), "Personagem"),
-    b("edit", icon("edit", 22), "Editar escritório", editor?.active ? "on" : ""),
-    b("exit", icon("exit", 22), "Sair"),
+    b("mic", media?.micOn ? "mic" : "mic-off", media?.micOn ? "Desligar microfone (M)" : "Ligar microfone (M)", media?.micOn ? "" : "off"),
+    b("cam", media?.camOn ? "video" : "video-off", media?.camOn ? "Desligar câmera" : "Ligar câmera", media?.camOn ? "active" : "off"),
+    b("screen", "screen", media?.screenOn ? "Parar de compartilhar" : "Compartilhar tela", media?.screenOn ? "active" : ""),
+    `<span class="divider"></span>`,
+    b("people", "users", "Pessoas", leftOpen && !editor?.active ? "active" : ""),
+    b("chat", "chat", "Chat (Enter)", rightPanel === "chat" ? "active" : "", unread ? `<span class="badge">${unread > 9 ? "9+" : unread}</span>` : ""),
+    b("apps", "calendar", "Agenda e apps", rightPanel === "apps" ? "active" : "", mailUnread ? `<span class="badge">${mailUnread > 99 ? "99+" : mailUnread}</span>` : ""),
+    `<span class="divider"></span>`,
+    b("char", "shirt", "Personagem"),
+    b("edit", "pencil", "Editar escritório", editor?.active ? "active" : ""),
+    `<span class="divider"></span>`,
+    b("exit", "log-out", "Sair"),
   ].join("");
   dock.querySelectorAll<HTMLElement>("[data-id]").forEach((el) => el.addEventListener("click", () => dockAction(el.dataset.id!)));
 }
@@ -313,8 +362,9 @@ async function dockAction(id: string) {
       await media.setScreen(!media.screenOn);
       break;
     case "people":
+      if (editor.active) editor.cancel();
       leftOpen = !leftOpen;
-      $(".side.left").classList.toggle("hidden", !leftOpen || editor.active);
+      renderLeft();
       break;
     case "chat":
       openRight(rightPanel === "chat" ? null : "chat");
@@ -334,7 +384,7 @@ async function dockAction(id: string) {
     }
     case "edit":
       editor.toggle();
-      $(".side.left").classList.toggle("hidden", !leftOpen || editor.active);
+      renderLeft();
       break;
     case "exit":
       net.close();
@@ -347,8 +397,9 @@ async function dockAction(id: string) {
 }
 
 window.addEventListener("keydown", (e) => {
-  const typing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
-  if (typing || !started || overlay.innerHTML) return;
+  const a = document.activeElement;
+  const typing = a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement;
+  if (typing || !started || overlay.innerHTML || document.querySelector(".modal-bg")) return;
   if (e.key === "m" || e.key === "M") dockAction("mic");
   if (e.key === "Enter") {
     openRight("chat");
@@ -362,6 +413,7 @@ function openRight(p: typeof rightPanel) {
   rightPanel = p;
   const el = $("#right");
   el.classList.toggle("hidden", !p);
+  el.classList.toggle("wide", p === "apps");
   if (p === "chat") {
     unread = 0;
     renderChat();
@@ -372,41 +424,39 @@ function openRight(p: typeof rightPanel) {
   }
 }
 
+const closeRight = () => {
+  openRight(null);
+  renderDock();
+};
+
 // ------------------------------------------------------------ pessoas
 function renderPeople() {
   const list = $("#people");
   if (!list || !world?.me) return;
-  $(".topbar .online").textContent = `${world.others.size + 1} online`;
+  renderTop();
   const zones = world.layout?.zones ?? [];
   const zname = (id: string | null) => zones.find((z) => z.id === id)?.name ?? "Área aberta";
-  const rows = [...world.others.values()]
-    .sort((a, b) => (media.levels.get(b.info.id) ?? 0) - (media.levels.get(a.info.id) ?? 0) || a.info.name.localeCompare(b.info.name))
-    .map((a) => {
-      const lvl = media.levels.get(a.info.id) ?? 0;
-      return `<div class="person" data-id="${a.info.id}">
-        <span class="sq" style="background:${lookColor(a.look)}"></span>
-        <div class="meta"><div class="nm">${esc(a.info.name)}</div><div class="st">${esc(a.info.status || zname(a.info.zone))}</div></div>
-        <span class="lvl" title="Volume"><i style="height:${Math.round(lvl * 100)}%"></i></span>
-        <button class="px-btn wave" data-wave="${a.info.id}" title="Acenar">${icon("wave", 14)}</button>
-      </div>`;
-    });
-  list.innerHTML =
-    `<div class="person" style="cursor:default"><span class="sq" style="background:${lookColor(prefs.look)}"></span><div class="meta"><div class="nm" style="color:var(--neon)">${esc(prefs.name)} (você)</div><div class="st">${esc(world.me.info.status || zname(world.currentZone?.id ?? null))}</div></div></div>` +
-    (rows.length ? `<div class="section-t">No escritório</div>` + rows.join("") : `<p class="note">Ninguém mais por aqui agora.</p>`) +
-    `<p class="note" style="margin-top:14px">Clique em alguém para ir até a pessoa.</p>`;
-  list.querySelectorAll<HTMLElement>(".person[data-id]").forEach((el) =>
-    el.addEventListener("click", (e) => {
-      const w = (e.target as HTMLElement).closest("[data-wave]") as HTMLElement | null;
-      if (w) {
-        net.send({ t: "wave", to: w.dataset.wave });
-        toast("Aceno enviado");
-        e.stopPropagation();
-        return;
-      }
-      const a = world.others.get(el.dataset.id!);
-      if (a) world.walkTo(a.root.position.x + 1, a.root.position.z + 1);
-    }),
-  );
+  const level = (id: string) => {
+    const g = media.levels.get(id) ?? 0;
+    return g > 0.66 ? 3 : g > 0.33 ? 2 : g > 0 ? 1 : 0;
+  };
+  const row = (a: (typeof world.others extends Map<string, infer V> ? V : never)) => {
+    const l = level(a.info.id);
+    const col = lookColor(a.look);
+    return `<div class="person ${a.speaking && l ? "talking" : ""}" data-id="${a.info.id}">
+      <span class="avatar" style="background:${col}">${esc(initials(a.info.name))}</span>
+      <div class="meta"><div class="nm">${esc(a.info.name)}</div><div class="st">${esc(a.speaking && l ? "Falando" : a.info.status || zname(a.info.zone))}</div></div>
+      ${l ? `<span class="bars" data-l="${l}" title="Você ouve esta pessoa"><i></i><i></i><i></i></span>` : ""}
+      <button class="wave" data-wave="${a.info.id}" title="Acenar">${icon("hand", 18)}</button>
+    </div>`;
+  };
+  const all = [...world.others.values()].sort((a, b) => a.info.name.localeCompare(b.info.name));
+  const near = all.filter((a) => level(a.info.id) > 0);
+  const rest = all.filter((a) => level(a.info.id) === 0);
+  list.innerHTML = !all.length
+    ? `<div class="empty">Ninguém mais por aqui agora.</div>`
+    : (near.length ? `<div class="label">Perto de você</div>${near.map(row).join("")}` : "") +
+      (rest.length ? `<div class="label">No escritório</div>${rest.map(row).join("")}` : "");
 }
 
 // ------------------------------------------------------------ chat
@@ -415,19 +465,22 @@ function renderChat() {
   const el = $("#right");
   const zone = world.currentZone;
   const msgs = chatLog.filter((m) => (chatTab === "geral" ? !m.zone : m.zone === zone?.id));
-  const hm = (ts: number) => new Date(ts * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
   const keep = $<HTMLInputElement>("#chat-text")?.value ?? "";
   const hadFocus = document.activeElement?.id === "chat-text";
   el.innerHTML = `
-    <div class="hd"><h3>Chat</h3><button class="px-btn ghost" data-close>${icon("close", 14)}</button></div>
-    <div class="tabs">
-      <button class="px-btn ${chatTab === "geral" ? "sel" : ""}" data-tab="geral">Geral</button>
-      <button class="px-btn ${chatTab === "sala" ? "sel" : ""}" data-tab="sala" ${zone ? "" : "disabled"}>${zone ? esc(zone.name) : "Sala"}</button>
+    <div class="panel-head"><div class="t-m">Chat</div><button class="x-btn" data-close>${icon("x", 18)}</button></div>
+    <div class="seg">
+      <button class="${chatTab === "geral" ? "sel" : ""}" data-tab="geral">Geral</button>
+      <button class="${chatTab === "sala" ? "sel" : ""}" data-tab="sala" ${zone ? "" : "disabled"}>${zone ? esc(zone.name) : "Sala"}</button>
     </div>
-    <div class="chat-list">${msgs.length ? msgs.map((m) => `<div class="msg"><span class="who">${esc(m.name)}</span><span class="when">${hm(m.ts)}</span><div class="tx">${esc(m.text)}</div></div>`).join("") : `<div class="chat-empty">${chatTab === "geral" ? "Nenhuma mensagem ainda." : "Mensagens daqui só aparecem para quem está nesta sala."}</div>`}</div>
-    <form class="chat-in"><input id="chat-text" class="px-input" placeholder="Mensagem" autocomplete="off" maxlength="2000"><button class="px-btn primary">Enviar</button></form>`;
-  const list = $(".chat-list", el);
-  list.scrollTop = list.scrollHeight;
+    <div class="scroll"><div class="messages">${
+      msgs.length
+        ? msgs.map((m) => `<div class="msg"><span class="who">${esc(m.name)}</span><span class="when">${hm(new Date(m.ts * 1000))}</span><div class="tx">${esc(m.text)}</div></div>`).join("")
+        : `<div class="empty">${chatTab === "geral" ? "Nenhuma mensagem ainda." : "Mensagens daqui só aparecem para quem está nesta sala."}</div>`
+    }</div></div>
+    <form class="composer"><input id="chat-text" placeholder="${chatTab === "geral" ? "Mensagem para todos" : "Mensagem para a sala"}" autocomplete="off" maxlength="2000"><button class="send" aria-label="Enviar">${icon("send", 16)}</button></form>`;
+  const sc = $(".scroll", el);
+  sc.scrollTop = sc.scrollHeight;
   const input = $<HTMLInputElement>("#chat-text");
   input.value = keep;
   if (hadFocus) input.focus();
@@ -435,13 +488,10 @@ function renderChat() {
     if (e.key === "Escape") input.blur();
     e.stopPropagation();
   });
-  $("[data-close]", el).addEventListener("click", () => {
-    openRight(null);
-    renderDock();
-  });
+  $("[data-close]", el).addEventListener("click", closeRight);
   el.querySelectorAll<HTMLElement>("[data-tab]").forEach((b) =>
     b.addEventListener("click", () => {
-      chatTab = b.dataset.tab as any;
+      chatTab = b.dataset.tab as "geral" | "sala";
       renderChat();
     }),
   );
@@ -462,12 +512,13 @@ function renderScreens() {
   el.innerHTML = "";
   for (const s of media.screens.values()) {
     const b = document.createElement("button");
-    b.className = "px-box screen-thumb";
+    b.className = "panel screen-card";
     b.appendChild(s.el);
     s.el.play().catch(() => {});
-    const cap = document.createElement("span");
+    const cap = document.createElement("div");
     cap.className = "cap";
-    cap.textContent = s.name;
+    cap.innerHTML = `<span></span>${icon("maximize", 15)}`;
+    cap.querySelector("span")!.textContent = s.local ? "Sua tela" : `Tela de ${s.name}`;
     b.appendChild(cap);
     b.addEventListener("click", () => openScreen(s.key));
     el.appendChild(b);
@@ -479,19 +530,18 @@ function openScreen(key: string) {
   if (!s) return;
   const full = document.createElement("div");
   full.className = "screen-full";
-  full.innerHTML = `<div class="bar"><span>${esc(s.name)}</span><button class="px-btn">${icon("close", 14)} Fechar</button></div>`;
+  full.innerHTML = `<div class="bar"><span class="t-m"></span><button class="btn secondary sm">${icon("x", 15)} Fechar</button></div>`;
+  $(".t-m", full).textContent = s.local ? "Sua tela" : `Tela de ${s.name}`;
   full.appendChild(s.el);
   document.body.appendChild(full);
   const close = () => {
+    clearInterval(watch);
     full.remove();
     renderScreens();
   };
   $("button", full).addEventListener("click", close);
-  const stop = setInterval(() => {
-    if (!media.screens.has(key)) {
-      clearInterval(stop);
-      close();
-    }
+  const watch = setInterval(() => {
+    if (!media.screens.has(key)) close();
   }, 500);
 }
 
@@ -507,14 +557,14 @@ async function refreshIntegrations() {
     try {
       agenda = await integrations.agenda();
       mailUnread = await integrations.gmailUnread();
-    } catch (e: any) {
+    } catch (e) {
       console.warn(e);
     }
   }
   if (integ.spotify) {
     try {
       nowPlaying = await integrations.spotifyNow();
-    } catch (e: any) {
+    } catch (e) {
       console.warn(e);
     }
   }
@@ -533,7 +583,7 @@ function startIntegrations() {
         pushStatus();
         if (rightPanel === "apps") renderApps();
       } catch {
-        /* nada */
+        /* tenta de novo no próximo ciclo */
       }
     }
   }, 15_000);
@@ -544,11 +594,11 @@ function ongoingMeeting(): AgendaItem | undefined {
   return agenda.find((e) => !e.allDay && new Date(e.start).getTime() <= now && new Date(e.end).getTime() > now);
 }
 
-let lastStatus = "";
+let lastStatus: string | null = null;
 function pushStatus() {
   let s = prefs.manualStatus;
   const meet = ongoingMeeting();
-  if (prefs.shareMeeting && meet) s = `Em reunião até ${new Date(meet.end).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+  if (prefs.shareMeeting && meet) s = `Em reunião até ${hm(new Date(meet.end))}`;
   else if (prefs.shareMusic && nowPlaying?.playing && !s) s = `Ouvindo: ${nowPlaying.title} - ${nowPlaying.artist}`;
   if (s === lastStatus || !net) return;
   lastStatus = s;
@@ -556,86 +606,107 @@ function pushStatus() {
   world.me?.setStatus(s);
 }
 
+const SHORTCUT_ICON: Record<string, string> = { gmail: "mail", agenda: "calendar", meet: "video", drive: "apps", spotify: "music", "youtube music": "music" };
+const shortcutIcon = (n: string) => {
+  const k = n.toLowerCase();
+  for (const [key, ic] of Object.entries(SHORTCUT_ICON)) if (k.includes(key)) return ic;
+  return "external";
+};
+
 function renderApps() {
   const el = $("#right");
-  const fmt = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
   const now = Date.now();
   const native = isNative;
-  const googleBlock = !native
-    ? `<p class="note">Agenda, Gmail e Spotify funcionam no app instalado.</p>`
-    : !integ.google
-      ? `<button class="px-btn" data-g="connect">${icon("calendar", 16)} Conectar Google</button><p class="note">Mostra a agenda do dia, entra no Meet com um clique e conta os e-mails não lidos.</p>`
-      : `<div class="row" style="justify-content:space-between;margin-bottom:8px">
-           <button class="px-btn" data-open="https://mail.google.com">Gmail${mailUnread != null ? ` · ${mailUnread} não lidos` : ""}</button>
-           <button class="px-btn ghost" data-g="disconnect" style="font-size:12px">Desconectar</button>
-         </div>
-         ${agenda.length ? agenda
-           .map((e) => {
-             const on = !e.allDay && new Date(e.start).getTime() <= now && new Date(e.end).getTime() > now;
-             return `<div class="event ${on ? "now" : ""}">
-               <div class="tm">${e.allDay ? "Dia todo" : `${fmt(e.start)} - ${fmt(e.end)}`}${on ? " · agora" : ""}</div>
-               <div class="ti">${esc(e.title)}</div>
-               <div class="row">${e.meet ? `<button class="px-btn primary" data-open="${esc(e.meet)}" style="padding:6px 9px">Entrar no Meet</button>` : ""}
-               <button class="px-btn ghost" data-open="${esc(e.link)}" style="padding:6px 9px">Abrir</button></div>
-             </div>`;
-           })
-           .join("") : `<p class="note">Nada na agenda nas próximas 24 h.</p>`}`;
 
-  const spotifyBlock = !native
+  const agendaHtml = !native
+    ? `<div class="note">Agenda, Gmail e Spotify funcionam no app instalado.</div>`
+    : !integ.google
+      ? `<div class="connect">${icon("calendar", 20)}<div class="meta"><div class="t-m">Google Agenda</div><div class="note">Reuniões do dia, Meet com um clique e e-mails não lidos.</div></div><button class="btn primary sm" data-g="connect">Conectar</button></div>`
+      : (agenda.length
+          ? agenda
+              .slice(0, 4)
+              .map((e) => {
+                const on = !e.allDay && new Date(e.start).getTime() <= now && new Date(e.end).getTime() > now;
+                return `<div class="event ${on ? "now" : ""}">
+                  <div class="tm">${e.allDay ? "Dia todo" : `${hm(new Date(e.start))} – ${hm(new Date(e.end))}`}${on ? '<span class="chip accent"><span class="dot"></span>Agora</span>' : ""}</div>
+                  <div class="t-m">${esc(e.title)}</div>
+                  <div class="row">${e.meet ? `<button class="btn ${on ? "primary" : "secondary"} sm" data-open="${esc(e.meet)}">Entrar no Meet</button>` : ""}<button class="btn ghost sm" data-open="${esc(e.link)}">Abrir</button></div>
+                </div>`;
+              })
+              .join("")
+          : `<div class="note">Nada na agenda nas próximas 24 h.</div>`) +
+        `<button class="btn ghost sm" data-g="disconnect" style="align-self:flex-start">Desconectar Google</button>`;
+
+  const musicHtml = !native
     ? ""
     : !integ.spotify
-      ? `<button class="px-btn" data-s="connect">${icon("music", 16)} Conectar Spotify</button>`
-      : `${nowPlaying
-          ? `<div class="np">${nowPlaying.cover ? `<img src="${esc(nowPlaying.cover)}">` : ""}<div><div class="ti">${esc(nowPlaying.title)}</div><div class="ar">${esc(nowPlaying.artist)}</div></div></div>`
-          : `<p class="note">Nada tocando agora.</p>`}
-         <div class="row" style="margin-top:8px">
-           <button class="px-btn" data-sc="previous">${icon("left", 14)}</button>
-           <button class="px-btn" data-sc="${nowPlaying?.playing ? "pause" : "play"}">${icon(nowPlaying?.playing ? "pause" : "play", 14)}</button>
-           <button class="px-btn" data-sc="next">${icon("right", 14)}</button>
-           <span style="flex:1"></span>
-           <button class="px-btn ghost" data-s="disconnect" style="font-size:12px">Desconectar</button>
+      ? `<div class="connect">${icon("music", 20)}<div class="meta"><div class="t-m">Spotify</div><div class="note">Mostra o que está tocando e controla o player.</div></div><button class="btn secondary sm" data-s="connect">Conectar</button></div>`
+      : `<div class="np">${nowPlaying?.cover ? `<img src="${esc(nowPlaying.cover)}" alt="">` : '<span class="cover"></span>'}
+           <div class="meta"><div class="t-m">${esc(nowPlaying?.title ?? "Nada tocando")}</div><div class="t-s c2">${esc(nowPlaying?.artist ?? "Abra o Spotify em algum aparelho")}</div></div>
+           <button class="round" data-sc="previous" aria-label="Anterior">${icon("prev", 15)}</button>
+           <button class="round primary" data-sc="${nowPlaying?.playing ? "pause" : "play"}" aria-label="Tocar ou pausar">${icon(nowPlaying?.playing ? "pause" : "play", 15)}</button>
+           <button class="round" data-sc="next" aria-label="Próxima">${icon("next", 15)}</button>
          </div>`;
 
   el.innerHTML = `
-    <div class="hd"><h3>Agenda e apps</h3><button class="px-btn ghost" data-close>${icon("close", 14)}</button></div>
-    <div class="bd">
-      <div class="section-t">Google Agenda</div>${googleBlock}
-      ${native ? `<div class="section-t">Música</div>${spotifyBlock}` : ""}
-      ${native ? `
-      <label class="check"><input type="checkbox" data-pref="shareMeeting" ${prefs.shareMeeting ? "checked" : ""}> Mostrar "Em reunião" quando houver evento</label>
-      <label class="check"><input type="checkbox" data-pref="shareMusic" ${prefs.shareMusic ? "checked" : ""}> Mostrar a música que estou ouvindo</label>` : ""}
-      <div class="section-t">Atalhos</div>
-      ${prefs.shortcuts
-        .map((s, i) => `<div class="shortcut"><button class="px-btn" data-open="${esc(s.target)}">${icon("apps", 14)} ${esc(s.name)}</button><button class="px-btn ghost" data-rm="${i}">${icon("close", 12)}</button></div>`)
-        .join("")}
-      <form class="row" id="add-sc" style="margin-top:6px">
-        <input class="px-input" name="n" placeholder="Nome" style="flex:1;min-width:80px">
-        <input class="px-input" name="t" placeholder="Link ou caminho do programa" style="flex:2;min-width:120px">
-        <button class="px-btn">Adicionar</button>
-      </form>
-      ${native ? `<details style="margin-top:16px"><summary class="note">Chaves das integrações</summary>
-        <p class="note">Só precisa preencher se o app não veio com elas. Redirect: http://127.0.0.1:43821/callback</p>
-        <form id="creds">
-          <label class="field"><span>Google Client ID</span><input class="px-input" name="gid"></label>
-          <label class="field"><span>Google Client Secret</span><input class="px-input" name="gsec" type="password"></label>
-          <label class="field"><span>Spotify Client ID</span><input class="px-input" name="sid"></label>
-          <button class="px-btn">Salvar chaves</button>
+    <div class="panel-head"><div class="t-m">Agenda e apps</div><button class="x-btn" data-close>${icon("x", 18)}</button></div>
+    <div class="scroll" style="display:flex;flex-direction:column;gap:16px">
+      <div class="section">
+        <div class="section-head"><span class="label">Hoje</span>${integ.google && mailUnread != null ? `<button class="mail-link" data-open="https://mail.google.com">${icon("mail", 14)} ${mailUnread} não lidos</button>` : ""}</div>
+        ${agendaHtml}
+      </div>
+      ${native ? `<div class="section"><span class="label">Música</span>${musicHtml}</div>` : ""}
+      ${native ? `<div class="section">
+        <label class="toggle-row"><span>Mostrar “Em reunião” no meu status</span><span class="switch"><input type="checkbox" data-pref="shareMeeting" ${prefs.shareMeeting ? "checked" : ""}><span></span></span></label>
+        <label class="toggle-row"><span>Mostrar a música que estou ouvindo</span><span class="switch"><input type="checkbox" data-pref="shareMusic" ${prefs.shareMusic ? "checked" : ""}><span></span></span></label>
+      </div>` : ""}
+      <div class="section">
+        <span class="label">Atalhos</span>
+        <div class="shortcuts">
+          ${prefs.shortcuts.map((s, i) => `<button class="shortcut" data-open="${esc(s.target)}" title="${esc(s.target)}">${icon(shortcutIcon(s.name), 16)}<span>${esc(s.name)}</span><span class="rm" data-rm="${i}" title="Remover">${icon("x", 12)}</span></button>`).join("")}
+          <button class="shortcut add" data-add>${icon("plus", 16)}<span>Adicionar</span></button>
+        </div>
+        ${addingShortcut ? `<form class="inline-form" id="add-sc">
+          <input class="input" name="n" placeholder="Nome (ex.: Canva)" required>
+          <input class="input" name="t" placeholder="Link ou caminho do programa" required>
+          <div class="row" style="display:flex;gap:8px"><button type="button" class="btn ghost sm" data-cancel-add>Cancelar</button><button class="btn primary sm">Adicionar atalho</button></div>
+        </form>` : ""}
+      </div>
+      ${native ? `<details class="keys"><summary>Chaves das integrações</summary>
+        <form id="creds" class="inline-form" style="margin-top:10px">
+          <div class="note">Só precisa preencher se o app não veio com elas. Redirect: http://127.0.0.1:43821/callback</div>
+          <input class="input" name="gid" placeholder="Google Client ID">
+          <input class="input" name="gsec" type="password" placeholder="Google Client Secret">
+          <input class="input" name="sid" placeholder="Spotify Client ID">
+          <button class="btn secondary sm">Salvar chaves</button>
         </form></details>` : ""}
     </div>`;
 
-  $("[data-close]", el).addEventListener("click", () => {
-    openRight(null);
-    renderDock();
-  });
-  el.querySelectorAll<HTMLElement>("[data-open]").forEach((b) => b.addEventListener("click", () => openTarget(b.dataset.open!).catch((e) => toast(String(e), true))));
+  $("[data-close]", el).addEventListener("click", closeRight);
+  el.querySelectorAll<HTMLElement>("[data-open]").forEach((b) =>
+    b.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("[data-rm]")) return;
+      openTarget(b.dataset.open!).catch((err) => toast(String(err), true));
+    }),
+  );
   el.querySelectorAll<HTMLElement>("[data-rm]").forEach((b) =>
-    b.addEventListener("click", () => {
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
       prefs.shortcuts.splice(Number(b.dataset.rm), 1);
       savePrefs();
       renderApps();
     }),
   );
-  $("#add-sc", el).addEventListener("submit", (e) => {
+  el.querySelector("[data-add]")?.addEventListener("click", () => {
+    addingShortcut = true;
+    renderApps();
+    $<HTMLInputElement>('#add-sc input[name="n"]')?.focus();
+  });
+  el.querySelector("[data-cancel-add]")?.addEventListener("click", () => {
+    addingShortcut = false;
+    renderApps();
+  });
+  el.querySelector("#add-sc")?.addEventListener("submit", (e) => {
     e.preventDefault();
     const f = new FormData(e.target as HTMLFormElement);
     const n = String(f.get("n")).trim();
@@ -643,6 +714,7 @@ function renderApps() {
     if (!n || !t) return;
     prefs.shortcuts.push({ name: n, target: t });
     savePrefs();
+    addingShortcut = false;
     renderApps();
   });
   el.querySelectorAll<HTMLInputElement>("[data-pref]").forEach((c) =>
@@ -656,8 +728,8 @@ function renderApps() {
     try {
       await f();
       if (okMsg) toast(okMsg);
-    } catch (e: any) {
-      toast(String(e), true);
+    } catch (err) {
+      toast(String(err), true);
     }
     refreshIntegrations();
   };
@@ -670,8 +742,7 @@ function renderApps() {
     toast("Abrindo o navegador para autorizar o Spotify...");
     run(integrations.spotifyConnect, "Spotify conectado");
   });
-  el.querySelector('[data-s="disconnect"]')?.addEventListener("click", () => run(() => integrations.disconnect("spotify")));
-  el.querySelectorAll<HTMLElement>("[data-sc]").forEach((b) => b.addEventListener("click", () => run(() => integrations.spotifyControl(b.dataset.sc as any))));
+  el.querySelectorAll<HTMLElement>("[data-sc]").forEach((b) => b.addEventListener("click", () => run(() => integrations.spotifyControl(b.dataset.sc as "play" | "pause" | "next" | "previous"))));
   el.querySelector("#creds")?.addEventListener("submit", (e) => {
     e.preventDefault();
     const f = new FormData(e.target as HTMLFormElement);

@@ -12,9 +12,8 @@ Depois: "os personagens devem poder ser personalizados, e a estética deve ser e
 - Escopo v1 (tudo pedido): escritório 3D + avatares; áudio por proximidade; vídeo + tela;
   salas privadas + chat; personalização do escritório (editor); personalização do personagem;
   integrações Google Agenda / Gmail / Meet, Spotify, YouTube Music e outros programas.
-- Pixel art SÓ no mundo 3D (cena renderizada em baixa resolução com `RenderPixelatedPass` +
-  câmera encaixada na grade de pixels; personagens voxel). A INTERFACE é moderna, não pixel
-  (pedido do Alifer em 20/11 11:46), seguindo o desenho do Figma.
+- Pixel art SÓ no mundo 3D, em resolução HD: estilo vem dos modelos (KayKit/Kenney + voxels), luz em
+  degraus (toon) e texturas pintadas com filtro nearest. A INTERFACE é moderna, não pixel, seguindo o Figma.
 - YouTube Music não tem API pública: entra como atalho (abre o site/app), sem "tocando agora".
 - Gmail: escopo `gmail.labels` (não restrito), só para contar não lidos.
 - Credenciais OAuth podem vir embutidas no build (env `VERKZ_GOOGLE_CLIENT_ID`,
@@ -34,11 +33,29 @@ Depois: "os personagens devem poder ser personalizados, e a estética deve ser e
 - [x] App nativo compila em release (~6 MB no Linux).
 - [ ] **NOVO PEDIDO (20/11 11:46):** "qualidade dos pixels muito ruim, faça melhor a pixel art; a
       interface/UI deve ser normal, bem desenhada; desenhe a interface no Figma".
-      - [ ] Desenhar a UI no Figma (arquivo "VERKZ Office — Interface"): login, escritório com HUD,
-            criador de personagem, painel de agenda/apps, chat, editor. UI moderna (NÃO pixel):
-            Montserrat, cantos arredondados, painéis escuros translúcidos, acento #C8F501.
-      - [ ] Reimplementar style.css/HTML conforme o Figma (trocar ícones pixel por ícones de traço).
-      - [ ] Melhorar o pixel art do mundo: mais resolução por personagem, tons em degrau (toon),
+      - [x] UI desenhada no Figma: https://www.figma.com/design/DbdArYiMEBUYob4zaT3NXB
+            (variáveis "VERKZ Office", estilos de texto Montserrat, componentes: Botão, Botão de ícone,
+            Campo, Etiqueta, Pessoa, Mensagem, Interruptor, Plaquinha, 32 ícones; telas 01 Entrar,
+            02 Escritório, 03 Personagem, 04 Agenda e apps, 05 Editar escritório).
+            O render do cenário não subiu (upload bloqueado no sandbox): quadro "Cenário 3D" reservado.
+      - [x] Interface reimplementada conforme o Figma (style.css, main.ts, creator.ts, editor.ts, ícones de traço).
+      - [x] Melhorar o pixel art do mundo (toon.ts, texturas pintadas, piso por sala, sem tone mapping)
+- [x] **Pedidos de 20/11 12:08–12:16:**
+      - "Visual semelhante ao Gather, mas não igual" → SÓ o mundo (a UI fica como no Figma).
+        Câmera de cima levemente inclinada (camera.position = alvo + (0, 26, 24)), WASD alinhado à tela,
+        piso de tábuas claras, carpetes nas salas privadas, cerâmica xadrez nas áreas abertas, gramado
+        com árvores em volta, personagens chibi (cabeça grande) com sombra redonda.
+      - "Use assets 3D de kenney.nl / opengameart" → sites bloqueados no sandbox. Usados equivalentes CC0:
+        KayKit Furniture Bits (GitHub KayKit-Game-Assets) em app/public/models/kaykit e Kenney Nature Kit
+        (via npm @netforge/asset-library-files, cópias otimizadas com meshopt) em app/public/models/kenney.
+        Carregados em src/models.ts (materiais convertidos para toon). Mesas/monitores continuam procedurais
+        (KayKit não tem móveis de escritório). Se der para baixar o Kenney Furniture Kit, trocar em furniture.ts.
+      - "Render em HD (~1080p), não 360p" → resolução cheia (pixelRatio até 2), RenderPixelatedPass com
+        pixelSize 1 só para contorno fino. NÃO voltar a pixelar a imagem.
+      - "Personalizar o escritório: mais salas, remover, tamanhos e mais" → editor com abas Móveis / Salas /
+        Prédio: nova sala com paredes e porta automáticas, piso por sala (6 opções), largura/profundidade,
+        mover, pôr/tirar paredes, apagar sala; tamanho do prédio (refaz paredes externas); desenhar parede
+        arrastando; borracha; duplicar móvel (D).: mais resolução por personagem, tons em degrau (toon),
             texturas pintadas pixel a pixel (piso de madeira, tapetes, paredes), luz mais quente,
             contornos limpos, remover listras do logo no piso.
 - [ ] Teste real de áudio/vídeo com LiveKit (no sandbox não foi possível rodar o binário do LiveKit).

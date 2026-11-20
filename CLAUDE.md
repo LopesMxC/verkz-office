@@ -42,8 +42,11 @@ Linux precisa de `libwebkit2gtk-4.1-dev` só para compilar/checar; o alvo real �
 
 ## Regras de marca e produto (obrigatórias)
 - Cores: verde neon `#C8F501` sobre quase preto `#0D0D0D`.
-- **Mundo em pixel art** (cena 3D pixelada, personagens voxel). **Interface moderna e limpa**
-  (não pixel): Montserrat, cantos arredondados, painéis escuros, ícones de traço — seguir o Figma.
+- **Mundo em estilo "Gather" (parecido, não igual)**, em resolução HD: vista de cima inclinada, cores
+  claras, modelos CC0 (KayKit/Kenney) + voxels, personagens chibi personalizáveis. **Interface moderna**
+  (não pixel): Montserrat, cantos arredondados, painéis escuros, ícones de traço — seguir o Figma:
+  https://www.figma.com/design/DbdArYiMEBUYob4zaT3NXB
+- Assets de terceiros só CC0, com licença guardada em app/public/models/*.
 - Logo: usar SEMPRE o SVG oficial em `app/src/logo.ts` (`LOGO_PATH`). Nunca desenhar um "V" à mão
   nem escrever "VERKZ" em fonte comum como logo.
 - Sem frases de efeito/slogans inventados na interface.

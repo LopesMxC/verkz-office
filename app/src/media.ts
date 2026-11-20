@@ -145,7 +145,7 @@ export class Media {
   private markMuted(p: Participant, source: Track.Source) {
     if (source !== Track.Source.Microphone) return;
     const av = p.isLocal ? this.world.me : this.world.others.get(p.identity);
-    av?.label.classList.toggle("muted", !p.isMicrophoneEnabled);
+    av?.setMuted(!p.isMicrophoneEnabled);
   }
 
   async connect(url: string, token: string) {
@@ -172,7 +172,7 @@ export class Media {
     try {
       await this.room.localParticipant.setMicrophoneEnabled(on);
       this.micOn = on;
-      this.world.me?.label.classList.toggle("muted", !on);
+      this.world.me?.setMuted(!on);
     } catch (e: any) {
       this.onError?.("Microfone indisponível: " + (e?.message ?? e));
     }

@@ -10,8 +10,12 @@ quem entra numa sala privada só é ouvido lá dentro.
 - **Microfone:** tecla M. **Chat:** Enter (abas Geral e Sala).
 - **Câmera** aparece numa bolha acima do personagem. **Tela compartilhada** aparece em miniatura; clique para ampliar.
 - **Personagem:** botão do bonequinho no dock (pele, cabelo, roupa, calça, tênis, boné/gorro/fone, óculos, corrente).
-- **Editar escritório:** botão do lápis. Escolha um móvel e clique no piso; R gira; Shift+clique coloca vários;
-  "Desenhar sala" cria salas arrastando no piso. "Salvar" atualiza para todo mundo.
+- **Editar escritório:** botão do lápis.
+  - *Móveis:* escolha um móvel e clique no piso. R gira, D duplica, Shift+clique coloca vários, Delete remove.
+  - *Salas:* "Nova sala" e arraste no piso (já sai com paredes e porta). Em cada sala: nome, privada ou aberta,
+    piso, largura, profundidade, mover, pôr/tirar paredes, apagar.
+  - *Prédio:* aumentar ou diminuir o escritório, desenhar paredes arrastando, borracha para apagar itens.
+  - "Salvar para todos" atualiza o escritório de todo mundo.
 - **Agenda e apps:** botão do calendário: reuniões do dia com "Entrar no Meet", e-mails não lidos, Spotify
   (tocando agora e controles) e atalhos (YouTube Music, Gmail, Drive, Verkz System, ou qualquer link/programa).
   O status "Em reunião" e "Ouvindo: ..." aparece sozinho acima do personagem.
@@ -62,3 +66,7 @@ Assim o time instala e só digita nome + chave do escritório.
 
 ## Desenvolvimento
 Veja `CLAUDE.md` (visão técnica) e `.claude/HANDOFF.md` (estado atual e próximos passos).
+
+## Créditos dos modelos 3D (CC0, domínio público)
+- KayKit Furniture Bits — Kay Lousberg (kaylousberg.com)
+- Kenney Nature Kit — Kenney (kenney.nl), via cópias otimizadas do pacote npm `@netforge/asset-library-files`

@@ -5,7 +5,8 @@ import { RenderPixelatedPass } from "three/addons/postprocessing/RenderPixelated
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { buildItem, DEFS, footprint, Item, Layout, Zone } from "./furniture";
 import { LOGO_PATH, NEON } from "./logo";
-import { rng, toon } from "./toon";
+import { icon } from "./icons";
+import { pixelTexture, rng, toon } from "./toon";
 import { buildCharacter, Character, Look, lookColor, normalizeLook } from "./avatar";
 
 export interface PeerInfo {
@@ -40,15 +41,17 @@ export class Avatar {
   constructor(public info: PeerInfo, private isMe: boolean) {
     this.look = normalizeLook(info.look, info.color);
     this.root.add(this.body);
+    this.body.scale.setScalar(1.25); // personagem um pouco maior, legível de longe
     this.setLook(this.look);
 
+    // sombra redonda no chão (estilo jogo 2D)
     this.ring = new THREE.Mesh(
-      new THREE.RingGeometry(0.36, 0.48, 4, 1),
-      new THREE.MeshBasicMaterial({ color: isMe ? NEON : lookColor(this.look), side: THREE.DoubleSide }),
+      new THREE.CircleGeometry(0.42, 20),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22, depthWrite: false }),
     );
     this.ring.rotation.x = -Math.PI / 2;
-    this.ring.rotation.z = Math.PI / 4;
-    this.ring.position.y = 0.02;
+    this.ring.scale.set(1, 0.7, 1);
+    this.ring.position.y = 0.015;
     this.root.add(this.ring);
 
     this.label = document.createElement("div");
@@ -56,13 +59,14 @@ export class Avatar {
     this.bubble = document.createElement("div");
     this.bubble.className = "bubble hidden";
     this.nameEl = document.createElement("div");
-    this.nameEl.className = "name";
-    this.nameEl.textContent = info.name;
+    this.nameEl.className = "plate";
+    this.nameEl.innerHTML = `<span class="mic">${icon("mic", 12, 2.4)}</span><span class="nm"></span>`;
+    this.nameEl.querySelector(".nm")!.textContent = info.name;
     this.statusEl = document.createElement("div");
     this.statusEl.className = "status";
     this.label.append(this.bubble, this.nameEl, this.statusEl);
     const lbl = new CSS2DObject(this.label);
-    lbl.position.set(0, 1.75, 0);
+    lbl.position.set(0, 1.95, 0);
     lbl.center.set(0.5, 1);
     this.root.add(lbl);
 
@@ -77,13 +81,17 @@ export class Avatar {
     if (this.char) this.body.remove(this.char.root);
     this.char = buildCharacter(this.look);
     this.body.add(this.char.root);
-    if (this.ring && !this.isMe) (this.ring.material as THREE.MeshBasicMaterial).color.set(lookColor(this.look));
   }
 
   setStatus(s: string) {
     this.info.status = s;
     this.statusEl.textContent = s;
     this.statusEl.style.display = s ? "" : "none";
+  }
+
+  setMuted(v: boolean) {
+    this.label.classList.toggle("muted", v);
+    this.nameEl.querySelector(".mic")!.innerHTML = icon(v ? "mic-off" : "mic", 12, 2.4);
   }
 
   setSpeaking(v: boolean) {
@@ -108,10 +116,7 @@ export class Avatar {
     this.char.legR.rotation.x = -sw;
     this.char.armL.rotation.x = -sw * 0.8;
     this.char.armR.rotation.x = sw * 0.8;
-    if (this.speaking) {
-      const s = 1 + (Math.sin(performance.now() / 120) > 0 ? 0.22 : 0);
-      this.ring.scale.set(s, s, s);
-    } else this.ring.scale.set(1, 1, 1);
+
   }
 
   dispose() {
@@ -135,15 +140,16 @@ export class World {
   composer: EffectComposer;
   pixelPass: RenderPixelatedPass;
   /** Tamanho do "pixel" na tela. 3 = pixel art bem visível e leve. */
-  pixelSize = 3;
+  pixelSize = 1;
   layout!: Layout;
   itemGroup = new THREE.Group();
   zoneGroup = new THREE.Group();
   floor!: THREE.Mesh;
+  grass?: THREE.Mesh;
   blockers: Rect[] = [];
   me!: Avatar;
   others = new Map<string, Avatar>();
-  zoom = 1.8;
+  zoom = 1.3;
   camTarget = new THREE.Vector3();
   keys = new Set<string>();
   path: THREE.Vector3[] = [];
@@ -159,12 +165,12 @@ export class World {
   private clock = new THREE.Clock();
 
   constructor(private host: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(1); // pixel art: resolução baixa de propósito
-    this.renderer.domElement.style.imageRendering = "pixelated";
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    // resolução cheia (HD / retina): a cara de pixel art vem dos modelos e texturas, não de baixar a resolução
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.BasicShadowMap; // sombras duras, cara de pixel art
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.toneMapping = THREE.NoToneMapping; // cores exatas da paleta (pixel art)
     this.renderer.toneMappingExposure = 1.05;
     host.appendChild(this.renderer.domElement);
 
@@ -172,29 +178,27 @@ export class World {
     this.labels.domElement.className = "labels";
     host.appendChild(this.labels.domElement);
 
-    this.scene.background = new THREE.Color(0x0b0b0c);
+    this.scene.background = new THREE.Color(0x8fcf72);
 
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
 
-    const hemi = new THREE.HemisphereLight(0xfff3df, 0x3a3428, 1.25);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x8a8070, 1.45);
     this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xffe9c8, 2.4);
-    sun.position.set(14, 26, 10);
+    const sun = new THREE.DirectionalLight(0xfff1dc, 1.35);
+    sun.position.set(-10, 26, 14);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    const s = 22;
+    sun.shadow.mapSize.set(4096, 4096);
+    const s = 34;
     Object.assign(sun.shadow.camera, { left: -s, right: s, top: s, bottom: -s, near: 1, far: 80 });
     sun.shadow.bias = -0.0005;
     sun.shadow.normalBias = 0.02;
     this.scene.add(sun);
-    const fill = new THREE.PointLight(NEON, 4, 18, 1.6);
-    fill.position.set(0, 6, -8);
-    this.scene.add(fill);
 
     this.scene.add(this.itemGroup, this.zoneGroup);
 
     this.composer = new EffectComposer(this.renderer);
-    this.pixelPass = new RenderPixelatedPass(this.pixelSize, this.scene, this.camera, { normalEdgeStrength: 0.22, depthEdgeStrength: 0.5 });
+    // passe de contorno em resolução cheia (pixelSize 1): linhas finas, sem pixelar a imagem
+    this.pixelPass = new RenderPixelatedPass(1, this.scene, this.camera, { normalEdgeStrength: 0.08, depthEdgeStrength: 0.35 });
     this.composer.addPass(this.pixelPass);
     this.composer.addPass(new OutputPass());
 
@@ -207,6 +211,7 @@ export class World {
     const w = this.host.clientWidth;
     const h = this.host.clientHeight;
     this.renderer.setSize(w, h);
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
     this.composer.setSize(w, h);
     this.labels.setSize(w, h);
     this.updateFrustum();
@@ -215,7 +220,6 @@ export class World {
   private updateFrustum() {
     const w = this.host.clientWidth;
     const h = this.host.clientHeight;
-    // zoom em degraus inteiros de pixel para manter os pixels quadrados
     const half = 9 / this.zoom;
     const aspect = w / Math.max(1, h);
     Object.assign(this.camera, { left: -half * aspect, right: half * aspect, top: half, bottom: -half });
@@ -240,8 +244,31 @@ export class World {
       toon("#ffffff", { map: floorTex }),
     );
     this.floor.rotation.x = -Math.PI / 2;
+    this.floor.position.y = 0.002;
     this.floor.receiveShadow = true;
     this.scene.add(this.floor);
+    if (!this.grass) {
+      // gramado em volta do prédio
+      const tex = pixelTexture(32, 32, (g) => {
+        const r = rng(5);
+        g.fillStyle = "#8fcf72";
+        g.fillRect(0, 0, 32, 32);
+        for (let i = 0; i < 70; i++) {
+          g.fillStyle = r() > 0.5 ? "#9ad87c" : "#82c266";
+          const x = Math.floor(r() * 32);
+          const y = Math.floor(r() * 32);
+          g.fillRect(x, y, 1, 2);
+        }
+        for (let i = 0; i < 6; i++) {
+          g.fillStyle = "#b5e59a";
+          g.fillRect(Math.floor(r() * 30), Math.floor(r() * 30), 2, 1);
+        }
+      }, [60, 60]);
+      this.grass = new THREE.Mesh(new THREE.PlaneGeometry(120, 120), toon("#ffffff", { map: tex }));
+      this.grass.rotation.x = -Math.PI / 2;
+      this.grass.receiveShadow = true;
+      this.scene.add(this.grass);
+    }
 
     this.blockers = [];
     for (const it of layout.items) this.addItemMesh(it);
@@ -249,10 +276,13 @@ export class World {
     this.currentZone = null;
   }
 
-  /** Piso pintado pixel a pixel: concreto no salão, carpete nas salas privadas, madeira nas áreas abertas. */
+  /**
+   * Piso pintado pixel a pixel (32 px por metro):
+   * madeira clara no salão, carpete nas salas privadas, cerâmica xadrez nas áreas abertas.
+   */
   private makeFloorTexture(layout: Layout) {
     const { w, d } = layout.size;
-    const px = 16; // pixels de textura por metro
+    const px = 32;
     const W = (w + 1) * px;
     const H = (d + 1) * px;
     const c = document.createElement("canvas");
@@ -260,77 +290,100 @@ export class World {
     c.height = H;
     const g = c.getContext("2d")!;
     const r = rng(42);
-    // concreto escuro em placas de 2 m
-    g.fillStyle = "#222228";
+    // tábuas de madeira clara (salão)
+    g.fillStyle = "#e9cfa6";
     g.fillRect(0, 0, W, H);
-    for (let i = 0; i < W; i += px * 2)
-      for (let j = 0; j < H; j += px * 2) {
-        g.fillStyle = (i / (px * 2) + j / (px * 2)) % 2 ? "#26262c" : "#232329";
-        g.fillRect(i, j, px * 2, px * 2);
-        g.fillStyle = "#1b1b20";
-        g.fillRect(i, j, px * 2, 1);
-        g.fillRect(i, j, 1, px * 2);
+    const plank = 8; // 4 tábuas por metro
+    for (let j = 0, row = 0; j < H; j += plank, row++) {
+      let i = -((row * 37) % 96);
+      while (i < W) {
+        const len = 64 + Math.floor(r() * 64);
+        const tone = ["#ead3ad", "#e5c99e", "#eed8b5", "#e2c597"][Math.floor(r() * 4)];
+        g.fillStyle = tone;
+        g.fillRect(Math.max(0, i), j, len, plank - 1);
+        g.fillStyle = "#d4b585";
+        g.fillRect(Math.max(0, i), j + plank - 1, len, 1);
+        if (i + len < W) g.fillRect(i + len - 1, j, 1, plank - 1);
+        // veios
+        g.fillStyle = "#dcbf92";
+        for (let k = 0; k < 2; k++) g.fillRect(Math.max(0, i) + Math.floor(r() * len), j + 2 + Math.floor(r() * 3), 3 + Math.floor(r() * 5), 1);
+        i += len;
       }
-    for (let k = 0; k < W * H * 0.012; k++) {
-      g.fillStyle = r() > 0.5 ? "#2a2a31" : "#1e1e23";
-      g.fillRect(Math.floor(r() * W), Math.floor(r() * H), 1, 1);
     }
-    const toPx = (x: number, z: number) => [(x + (w + 1) / 2) * px, (z + (d + 1) / 2) * px];
+    const toPx = (x: number, z: number) => [Math.round((x + (w + 1) / 2) * px), Math.round((z + (d + 1) / 2) * px)];
     for (const zn of layout.zones) {
       const [x0, y0] = toPx(zn.x - zn.w / 2, zn.z - zn.d / 2);
-      const zw = zn.w * px;
-      const zh = zn.d * px;
-      if (zn.private) {
-        // carpete grafite com trama
-        g.fillStyle = "#262a33";
+      const zw = Math.round(zn.w * px);
+      const zh = Math.round(zn.d * px);
+      const floor = zn.floor ?? (zn.private ? "carpete-azul" : "ceramica");
+      const CARPET: Record<string, [string, string, string, string]> = {
+        "carpete-azul": ["#7d86c2", "#8790cb", "#737cb8", "#6870ab"],
+        "carpete-verde": ["#7fae8c", "#8aba96", "#74a282", "#679676"],
+        "carpete-lilas": ["#a790cf", "#b19bd8", "#9c85c4", "#8f78b8"],
+        "carpete-grafite": ["#5d606c", "#666976", "#555863", "#4a4d57"],
+      };
+      if (CARPET[floor]) {
+        const [base, hi, lo, edge] = CARPET[floor];
+        g.fillStyle = base;
         g.fillRect(x0, y0, zw, zh);
-        for (let i = 0; i < zw; i += 2)
-          for (let j = (i / 2) % 2; j < zh; j += 2) {
-            g.fillStyle = "#2a2f39";
-            g.fillRect(x0 + i, y0 + j, 1, 1);
+        for (let y = 0; y < zh; y += 16)
+          for (let x = 0; x < zw; x += 16) {
+            const ox = (y / 16) % 2 ? 8 : 0;
+            g.fillStyle = hi;
+            g.fillRect(x0 + x + ox + 6, y0 + y + 4, 4, 1);
+            g.fillRect(x0 + x + ox + 5, y0 + y + 5, 6, 1);
+            g.fillRect(x0 + x + ox + 6, y0 + y + 6, 4, 1);
+            g.fillStyle = lo;
+            g.fillRect(x0 + x + ox + 7, y0 + y + 12, 2, 1);
           }
-        g.fillStyle = "#C8F501";
-        g.globalAlpha = 0.55;
-        g.fillRect(x0, y0, zw, 1);
-        g.fillRect(x0, y0 + zh - 1, zw, 1);
-        g.fillRect(x0, y0, 1, zh);
-        g.fillRect(x0 + zw - 1, y0, 1, zh);
-        g.globalAlpha = 1;
-      } else {
-        // tábuas de madeira
-        for (let j = 0; j < zh; j += 4) {
-          let i = -((j / 4) % 3) * 8;
-          while (i < zw) {
-            const len = 16 + Math.floor(r() * 12);
-            const tone = ["#4a3524", "#523b28", "#45311f", "#4e3826"][Math.floor(r() * 4)];
-            g.fillStyle = tone;
-            g.fillRect(x0 + Math.max(0, i), y0 + j, Math.min(len, zw - Math.max(0, i)), 3);
-            g.fillStyle = "#3a2919";
-            g.fillRect(x0 + Math.max(0, i), y0 + j + 3, Math.min(len, zw - Math.max(0, i)), 1);
-            i += len;
-            if (i < zw) g.fillRect(x0 + i - 1, y0 + j, 1, 3);
+        g.fillStyle = edge;
+        g.fillRect(x0, y0, zw, 2);
+        g.fillRect(x0, y0 + zh - 2, zw, 2);
+        g.fillRect(x0, y0, 2, zh);
+        g.fillRect(x0 + zw - 2, y0, 2, zh);
+      } else if (floor === "madeira") {
+        for (let y = 0, row = 0; y < zh; y += 8, row++) {
+          let x = -((row * 29) % 80);
+          while (x < zw) {
+            const len = 48 + Math.floor(r() * 48);
+            g.fillStyle = ["#b98557", "#c08d5e", "#b07c4f", "#c4935f"][Math.floor(r() * 4)];
+            g.fillRect(x0 + Math.max(0, x), y0 + y, Math.min(len, zw - Math.max(0, x)), 7);
+            g.fillStyle = "#9c6c43";
+            g.fillRect(x0 + Math.max(0, x), y0 + y + 7, Math.min(len, zw - Math.max(0, x)), 1);
+            x += len;
+            if (x < zw) g.fillRect(x0 + x - 1, y0 + y, 1, 7);
           }
         }
+      } else {
+        // cerâmica xadrez cinza
+        for (let y = 0; y < zh; y += 16)
+          for (let x = 0; x < zw; x += 16) {
+            g.fillStyle = (x / 16 + y / 16) % 2 ? "#c3c6cf" : "#b5b8c2";
+            g.fillRect(x0 + x, y0 + y, Math.min(16, zw - x), Math.min(16, zh - y));
+            g.fillStyle = "#cfd2da";
+            g.fillRect(x0 + x + 2, y0 + y + 2, 3, 1);
+          }
       }
     }
-    // logo da VERKZ pintado no piso (bem discreto)
+    // logo da VERKZ pintada no piso (discreta)
     const logo = new Path2D(LOGO_PATH);
     for (const it of layout.items.filter((i) => i.type === "floor_logo")) {
       const [cx, cy] = toPx(it.x, it.z);
-      const size = 5 * px; // ~5 m de largura
+      const size = 4 * px;
       g.save();
       g.translate(cx, cy);
       g.scale(size / 560, size / 560);
       g.translate(-547, -547);
-      g.fillStyle = "#2e3514";
+      g.globalAlpha = 0.22;
+      g.fillStyle = "#8a9a1e";
       g.fill(logo, "evenodd");
       g.restore();
     }
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
     t.magFilter = THREE.NearestFilter;
-    t.minFilter = THREE.NearestFilter;
-    t.generateMipmaps = false;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.anisotropy = 8;
     return t;
   }
 
@@ -359,7 +412,8 @@ export class World {
     g.userData.zoneId = z.id;
     const tag = document.createElement("div");
     tag.className = "zone-tag" + (z.private ? " private" : "");
-    tag.textContent = z.name;
+    tag.innerHTML = (z.private ? icon("lock", 11, 2.4) : "") + "<span></span>";
+    tag.querySelector("span")!.textContent = z.name;
     const lbl = new CSS2DObject(tag);
     lbl.position.set(-z.w / 2 + 0.3, 0.05, -z.d / 2 + 0.4);
     lbl.center.set(0, 0);
@@ -582,11 +636,11 @@ export class World {
     let vx = 0;
     let vz = 0;
     const k = this.keys;
-    // eixo isométrico: "cima" anda para o fundo da tela
-    if (k.has("w") || k.has("arrowup")) { vx -= 1; vz -= 1; }
-    if (k.has("s") || k.has("arrowdown")) { vx += 1; vz += 1; }
-    if (k.has("a") || k.has("arrowleft")) { vx -= 1; vz += 1; }
-    if (k.has("d") || k.has("arrowright")) { vx += 1; vz -= 1; }
+    // W/S andam para cima/baixo da tela, A/D para os lados
+    if (k.has("w") || k.has("arrowup")) vz -= 1;
+    if (k.has("s") || k.has("arrowdown")) vz += 1;
+    if (k.has("a") || k.has("arrowleft")) vx -= 1;
+    if (k.has("d") || k.has("arrowright")) vx += 1;
 
     if (!vx && !vz && this.path.length) {
       const next = this.path[0];
@@ -620,9 +674,10 @@ export class World {
       this.onZoneChange?.(zone);
     }
 
-    // câmera isométrica segue com suavidade
+    // câmera segue com suavidade
     this.camTarget.lerp(pos, Math.min(1, dt * 4));
-    this.camera.position.set(this.camTarget.x + 20, 22, this.camTarget.z + 20);
+    // vista de cima, levemente inclinada (frente dos móveis aparece, como num jogo 2D)
+    this.camera.position.set(this.camTarget.x, 26, this.camTarget.z + 24);
     this.camera.lookAt(this.camTarget);
     // encaixa a câmera na grade de pixels para o pixel art não "tremer"
     this.camera.updateMatrixWorld();

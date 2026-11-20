@@ -7,7 +7,7 @@ import * as THREE from "three";
 let gradient: THREE.DataTexture | null = null;
 function gradientMap() {
   if (!gradient) {
-    const tones = new Uint8Array([110, 175, 235, 255]);
+    const tones = new Uint8Array([165, 210, 240, 255]);
     gradient = new THREE.DataTexture(tones, tones.length, 1, THREE.RedFormat);
     gradient.minFilter = THREE.NearestFilter;
     gradient.magFilter = THREE.NearestFilter;

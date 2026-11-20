@@ -18,8 +18,9 @@ export class CharacterPreview {
 
   constructor(public canvas: HTMLCanvasElement, look: Look, private pixel = 4) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
-    this.renderer.setPixelRatio(1);
-    this.scene.background = new THREE.Color(0x0d0d0d);
+    (canvas as any).__preview = this; // acesso em testes/capturas
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.scene.background = new THREE.Color(0x0f0f11);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x222222, 1.4));
     const d = new THREE.DirectionalLight(0xffffff, 1.8);
     d.position.set(3, 5, 4);
@@ -28,7 +29,8 @@ export class CharacterPreview {
     floor.rotation.x = -Math.PI / 2;
     this.scene.add(floor, this.holder);
     this.composer = new EffectComposer(this.renderer);
-    this.composer.addPass(new RenderPixelatedPass(pixel, this.scene, this.camera, { normalEdgeStrength: 0.4, depthEdgeStrength: 0.6 }));
+    this.composer.addPass(new RenderPixelatedPass(1, this.scene, this.camera, { normalEdgeStrength: 0.1, depthEdgeStrength: 0.4 }));
+    void pixel;
     this.composer.addPass(new OutputPass());
     this.setLook(look);
     this.resize();
@@ -45,8 +47,9 @@ export class CharacterPreview {
     const w = this.canvas.clientWidth || 96;
     const h = this.canvas.clientHeight || 96;
     this.renderer.setSize(w, h, false);
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
     this.composer.setSize(w, h);
-    const half = 1.15;
+    const half = 1.05;
     const a = w / h;
     Object.assign(this.camera, { left: -half * a, right: half * a, top: half, bottom: -half });
     this.camera.position.set(0, 2.2, 6);
@@ -65,93 +68,104 @@ export class CharacterPreview {
   }
 }
 
-const LABELS: Record<string, string> = {
-  hair: "Cabelo",
-  top: "Roupa",
-  bottom: "Parte de baixo",
-  head: "Na cabeça",
-  face: "Rosto",
-  neck: "Pescoço",
-};
+type Cat = "corpo" | "cabelo" | "roupa" | "acessorios";
 
 /** Abre o criador de personagem. Resolve com o look salvo (ou null se cancelou). */
 export function openCreator(host: HTMLElement, start: Look): Promise<Look | null> {
   return new Promise((resolve) => {
     let look: Look = { ...start };
+    let cat: Cat = "roupa";
     const bg = document.createElement("div");
     bg.className = "modal-bg";
     bg.innerHTML = `
-      <div class="px-box creator">
-        <div class="pv"><canvas></canvas>
+      <div class="panel creator">
+        <div class="pv">
+          <div class="label">Prévia</div>
+          <canvas></canvas>
           <div class="turn">
-            <button class="px-btn" data-rot="-1">${icon("left", 18)}</button>
-            <button class="px-btn" data-rot="1">${icon("right", 18)}</button>
+            <button class="round-btn" data-rot="-1" aria-label="Girar para a esquerda">${icon("chevron-left", 18)}</button>
+            <button class="round-btn" data-rot="1" aria-label="Girar para a direita">${icon("chevron-right", 18)}</button>
           </div>
         </div>
-        <div class="opts"><h2>Seu personagem</h2><div class="list"></div></div>
-        <div class="actions">
-          <button class="px-btn" data-act="random">Aleatório</button>
-          <span style="flex:1"></span>
-          <button class="px-btn" data-act="cancel">Cancelar</button>
-          <button class="px-btn primary" data-act="save">Salvar</button>
+        <div class="opts">
+          <div class="panel-head"><div class="t-l">Seu personagem</div><button class="x-btn" data-act="cancel">${icon("x", 20)}</button></div>
+          <div class="pills"></div>
+          <div class="scroll"></div>
+          <div class="actions">
+            <button class="btn ghost" data-act="random">${icon("shuffle", 16)} Aleatório</button>
+            <span class="grow"></span>
+            <button class="btn secondary" data-act="cancel">Cancelar</button>
+            <button class="btn primary" data-act="save">Salvar personagem</button>
+          </div>
         </div>
       </div>`;
     host.appendChild(bg);
     const canvas = bg.querySelector("canvas")!;
-    const pv = new CharacterPreview(canvas, look, 5);
+    const pv = new CharacterPreview(canvas, look, 4);
     requestAnimationFrame(() => pv.resize());
-    const list = bg.querySelector(".list")!;
+    const pills = bg.querySelector(".pills")!;
+    const body = bg.querySelector(".opts .scroll")!;
 
-    const stepper = (key: keyof typeof OPTIONS) => {
+    const cards = (key: keyof typeof OPTIONS, title: string) => {
       const opts = OPTIONS[key] as readonly (readonly [string, string])[];
-      const idx = Math.max(0, opts.findIndex((o) => o[0] === (look as any)[key]));
-      return `<div class="opt"><div class="t">${LABELS[key]}</div>
-        <div class="stepper" data-key="${key}">
-          <button class="px-btn" data-d="-1">${icon("left", 14)}</button>
-          <div class="v">${opts[idx][1]}</div>
-          <button class="px-btn" data-d="1">${icon("right", 14)}</button>
-        </div>`;
+      return `<div class="label">${title}</div><div class="cards">${opts
+        .map(([v, l]) => `<button class="card-opt ${(look as any)[key] === v ? "sel" : ""}" data-key="${key}" data-v="${v}">${l}</button>`)
+        .join("")}</div>`;
     };
     const swatches = (key: keyof Look, title: string, colors: string[]) =>
-      `<div class="opt"><div class="t">${title}</div><div class="swatches" data-key="${key}">${colors
-        .map((c) => `<div class="sw ${(look as any)[key] === c ? "sel" : ""}" data-c="${c}" style="background:${c}"></div>`)
-        .join("")}</div></div>`;
+      `<div class="label">${title}</div><div class="swatches">${colors
+        .map((c) => `<button class="sw ${(look as any)[key] === c ? "sel" : ""}" data-key="${key}" data-c="${c}" style="background:${c}" aria-label="${c}"></button>`)
+        .join("")}</div>`;
 
     const render = () => {
-      list.innerHTML = [
-        swatches("skin", "Pele", PALETTES.skin),
-        stepper("hair") + "</div>",
-        swatches("hairColor", "Cor do cabelo", PALETTES.hair),
-        stepper("top") + "</div>",
-        swatches("topColor", "Cor da roupa", PALETTES.cloth),
-        stepper("bottom") + "</div>",
-        swatches("bottomColor", "Cor de baixo", PALETTES.cloth),
-        swatches("shoes", "Tênis", PALETTES.cloth),
-        stepper("head") + "</div>",
-        look.head !== "nenhum" ? swatches("headColor", "Cor do acessório", PALETTES.cloth) : "",
-        stepper("face") + "</div>",
-        stepper("neck") + "</div>",
-      ].join("");
+      pills.innerHTML = (
+        [
+          ["corpo", "Corpo"],
+          ["cabelo", "Cabelo"],
+          ["roupa", "Roupa"],
+          ["acessorios", "Acessórios"],
+        ] as const
+      )
+        .map(([k, l]) => `<button class="${cat === k ? "sel" : ""}" data-cat="${k}">${l}</button>`)
+        .join("");
+      const sections: Record<Cat, string> = {
+        corpo: swatches("skin", "Tom de pele", PALETTES.skin),
+        cabelo: cards("hair", "Corte") + swatches("hairColor", "Cor do cabelo", PALETTES.hair),
+        roupa:
+          cards("top", "Parte de cima") +
+          swatches("topColor", "Cor", PALETTES.cloth) +
+          cards("bottom", "Parte de baixo") +
+          swatches("bottomColor", "Cor", PALETTES.cloth) +
+          swatches("shoes", "Tênis", PALETTES.cloth),
+        acessorios:
+          cards("head", "Na cabeça") +
+          (look.head !== "nenhum" ? swatches("headColor", "Cor do acessório", PALETTES.cloth) : "") +
+          cards("face", "Rosto") +
+          cards("neck", "Pescoço"),
+      };
+      body.innerHTML = sections[cat];
       pv.setLook(look);
     };
     render();
 
-    list.addEventListener("click", (e) => {
+    pills.addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest("[data-cat]") as HTMLElement | null;
+      if (b) {
+        cat = b.dataset.cat as Cat;
+        render();
+      }
+    });
+    body.addEventListener("click", (e) => {
       const t = e.target as HTMLElement;
       const sw = t.closest(".sw") as HTMLElement | null;
       if (sw) {
-        const key = (sw.parentElement as HTMLElement).dataset.key!;
-        (look as any)[key] = sw.dataset.c;
+        (look as any)[sw.dataset.key!] = sw.dataset.c;
         render();
         return;
       }
-      const b = t.closest("button[data-d]") as HTMLElement | null;
-      if (b) {
-        const key = (b.parentElement as HTMLElement).dataset.key as keyof typeof OPTIONS;
-        const opts = OPTIONS[key] as readonly (readonly [string, string])[];
-        const i = opts.findIndex((o) => o[0] === (look as any)[key]);
-        const n = (i + Number(b.dataset.d) + opts.length) % opts.length;
-        (look as any)[key] = opts[n][0];
+      const card = t.closest(".card-opt") as HTMLElement | null;
+      if (card) {
+        (look as any)[card.dataset.key!] = card.dataset.v;
         render();
       }
     });
@@ -172,7 +186,10 @@ export function openCreator(host: HTMLElement, start: Look): Promise<Look | null
       look = randomLook();
       render();
     });
-    bg.querySelector('[data-act="cancel"]')!.addEventListener("click", () => close(null));
+    bg.querySelectorAll('[data-act="cancel"]').forEach((b) => b.addEventListener("click", () => close(null)));
     bg.querySelector('[data-act="save"]')!.addEventListener("click", () => close(look));
+    bg.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") close(null);
+    });
   });
 }

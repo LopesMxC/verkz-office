@@ -284,6 +284,23 @@ export function buildCharacter(look: Look): Character {
     vox(head, lens, 0.09, 0.07, 0.02, 0.09, 0.0, 0.222);
   }
 
+  // proporção "chibi" (cabeça grande, corpo curto), como personagens de jogo 2D
+  for (const ch of [...root.children]) {
+    if (ch === legL || ch === legR || ch === armL || ch === armR || ch === head) continue;
+    ch.position.y = 0.32 + (ch.position.y - 0.52) * 0.72;
+    ch.scale.y *= 0.72;
+  }
+  for (const leg of [legL, legR]) {
+    leg.scale.y = 0.62;
+    leg.position.y = 0.32;
+  }
+  for (const arm of [armL, armR]) {
+    arm.scale.y = 0.72;
+    arm.position.y = 0.32 + (1.0 - 0.52) * 0.72;
+  }
+  head.position.y = 0.97;
+  head.scale.setScalar(1.22);
+
   return { root, legL, legR, armL, armR };
 }
 
