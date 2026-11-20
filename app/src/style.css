@@ -449,3 +449,6 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 @media (max-width: 640px) { .row2, .fin-grid { grid-template-columns: 1fr; } .modal { padding: 16px 18px; } }
 .tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
 .tabs button { padding: 8px 11px; white-space: nowrap; flex: none; }
+/* faxineiro (NPC): sem ícone de microfone */
+.nameplate.npc .mic { display: none; }
+.nameplate.npc .name { opacity: 0.85; }

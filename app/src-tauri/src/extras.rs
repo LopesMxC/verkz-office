@@ -228,6 +228,16 @@ pub async fn ytm_control(app: AppHandle, action: String) -> Result<(), String> {
     w.eval(js).map_err(|e| e.to_string())
 }
 
+/// Fecha o YouTube Music de vez (libera a memória do navegador escondido).
+#[tauri::command]
+pub async fn ytm_close(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("ytmusic") {
+        w.destroy().map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("ytm-state", serde_json::Value::Null);
+    Ok(())
+}
+
 /// Quando a janela principal fecha, fecha tudo (inclusive o YouTube Music escondido).
 pub fn on_main_close(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("ytmusic") {

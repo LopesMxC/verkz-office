@@ -193,6 +193,7 @@ function start() {
     };
     media.onLocalState = (patch) => sendState(patch);
     world.onSit = (on) => sendState({ sit: on || null });
+    world.onOverviewChange = () => renderDock();
     world.onEnterMyRoom = () => doorChime();
     world.onStep = (run, vol) => {
       if (soundPrefs.steps) footstep(run, vol);
@@ -445,6 +446,7 @@ function renderDock() {
     b("apps", "calendar", "Agenda e apps", rightPanel === "apps" ? "active" : "", mailUnread ? `<span class="badge">${mailUnread > 99 ? "99+" : mailUnread}</span>` : ""),
     `<span class="divider"></span>`,
     b("char", "shirt", "Personagem"),
+    b("map", "map", "Ver o escritório todo (Tab)", world?.overview ? "active" : ""),
     b("edit", "pencil", "Editar escritório", editor?.active ? "active" : ""),
     isAdmin ? b("team", "activity", "Atividade da equipe", rightPanel === "team" ? "active" : "") : "",
     b("settings", "settings", "Configurações"),
@@ -492,6 +494,9 @@ async function dockAction(id: string) {
       }
       break;
     }
+    case "map":
+      world.setOverview(!world.overview);
+      break;
     case "edit":
       editor.toggle();
       world.editing = editor.active;
@@ -524,6 +529,10 @@ window.addEventListener("keydown", (e) => {
   if (typing || !started || overlay.innerHTML || document.querySelector(".modal-bg")) return;
   if (e.key === "m" || e.key === "M") dockAction("mic");
   if (e.key === "e" || e.key === "E") togglePopover("emote");
+  if (e.key === "Tab") {
+    e.preventDefault();
+    dockAction("map");
+  }
   if (e.key === "Escape") closeFloating();
   if (!e.ctrlKey && !e.altKey && /^[0-9]$/.test(e.key)) {
     const i = e.key === "0" ? 9 : Number(e.key) - 1;
@@ -942,7 +951,7 @@ function renderApps() {
            <button class="round" data-yc="previous" aria-label="Anterior">${icon("prev", 15)}</button>
            <button class="round primary" data-yc="toggle" aria-label="Tocar ou pausar">${icon(ytmState.playing ? "pause" : "play", 15)}</button>
            <button class="round" data-yc="next" aria-label="Próxima">${icon("next", 15)}</button>
-         </div><button class="btn ghost sm" data-y="open" style="align-self:flex-start">Mostrar janela do YouTube Music</button>`;
+         </div><div style="display:flex;gap:8px"><button class="btn ghost sm" data-y="open">Mostrar janela do YouTube Music</button><button class="btn ghost sm" data-y="close" title="Fecha o YouTube Music e libera memória">Fechar</button></div>`;
 
   el.innerHTML = `
     <div class="panel-head"><div class="t-m">Agenda e apps</div><button class="x-btn" data-close>${icon("x", 18)}</button></div>
@@ -1040,6 +1049,7 @@ function renderApps() {
   });
   el.querySelectorAll<HTMLElement>("[data-sc]").forEach((b) => b.addEventListener("click", () => run(() => integrations.spotifyControl(b.dataset.sc as "play" | "pause" | "next" | "previous"))));
   el.querySelectorAll<HTMLElement>('[data-y="open"]').forEach((b) => b.addEventListener("click", () => ytm.open(true).catch((err) => toast(String(err), true))));
+  el.querySelector('[data-y="close"]')?.addEventListener("click", () => ytm.close().catch((err) => toast(String(err), true)));
   el.querySelectorAll<HTMLElement>("[data-yc]").forEach((b) => b.addEventListener("click", () => ytm.control(b.dataset.yc as "toggle" | "next" | "previous").catch((err) => toast(String(err), true))));
   el.querySelector("#creds")?.addEventListener("submit", (e) => {
     e.preventDefault();

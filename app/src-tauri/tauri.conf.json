@@ -17,7 +17,9 @@
         "height": 880,
         "minWidth": 960,
         "minHeight": 600,
-        "backgroundColor": "#0D0D0D"
+        "backgroundColor": "#0D0D0D",
+        "label": "main",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1 --js-flags=--max-old-space-size=160 --disable-background-networking --disable-component-update --disable-extensions --disk-cache-size=33554432"
       }
     ],
     "security": {

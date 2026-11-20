@@ -38,6 +38,7 @@ pub fn run() {
             extras::http_get,
             extras::ytm_open,
             extras::ytm_control,
+            extras::ytm_close,
         ])
         .on_window_event(|w, ev| {
             if w.label() == "main" {

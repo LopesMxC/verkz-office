@@ -19,7 +19,7 @@ export class CharacterPreview {
   constructor(public canvas: HTMLCanvasElement, look: Look, private pixel = 4) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
     (canvas as any).__preview = this; // acesso em testes/capturas
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
     this.scene.background = new THREE.Color(0x0f0f11);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x222222, 1.4));
     const d = new THREE.DirectionalLight(0xffffff, 1.8);

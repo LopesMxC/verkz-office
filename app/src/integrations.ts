@@ -93,6 +93,7 @@ export interface YtmState {
 }
 export const ytm = {
   open: (show = true) => call<void>("ytm_open", { show }),
+  close: () => call<void>("ytm_close"),
   control: (action: "play" | "pause" | "toggle" | "next" | "previous") => call<void>("ytm_control", { action }),
   /** Recebe o que está tocando (a janela do YouTube Music manda a cada poucos segundos). */
   async listen(cb: (s: YtmState | null) => void) {

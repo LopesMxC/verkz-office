@@ -3,7 +3,7 @@ import { CSS2DObject, CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPixelatedPass } from "three/addons/postprocessing/RenderPixelatedPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { buildItem, buildWall, DEFS, footprint, Item, Layout, WALL_CUT, WALL_H, WALL_TYPES, wallRects, WallLinks, Zone } from "./furniture";
+import { buildItem, buildWall, DEFS, footprint, Item, Layout, WALL_CUT, WALL_T, WALL_TYPES, wallRects, WallLinks, Zone } from "./furniture";
 import { LOGO_PATH, NEON } from "./logo";
 import { icon } from "./icons";
 import { pixelTexture, rng, toon } from "./toon";
@@ -321,7 +321,10 @@ export class Avatar {
       c.root.rotation.set(0, 0, 0);
     }
     const mouth = c.head.getObjectByName("mouth");
-    if (mouth) mouth.scale.y = 1;
+    // a boca é um voxel em que o tamanho fica na escala: anima em cima da altura original
+    if (mouth && mouth.userData.h === undefined) mouth.userData.h = mouth.scale.y;
+    const mouthH = (mouth?.userData.h as number) ?? 0.025;
+    if (mouth) mouth.scale.y = mouthH;
 
     const now = performance.now();
     const t = now / 1000;
@@ -342,7 +345,7 @@ export class Avatar {
       } else if (k === "rir") {
         c.head.rotation.set(-0.25 + Math.sin(t * 18) * 0.08, 0, 0);
         this.body.position.y = Math.abs(Math.sin(t * 18)) * 0.03;
-        if (mouth) mouth.scale.y = 3;
+        if (mouth) mouth.scale.y = mouthH * 3;
       } else if (k === "coracao") {
         c.armL.rotation.set(-2.4, 0, -0.4);
         c.armR.rotation.set(-2.4, 0, 0.4);
@@ -368,7 +371,7 @@ export class Avatar {
       c.armR.rotation.set(-0.5 - Math.max(0, Math.sin(p * 3.1)) * 0.7, 0, 0.15 + Math.sin(p * 1.7) * 0.2);
       c.armL.rotation.set(-0.2 - Math.max(0, Math.sin(p * 2.3 + 1.5)) * 0.5, 0, -0.1 - Math.sin(p * 1.3) * 0.15);
       c.head.rotation.set(Math.sin(p * 4.2) * 0.08, Math.sin(p * 0.9) * 0.18, Math.sin(p * 1.6) * 0.05);
-      if (mouth) mouth.scale.y = 1 + Math.abs(Math.sin(p * 13)) * 2.4;
+      if (mouth) mouth.scale.y = mouthH * (1 + Math.abs(Math.sin(p * 13)) * 2.4);
     } else if (this.holding && !this.moving) {
       // gole de vez em quando
       const sip = Math.sin(t * 0.7 + this.phase) > 0.93;
@@ -437,6 +440,13 @@ export class World {
   runSpeed = 7.4;
   running = false;
   private stuck = 0;
+  janitor?: Janitor;
+  /** Visão do prédio inteiro (zoom out) para escolher a sala. */
+  overview = false;
+  onOverviewChange?: (on: boolean) => void;
+  private savedZoom = 1.3;
+  /** Caminho longo pedido pelo mapa: vai correndo. */
+  private runPath = false;
   /** Onde o último clique mandou andar (para sentar ao chegar numa cadeira). */
   private walkGoal: THREE.Vector3 | null = null;
   /** Sentei / levantei (para avisar os outros). */
@@ -456,7 +466,8 @@ export class World {
   constructor(private host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     // resolução cheia (HD / retina): a cara de pixel art vem dos modelos e texturas, não de baixar a resolução
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // nitidez boa sem gastar memória de vídeo à toa (2x em tela 4K passa de 100 MB só em buffers)
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.NoToneMapping; // cores exatas da paleta (pixel art)
@@ -478,7 +489,7 @@ export class World {
     this.sun = sun;
     sun.position.set(-10, 26, 14);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(4096, 4096);
+    sun.shadow.mapSize.set(2048, 2048);
     const s = 34;
     Object.assign(sun.shadow.camera, { left: -s, right: s, top: s, bottom: -s, near: 1, far: 80 });
     sun.shadow.bias = -0.0005;
@@ -574,6 +585,8 @@ export class World {
     for (const it of layout.items) this.addItemMesh(it);
     for (const z of layout.zones) this.addZoneMesh(z);
     this.buildDoors();
+    if (!this.janitor) this.janitor = new Janitor(this);
+    this.janitor.plan();
     this.currentZone = null;
     this.placeDecor();
   }
@@ -821,18 +834,19 @@ export class World {
           while (e + 1 <= ln.to && !at(e + 1)) e++;
           // vão de verdade: parede dos dois lados, até 3 m
           if (k > ln.from && e < ln.to && at(k - 1) && at(e + 1) && e - k + 1 <= 3) {
-            const width = e - k + 1;
+            // o vão vai da face de um pilar até a do outro (as paredes vizinhas terminam no pilar)
+            const width = e - k + 1 + 1 - WALL_T;
             const cx = ln.alongX ? (k + e) / 2 : ln.fixed;
             const cz = ln.alongX ? ln.fixed : (k + e) / 2;
             const tall = ln.alongX ? ln.fixed === -Math.round(d / 2) : ln.fixed === -Math.round(this.layout.size.w / 2);
             const h = tall ? 2.15 : WALL_CUT + 0.35;
-            const leaves = width >= 2 ? 2 : 1;
-            const leafW = width / leaves - 0.04;
+            const leaves = width >= 2.2 ? 2 : 1;
+            const leafW = width / leaves - 0.015;
             const door = { pivots: [] as THREE.Object3D[], sign: [] as number[], x: cx, z: cz, zone: zn.id, open: 0 };
             for (let l = 0; l < leaves; l++) {
               const side = leaves === 1 ? -1 : l === 0 ? -1 : 1;
               const pivot = new THREE.Group();
-              const hinge = side * (width / 2 - 0.02);
+              const hinge = side * (width / 2);
               if (ln.alongX) pivot.position.set(cx + hinge, 0, cz);
               else pivot.position.set(cx, 0, cz + hinge);
               const leaf = new THREE.Group();
@@ -865,7 +879,7 @@ export class World {
   /** Porta abre quando alguém está a menos de 1,6 m dela; fecha sozinha depois. */
   private updateDoors(dt: number) {
     if (!this.doors.length) return;
-    const people = [this.me, ...this.others.values()].filter(Boolean).map((a) => a!.root.position);
+    const people = [this.me, ...this.others.values(), this.janitor?.avatar].filter(Boolean).map((a) => a!.root.position);
     for (const dr of this.doors) {
       const near = people.some((p) => Math.hypot(p.x - dr.x, p.z - dr.z) < 1.6);
       const target = near ? 1 : 0;
@@ -1057,6 +1071,29 @@ export class World {
     return out;
   }
 
+  /** Zoom em que o prédio inteiro cabe na tela. */
+  fitZoom() {
+    if (!this.layout) return 0.5;
+    const { w, d } = this.layout.size;
+    const aspect = this.host.clientWidth / Math.max(1, this.host.clientHeight);
+    const halfW = (w + d) / (2 * Math.SQRT2) + 1.5;
+    const halfH = ((w + d) / (2 * Math.SQRT2)) * 0.6 + 2.5;
+    return Math.max(0.2, 9 / Math.max(halfH, halfW / aspect));
+  }
+
+  /** Liga/desliga a visão do prédio inteiro. */
+  setOverview(on: boolean, setZoom = true) {
+    if (on === this.overview) return;
+    this.overview = on;
+    if (on) {
+      if (setZoom) this.savedZoom = this.zoom;
+      else this.savedZoom = Math.max(this.savedZoom, 1.3);
+      if (setZoom) this.zoom = this.fitZoom();
+    } else if (setZoom) this.zoom = this.savedZoom;
+    this.updateFrustum();
+    this.onOverviewChange?.(on);
+  }
+
   /** Cadeira (ou banqueta, poltrona) perto do ponto clicado. */
   seatNear(p: THREE.Vector3): Item | null {
     let best: Item | null = null;
@@ -1110,7 +1147,10 @@ export class World {
 
     const el = this.labels.domElement;
     el.addEventListener("wheel", (e) => {
-      this.zoom = THREE.MathUtils.clamp(this.zoom * (e.deltaY > 0 ? 0.9 : 1.1), 0.8, 3.2);
+      this.zoom = THREE.MathUtils.clamp(this.zoom * (e.deltaY > 0 ? 0.9 : 1.1), this.fitZoom(), 3.2);
+      // afastou até o prédio inteiro caber: vira a visão de mapa (e volta ao aproximar)
+      if (!this.overview && this.zoom <= this.fitZoom() * 1.02) this.setOverview(true, false);
+      else if (this.overview && this.zoom > this.fitZoom() * 1.3) this.setOverview(false, false);
       this.updateFrustum();
       e.preventDefault();
     }, { passive: false });
@@ -1130,7 +1170,16 @@ export class World {
         const it = obj && this.layout.items.find((i) => i.id === obj.userData.itemId);
         if (it && DEFS[it.type]?.interactive && this.onItemClick?.(it, e.clientX, e.clientY)) return;
       }
-      if (this.inputEnabled) this.walkTo(p.x, p.z);
+      if (this.inputEnabled) {
+        if (this.overview) {
+          // no mapa: clicou num lugar, volta a câmera para perto e vai correndo até lá
+          this.setOverview(false);
+          this.walkTo(p.x, p.z);
+          this.runPath = this.path.length > 0;
+          return;
+        }
+        this.walkTo(p.x, p.z);
+      }
     });
     el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -1228,13 +1277,15 @@ export class World {
     if (keyMove) {
       this.path = [];
       this.walkGoal = null;
+      if (this.overview) this.setOverview(false);
     }
+    if (!this.path.length) this.runPath = false;
     const hadPath = this.path.length > 0;
     if ((keyMove || hadPath) && this.me.sitting) {
       this.me.sitting = false;
       this.onSit?.(false);
     }
-    const run = this.running && (keyMove || this.path.length > 0);
+    const run = (this.running && (keyMove || this.path.length > 0)) || (this.runPath && this.path.length > 0);
     const speed = run ? this.runSpeed : this.walkSpeed;
     let moving = false;
     if (keyMove) {
@@ -1328,7 +1379,8 @@ export class World {
     }
 
     // câmera segue com suavidade
-    this.camTarget.lerp(pos, Math.min(1, dt * 4));
+    if (this.overview) this.camTarget.lerp(new THREE.Vector3(0, 0, 0), Math.min(1, dt * 4));
+    else this.camTarget.lerp(pos, Math.min(1, dt * 4));
     // vista isométrica (diagonal, de cima), como em jogos de escritório/The Sims
     this.camera.position.set(this.camTarget.x + 24, 24, this.camTarget.z + 24);
     this.camera.lookAt(this.camTarget);
@@ -1349,7 +1401,175 @@ export class World {
       this.lastState = state;
       this.onMove?.(pos.x, pos.z, this.me.targetDir, moving, zone);
     }
+    this.janitor?.update(dt);
     this.updateDoors(dt);
     this.onFrame?.();
+  }
+}
+
+// ------------------------------------------------------------------ faxineiro (NPC)
+/**
+ * Faxineiro que anda pelo escritório e para para limpar. A rota é a mesma para todos:
+ * a posição sai do relógio (Date.now), então todo mundo vê ele no mesmo lugar sem precisar do servidor.
+ */
+export class Janitor {
+  avatar: Avatar;
+  private pts: THREE.Vector3[] = [];
+  private stops: { at: number; until: number; idx: number }[] = [];
+  private cycle = 1;
+  private mop: THREE.Group;
+  private sign: THREE.Group;
+  private lastPos = new THREE.Vector3();
+  static readonly SPEED = 1.25; // m/s, andar tranquilo
+  static readonly CLEAN_SECS = 7;
+
+  constructor(private world: World) {
+    this.avatar = new Avatar(
+      {
+        id: "npc-faxina",
+        name: "Seu Zé · limpeza",
+        color: "#3b6fc0",
+        x: 0,
+        z: 0,
+        dir: 0,
+        moving: false,
+        status: "",
+        zone: null,
+        look: { body: "m", skin: "#c68a5e", hair: "curto", hairColor: "#3a2a1e", top: "camiseta", topColor: "#3b6fc0", bottom: "calca", bottomColor: "#2c3e66", shoes: "#2a2a2a", head: "bone", headColor: "#3b6fc0", face: "nenhum", neck: "nenhum", beard: "bigode", ears: "nenhum" },
+      },
+      false,
+    );
+    this.avatar.label.classList.add("npc");
+    // esfregão na mão
+    const stick = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.15, 0.05), new THREE.MeshToonMaterial({ color: 0xb98a55 }));
+    stick.position.y = -0.3;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 0.2), new THREE.MeshToonMaterial({ color: 0xe9e4d6 }));
+    head.position.y = -0.86;
+    this.mop = new THREE.Group();
+    this.mop.add(stick, head);
+    this.avatar.char.hand.add(this.mop);
+    // plaquinha de "piso molhado"
+    const yel = new THREE.MeshToonMaterial({ color: 0xf2c14e });
+    const a = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.5, 0.03), yel);
+    a.position.set(0, 0.24, 0.08);
+    a.rotation.x = -0.3;
+    const b = a.clone();
+    b.position.z = -0.08;
+    b.rotation.x = 0.3;
+    this.sign = new THREE.Group();
+    this.sign.add(a, b);
+    this.sign.visible = false;
+    world.scene.add(this.avatar.root, this.sign);
+  }
+
+  /** Monta a rota passando pelas áreas do escritório (refaz quando o mapa muda). */
+  plan() {
+    const L = this.world.layout;
+    if (!L) return;
+    const wanted: THREE.Vector3[] = [];
+    const { w, d } = L.size;
+    // corredor central e salas (centro de cada uma, um pouco para dentro da porta)
+    wanted.push(new THREE.Vector3(-w / 2 + 3, 0, -0.5), new THREE.Vector3(0, 0, -0.5), new THREE.Vector3(w / 2 - 3, 0, -0.5));
+    for (const z of L.zones) wanted.push(new THREE.Vector3(z.x, 0, z.z));
+    // ordena em volta do centro, para fazer uma volta só
+    wanted.sort((p, q) => Math.atan2(p.z, p.x) - Math.atan2(q.z, q.x));
+    const free = (p: THREE.Vector3) => {
+      for (let r = 0; r < 3; r += 0.5)
+        for (const [dx, dz] of [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r], [r, r], [-r, -r], [r, -r], [-r, r]]) {
+          const q = new THREE.Vector3(p.x + dx, 0, p.z + dz);
+          if (!this.world.blocked(q.x, q.z, 0.35)) return q;
+        }
+      return null;
+    };
+    const stopsAt = wanted.map(free).filter((p): p is THREE.Vector3 => !!p);
+    this.pts = [];
+    this.stops = [];
+    let tdist = 0;
+    for (let i = 0; i < stopsAt.length; i++) {
+      const from = stopsAt[i];
+      const to = stopsAt[(i + 1) % stopsAt.length];
+      const seg = this.world.findPath(from, to);
+      if (!seg.length) continue;
+      if (!this.pts.length) this.pts.push(from.clone());
+      // parada para limpar no começo do trecho
+      this.stops.push({ at: tdist, until: tdist + Janitor.CLEAN_SECS, idx: this.pts.length - 1 });
+      tdist += Janitor.CLEAN_SECS;
+      let prev = this.pts[this.pts.length - 1];
+      for (const p of seg) {
+        tdist += prev.distanceTo(p) / Janitor.SPEED;
+        this.pts.push(p.clone());
+        prev = p;
+      }
+    }
+    this.cycle = Math.max(1, tdist);
+  }
+
+  /** Posição na rota para o instante `t` (segundos). */
+  update(dt: number) {
+    const av = this.avatar;
+    if (this.pts.length < 2) {
+      av.root.visible = false;
+      return;
+    }
+    av.root.visible = true;
+    let t = (Date.now() / 1000) % this.cycle;
+    let cleaning = false;
+    let pos = this.pts[0].clone();
+    // anda pelos trechos descontando as paradas
+    let cursor = 0;
+    let i = 0;
+    for (const st of this.stops) {
+      if (t < st.at) break;
+      if (t < st.until) {
+        cleaning = true;
+        pos = this.pts[st.idx].clone();
+        i = -1;
+        break;
+      }
+      cursor = st.until;
+      i = st.idx;
+    }
+    if (!cleaning) {
+      let left = (t - cursor) * Janitor.SPEED;
+      pos = this.pts[i].clone();
+      for (let k = i; k < this.pts.length - 1 && left > 0; k++) {
+        const a = this.pts[k];
+        const b = this.pts[k + 1];
+        const seg = a.distanceTo(b);
+        if (left <= seg) {
+          pos = a.clone().lerp(b, left / seg);
+          left = 0;
+        } else {
+          left -= seg;
+          pos = b.clone();
+        }
+      }
+    }
+    const moved = pos.distanceTo(this.lastPos);
+    if (moved > 1e-3 && moved < 1) av.targetDir = Math.atan2(pos.x - this.lastPos.x, pos.z - this.lastPos.z);
+    else if (moved >= 1) av.body.rotation.y = av.targetDir;
+    this.lastPos.copy(pos);
+    av.root.position.copy(pos);
+    av.moving = !cleaning && moved > 1e-4;
+    let d = av.targetDir - av.body.rotation.y;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    av.body.rotation.y += d * Math.min(1, dt * 8);
+    av.update(dt, false);
+    // esfregando: braço vai e volta, plaquinha no chão ao lado
+    if (cleaning) {
+      const s = Math.sin(performance.now() / 180);
+      av.char.armR.rotation.set(-0.5 + s * 0.35, 0, 0);
+      av.char.armL.rotation.set(-0.6 + s * 0.35, 0, 0);
+      this.sign.visible = true;
+      this.sign.position.set(pos.x + 0.7, 0, pos.z + 0.4);
+    } else {
+      av.char.armR.rotation.x = Math.max(av.char.armR.rotation.x, -0.2);
+      this.sign.visible = false;
+    }
+  }
+
+  dispose() {
+    this.avatar.dispose();
+    this.sign.removeFromParent();
   }
 }
