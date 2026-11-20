@@ -67,14 +67,16 @@ if defined VERKZ_SPOTIFY_CLIENT_ID (echo     Spotify: chave embutida) else (echo
 rem ---------------------------------------------------------------
 rem 3) Compilar (o Mac sai primeiro para o GitHub trabalhar em paralelo)
 rem ---------------------------------------------------------------
+set "MAC_FALHOU="
 if defined FAZ_MAC (
   call :mac_pedir
-  if errorlevel 1 goto :erro_mac
+  if errorlevel 1 set "MAC_FALHOU=1"
 )
 if defined FAZ_WIN (
   call :windows_compilar
   if errorlevel 1 goto :erro
 )
+if defined MAC_FALHOU goto :erro_mac
 if defined FAZ_MAC (
   call :mac_baixar
   if errorlevel 1 goto :erro_mac
@@ -248,7 +250,8 @@ set /a TENTATIVA+=1
 gh workflow run build.yml --ref %RAMO% -f plataforma=mac >nul 2>nul
 if not errorlevel 1 goto :mac_achar
 if %TENTATIVA% GEQ 6 (
-  echo [ERRO] O GitHub nao aceitou o pedido de build.
+  echo [ERRO] O GitHub nao aceitou o pedido de build. Resposta do GitHub:
+  gh workflow run build.yml --ref %RAMO% -f plataforma=mac
   exit /b 1
 )
 timeout /t 10 /nobreak >nul
