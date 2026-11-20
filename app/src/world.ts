@@ -142,7 +142,7 @@ export class World {
   blockers: Rect[] = [];
   me!: Avatar;
   others = new Map<string, Avatar>();
-  zoom = 1;
+  zoom = 1.45;
   camTarget = new THREE.Vector3();
   keys = new Set<string>();
   path: THREE.Vector3[] = [];
@@ -175,9 +175,9 @@ export class World {
 
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
 
-    const hemi = new THREE.HemisphereLight(0xf2f6e6, 0x101010, 1.1);
+    const hemi = new THREE.HemisphereLight(0xf2f6e6, 0x2a2a2a, 1.7);
     this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    const sun = new THREE.DirectionalLight(0xfff8ec, 2.1);
     sun.position.set(14, 26, 10);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
@@ -224,6 +224,10 @@ export class World {
   // ---------- layout
   setLayout(layout: Layout) {
     this.layout = layout;
+    // CSS2DObject só tira o elemento do DOM quando ele mesmo é removido; aqui eles são netos.
+    this.zoneGroup.traverse((o) => {
+      if (o instanceof CSS2DObject) o.element.remove();
+    });
     this.itemGroup.clear();
     this.zoneGroup.clear();
     if (this.floor) this.floor.removeFromParent();

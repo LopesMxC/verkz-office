@@ -1,0 +1,49 @@
+name: Build do app (Mac e Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_OFFICE_SERVER: ${{ vars.OFFICE_SERVER }}
+          VERKZ_GOOGLE_CLIENT_ID: ${{ secrets.VERKZ_GOOGLE_CLIENT_ID }}
+          VERKZ_GOOGLE_CLIENT_SECRET: ${{ secrets.VERKZ_GOOGLE_CLIENT_SECRET }}
+          VERKZ_SPOTIFY_CLIENT_ID: ${{ secrets.VERKZ_SPOTIFY_CLIENT_ID }}
+        with:
+          projectPath: app
+          tagName: v__VERSION__
+          releaseName: "VERKZ Office v__VERSION__"
+          releaseBody: "Instaladores para Mac (.dmg) e Windows (.exe)."
+          releaseDraft: true
+          args: ${{ matrix.args }}

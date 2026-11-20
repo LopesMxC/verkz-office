@@ -41,9 +41,9 @@ cd app && npm run tauri dev
 Linux precisa de `libwebkit2gtk-4.1-dev` só para compilar/checar; o alvo real é Mac e Windows.
 
 ## Regras de marca e produto (obrigatórias)
-- Cores: verde neon `#C8F501` sobre quase preto `#0D0D0D`. Estética **pixel art** (pixels nítidos,
-  sem cantos arredondados, sombras em degrau; fontes pixel: Silkscreen para títulos, Pixelify Sans
-  para interface; Montserrat só para texto longo, como o chat).
+- Cores: verde neon `#C8F501` sobre quase preto `#0D0D0D`.
+- **Mundo em pixel art** (cena 3D pixelada, personagens voxel). **Interface moderna e limpa**
+  (não pixel): Montserrat, cantos arredondados, painéis escuros, ícones de traço — seguir o Figma.
 - Logo: usar SEMPRE o SVG oficial em `app/src/logo.ts` (`LOGO_PATH`). Nunca desenhar um "V" à mão
   nem escrever "VERKZ" em fonte comum como logo.
 - Sem frases de efeito/slogans inventados na interface.

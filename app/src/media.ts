@@ -205,7 +205,8 @@ export class Media {
     const me = this.world.me;
     const av = this.world.others.get(id);
     if (!me || !av) return { gain: 0, dist: Infinity };
-    const dist = Math.hypot(av.root.position.x - me.root.position.x, av.root.position.z - me.root.position.z);
+    // usa a posição-alvo (vinda da rede), que vale mesmo com a janela em segundo plano
+    const dist = Math.hypot(av.target.x - me.root.position.x, av.target.z - me.root.position.z);
     const myZone = this.world.currentZone;
     const theirZone = av.info.zone ? this.world.layout.zones.find((z) => z.id === av.info.zone) ?? null : null;
     const myPrivate = myZone?.private ? myZone.id : null;

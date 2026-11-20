@@ -12,8 +12,9 @@ Depois: "os personagens devem poder ser personalizados, e a estética deve ser e
 - Escopo v1 (tudo pedido): escritório 3D + avatares; áudio por proximidade; vídeo + tela;
   salas privadas + chat; personalização do escritório (editor); personalização do personagem;
   integrações Google Agenda / Gmail / Meet, Spotify, YouTube Music e outros programas.
-- Pixel art = cena 3D renderizada em baixa resolução com `RenderPixelatedPass` (contornos) +
-  câmera encaixada na grade de pixels. Personagens voxel (caixas). Sem bloom.
+- Pixel art SÓ no mundo 3D (cena renderizada em baixa resolução com `RenderPixelatedPass` +
+  câmera encaixada na grade de pixels; personagens voxel). A INTERFACE é moderna, não pixel
+  (pedido do Alifer em 20/11 11:46), seguindo o desenho do Figma.
 - YouTube Music não tem API pública: entra como atalho (abre o site/app), sem "tocando agora".
 - Gmail: escopo `gmail.labels` (não restrito), só para contar não lidos.
 - Credenciais OAuth podem vir embutidas no build (env `VERKZ_GOOGLE_CLIENT_ID`,
@@ -26,12 +27,21 @@ Depois: "os personagens devem poder ser personalizados, e a estética deve ser e
 - [x] Lado nativo Tauri (`app/src-tauri`): `cargo check` OK. Integrações Google/Spotify prontas.
 - [x] `world.ts` (cena, pixel art, colisão, A*), `avatar.ts` (voxel + opções), `furniture.ts`,
       `media.ts` (LiveKit/proximidade), `net.ts`, `integrations.ts`, `logo.ts`.
-- [ ] `ui.ts` / `main.ts` / `style.css` / `index.html` (tela de entrada, criador de personagem,
-      dock, chat, painel de pessoas, painel de integrações/atalhos, telas compartilhadas)
-- [ ] `editor.ts` (modo edição: colocar/girar/remover móveis, desenhar salas, salvar)
-- [ ] `deploy/` (docker-compose LiveKit + server + Caddy) e guia passo a passo da VPS
-- [ ] `.github/workflows/build.yml` (tauri-action, Mac universal + Windows)
-- [ ] Testes: `npm run build`, rodar server + app no navegador, screenshot com Chrome headless
+- [x] Interface v1 (main.ts, creator.ts, editor.ts, icons.ts, style.css): funcionando, testada com
+      2 usuários no Chrome headless (login, criador, chat, editor, painel de apps).
+- [x] `deploy/` (docker-compose LiveKit + server + Caddy, setup.sh) e README com guia da VPS.
+- [x] `.github/workflows/build.yml` (tauri-action, Mac universal + Windows).
+- [x] App nativo compila em release (~6 MB no Linux).
+- [ ] **NOVO PEDIDO (20/11 11:46):** "qualidade dos pixels muito ruim, faça melhor a pixel art; a
+      interface/UI deve ser normal, bem desenhada; desenhe a interface no Figma".
+      - [ ] Desenhar a UI no Figma (arquivo "VERKZ Office — Interface"): login, escritório com HUD,
+            criador de personagem, painel de agenda/apps, chat, editor. UI moderna (NÃO pixel):
+            Montserrat, cantos arredondados, painéis escuros translúcidos, acento #C8F501.
+      - [ ] Reimplementar style.css/HTML conforme o Figma (trocar ícones pixel por ícones de traço).
+      - [ ] Melhorar o pixel art do mundo: mais resolução por personagem, tons em degrau (toon),
+            texturas pintadas pixel a pixel (piso de madeira, tapetes, paredes), luz mais quente,
+            contornos limpos, remover listras do logo no piso.
+- [ ] Teste real de áudio/vídeo com LiveKit (no sandbox não foi possível rodar o binário do LiveKit).
 
 ## Protocolo WebSocket (server <-> app)
 Cliente → servidor: `{t:"join",key,name,color,look}`, `{t:"move",x,z,dir,moving,zone}`,

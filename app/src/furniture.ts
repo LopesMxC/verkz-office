@@ -49,6 +49,7 @@ const M = {
   screen: new THREE.MeshStandardMaterial({ color: 0x0b0b0b, emissive: 0x9fc200, emissiveIntensity: 0.25, roughness: 0.2 }),
   neon: new THREE.MeshStandardMaterial({ color: NEON, emissive: NEON, emissiveIntensity: 2.2 }),
   neonSoft: new THREE.MeshStandardMaterial({ color: NEON, emissive: NEON, emissiveIntensity: 0.9 }),
+  cap: new THREE.MeshStandardMaterial({ color: 0x2e2e33, roughness: 0.8, flatShading: true }),
   rug: new THREE.MeshStandardMaterial({ color: 0x202018, roughness: 1, flatShading: true }),
   glass: new THREE.MeshStandardMaterial({ color: 0x9fb0b8, transparent: true, opacity: 0.25, roughness: 0.1 }),
 };
@@ -105,7 +106,7 @@ function floorLogoTexture() {
   tex.colorSpace = THREE.SRGBColorSpace;
   img.onload = () => {
     ctx.clearRect(0, 0, 512, 512);
-    ctx.globalAlpha = 0.16; // bem discreta no piso
+    ctx.globalAlpha = 0.09; // bem discreta no piso
     ctx.drawImage(img, 56, 96, 400, 283);
     tex.needsUpdate = true;
   };
@@ -132,7 +133,7 @@ export const DEFS: Record<string, Def> = {
     w: 1,
     d: 1,
     blocks: true,
-    build: () => group(box(1, 1.25, 1, M.wall), box(1.001, 0.05, 1.001, M.neonSoft, 0, 1.25, 0)),
+    build: () => group(box(1, 1.25, 1, M.wall), box(1.001, 0.04, 1.001, M.cap, 0, 1.25, 0), box(0.12, 0.045, 0.12, M.neonSoft, 0, 1.25, 0)),
   },
   glass_wall: {
     label: "Vidro",
@@ -315,7 +316,7 @@ export const DEFS: Record<string, Def> = {
     build: () => {
       const p = new THREE.Mesh(new THREE.PlaneGeometry(6, 6), new THREE.MeshBasicMaterial({ map: floorLogoTexture(), transparent: true, depthWrite: false }));
       p.rotation.x = -Math.PI / 2;
-      p.position.y = 0.012;
+      p.position.y = 0.03;
       return p;
     },
   },
