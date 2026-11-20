@@ -1,14 +1,18 @@
 import "./style.css";
-import { World, PeerInfo } from "./world";
+import { World, PeerInfo, EMOTES, HOLD_ITEMS } from "./world";
 import { Net } from "./net";
-import { Media } from "./media";
+import { Media, MediaPrefs, RANGES } from "./media";
 import { Editor } from "./editor";
 import { CharacterPreview, openCreator } from "./creator";
 import { Look, lookColor, normalizeLook, randomLook } from "./avatar";
 import { icon } from "./icons";
 import { logoEl } from "./logo";
-import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, NowPlaying, openTarget, Shortcut } from "./integrations";
-import type { Layout, Zone } from "./furniture";
+import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, NowPlaying, openTarget, Shortcut, activeApp, ytm, YtmState, appVersion, checkUpdate, UpdateInfo } from "./integrations";
+import type { Item, Layout, Zone } from "./furniture";
+import { DEFS } from "./furniture";
+import { soundPrefs, SoundPrefs, notify, approachChime, footstep, kitchenSound, PAD_SOUNDS, listCustom, addCustom, removeCustom, playPad, PadSound } from "./sound";
+import { EnvConfig, WEATHERS, SEASONS, HOLIDAYS, seasonByDate, weatherFromCode, resolveHoliday, Weather, Season } from "./env";
+import { DEFAULT_GOAL, DEFAULT_CUSTOM, GoalCfg, CustomCfg, financeData, weatherData, customValue, weatherText, fmtBRL, fmtNum, refreshWidgets } from "./widgets";
 import { loadModels } from "./models";
 import { Recorder } from "./recorder";
 
@@ -25,6 +29,12 @@ interface Prefs {
   shareMeeting: boolean;
   manualStatus: string;
   shortcuts: Shortcut[];
+  adminKey: string;
+  shareActivity: boolean;
+  shareAgendaTitles: boolean;
+  weatherFx: boolean;
+  media: MediaPrefs;
+  sound: SoundPrefs;
 }
 const PREFS_KEY = "verkz-office:prefs";
 function loadPrefs(): Prefs {
@@ -43,6 +53,12 @@ function loadPrefs(): Prefs {
     shareMeeting: p.shareMeeting ?? true,
     manualStatus: p.manualStatus ?? "",
     shortcuts: p.shortcuts ?? DEFAULT_SHORTCUTS,
+    adminKey: p.adminKey ?? "",
+    shareActivity: p.shareActivity ?? true,
+    shareAgendaTitles: p.shareAgendaTitles ?? false,
+    weatherFx: p.weatherFx ?? true,
+    media: { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio", ...(p.media ?? {}) },
+    sound: { ...soundPrefs, ...(p.sound ?? {}) },
   };
 }
 const prefs = loadPrefs();
@@ -62,28 +78,17 @@ const hm = (d: Date) => d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute:
 const initials = (n: string) => n.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? "").join("");
 
 // ------------------------------------------------------------ sons curtos
-let actx: AudioContext | null = null;
-function blip(kind: "msg" | "wave" | "join" = "msg") {
-  try {
-    actx ??= new AudioContext();
-    const notes = kind === "wave" ? [660, 880, 990] : kind === "join" ? [523, 784] : [880, 1175];
-    notes.forEach((f, i) => {
-      const o = actx!.createOscillator();
-      const g = actx!.createGain();
-      o.type = "sine";
-      o.frequency.value = f;
-      const t = actx!.currentTime + i * 0.08;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.06, t + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
-      o.connect(g).connect(actx!.destination);
-      o.start(t);
-      o.stop(t + 0.13);
-    });
-  } catch {
-    /* sem áudio */
-  }
+function blip(kind: "msg" | "wave" | "join" | "call" | "emote" | "error" = "msg") {
+  notify(kind);
 }
+Object.assign(soundPrefs, prefs.sound);
+
+// sem o menu do navegador (Salvar imagem como / Copiar imagem) — só em campos de texto
+document.addEventListener("contextmenu", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest("input, textarea, [contenteditable]")) return;
+  e.preventDefault();
+});
 
 // ------------------------------------------------------------ avisos
 const toasts = document.createElement("div");
@@ -157,7 +162,7 @@ let connected = false;
 let chatTab: "geral" | "sala" = "geral";
 let unread = 0;
 const chatLog: any[] = [];
-let rightPanel: "chat" | "apps" | "meetings" | null = null;
+let rightPanel: "chat" | "apps" | "meetings" | "team" | null = null;
 let recorder: Recorder;
 let recStarting = false;
 let leftOpen = true;
@@ -167,6 +172,9 @@ let nowPlaying: NowPlaying | null = null;
 let integ = { google: false, spotify: false, google_configured: false, spotify_configured: false };
 let addingShortcut = false;
 let started = false;
+let isAdmin = false;
+let ytmState: YtmState | null = null;
+let pendingUpdate: UpdateInfo | null = null;
 
 /** Endereço http(s) do servidor, a partir do endereço do WebSocket. */
 const httpBase = () => prefs.server.replace(/^ws/, "http").replace(/\/ws\/?$/, "");
@@ -179,6 +187,17 @@ function start() {
     started = true;
     world = new World($("#stage"));
     media = new Media(world);
+    media.prefs = prefs.media;
+    media.onApproach = () => {
+      if (soundPrefs.approach) approachChime();
+    };
+    media.onLocalState = (patch) => sendState(patch);
+    world.onStep = (run, vol) => {
+      if (soundPrefs.steps) footstep(run, vol);
+    };
+    world.onAvatarMenu = (id, x, y, isMe) => openAvatarMenu(id, x, y, isMe);
+    world.onAvatarClick = (id, x, y) => openPersonCard(id, x, y);
+    world.onItemClick = (it, x, y) => onItemClick(it, x, y);
     media.onError = (m) => toast(m, true);
     media.onStateChanged = renderDock;
     media.onScreensChanged = renderScreens;
@@ -191,6 +210,7 @@ function start() {
     };
     editor = new Editor(world, hud, (layout) => net.send({ t: "layout_save", layout }), toast);
     editor.onClose = () => {
+      world.editing = false;
       renderLeft();
       renderDock();
     };
@@ -202,9 +222,17 @@ function start() {
     if (new URLSearchParams(location.search).has("debug")) (window as any).__office = { world, media };
     setInterval(renderPeople, 1000);
     startIntegrations();
+    startActivity();
+    startUpdates();
+    ytm.listen((st) => {
+      ytmState = st;
+      pushStatus();
+      if (rightPanel === "apps") renderApps();
+    }).catch(() => {});
+    setInterval(applyEnv, 10 * 60_000);
   }
 
-  net = new Net(prefs.server, () => ({ t: "join", key: prefs.key, name: prefs.name, color: lookColor(prefs.look), look: prefs.look }));
+  net = new Net(prefs.server, () => ({ t: "join", key: prefs.key, name: prefs.name, color: lookColor(prefs.look), look: prefs.look, admin_key: prefs.adminKey }));
   net.on("error", (m) => {
     net.close();
     showLogin(m.msg);
@@ -212,12 +240,16 @@ function start() {
   net.on("welcome", async (m) => {
     await modelsReady;
     myId = m.id;
+    isAdmin = !!m.admin;
     for (const id of [...world.others.keys()]) world.removePeer(id);
     world.setLayout(m.layout as Layout);
     // nasce perto da entrada, com um pequeno desvio para não ficar em cima de ninguém
     const sp = m.layout.spawn ?? { x: 0, z: 8 };
     const me: PeerInfo = { ...m.me, x: sp.x + (Math.random() * 4 - 2), z: sp.z + (Math.random() * 2 - 1), look: prefs.look };
     world.spawnMe(me);
+    applyEnv();
+    lastActivity = "";
+    if (world.me.holding) sendState({ hold: world.me.holding });
     for (const p of m.peers) {
       world.addPeer(p);
       if (p.recording) world.others.get(p.id)?.setRecording(true);
@@ -234,6 +266,7 @@ function start() {
     pushStatus();
     media.connect(m.livekit.url, m.livekit.token);
     setConn(true);
+    renderDock();
   });
   net.on("close", () => setConn(false));
   net.on("peer_join", (m) => {
@@ -243,6 +276,20 @@ function start() {
     blip("join");
     renderPeople();
   });
+  net.on("state", (m) => {
+    if (m.id === myId) return;
+    world.others.get(m.id)?.applyExtra(m.patch);
+    if (rightPanel === "team") renderTeam();
+  });
+  net.on("fx", (m) => {
+    const a = m.from === myId ? null : world.others.get(m.from);
+    if (a && m.data?.emote) {
+      a.playEmote(m.data.emote);
+      const pos = a.root.position;
+      if (world.me && pos.distanceTo(world.me.root.position) < 8) notify("emote");
+    }
+  });
+  net.on("from", (m) => onDirect(m.from, m.name, m.msg));
   net.on("peer_leave", (m) => {
     world.removePeer(m.id);
     renderPeople();
@@ -256,7 +303,10 @@ function start() {
     if (m.id !== myId) world.others.get(m.id)?.setLook(m.look);
   });
   net.on("layout", (m) => {
-    if (!editor.active) world.setLayout(m.layout);
+    if (!editor.active) {
+      world.setLayout(m.layout);
+      applyEnv();
+    }
     if (m.by !== myId) toast("O escritório foi atualizado");
   });
   net.on("chat", (m) => {
@@ -366,8 +416,11 @@ function renderLeft() {
       return;
     }
     const row = t.closest(".person[data-id]") as HTMLElement | null;
-    const a = row && world.others.get(row.dataset.id!);
-    if (a) world.walkTo(a.root.position.x + 0.8, a.root.position.z + 0.8);
+    if (row) openPersonCard(row.dataset.id!, e.clientX, e.clientY);
+  });
+  $("#people").addEventListener("contextmenu", (e) => {
+    const row = (e.target as HTMLElement).closest(".person[data-id]") as HTMLElement | null;
+    if (row) openAvatarMenu(row.dataset.id!, e.clientX, e.clientY, false);
   });
 }
 
@@ -382,6 +435,8 @@ function renderDock() {
     b("screen", "screen", media?.screenOn ? "Parar de compartilhar" : "Compartilhar tela", media?.screenOn ? "active" : ""),
     b("rec", "record", recorder?.active ? "Parar gravação" : "Gravar reunião", recorder?.active ? "rec-on" : ""),
     `<span class="divider"></span>`,
+    b("emote", "smile", "Emotes (E)", popover === "emote" ? "active" : ""),
+    b("pad", "volume", "Soundpad", popover === "pad" ? "active" : ""),
     b("people", "users", "Pessoas", leftOpen && !editor?.active ? "active" : ""),
     b("chat", "chat", "Chat (Enter)", rightPanel === "chat" ? "active" : "", unread ? `<span class="badge">${unread > 9 ? "9+" : unread}</span>` : ""),
     b("meetings", "file-text", "Reuniões gravadas", rightPanel === "meetings" ? "active" : ""),
@@ -389,6 +444,8 @@ function renderDock() {
     `<span class="divider"></span>`,
     b("char", "shirt", "Personagem"),
     b("edit", "pencil", "Editar escritório", editor?.active ? "active" : ""),
+    isAdmin ? b("team", "activity", "Atividade da equipe", rightPanel === "team" ? "active" : "") : "",
+    b("settings", "settings", "Configurações"),
     `<span class="divider"></span>`,
     b("exit", "log-out", "Sair"),
   ].join("");
@@ -435,7 +492,18 @@ async function dockAction(id: string) {
     }
     case "edit":
       editor.toggle();
+      world.editing = editor.active;
       renderLeft();
+      break;
+    case "emote":
+    case "pad":
+      togglePopover(id);
+      break;
+    case "team":
+      openRight(rightPanel === "team" ? null : "team");
+      break;
+    case "settings":
+      openSettings();
       break;
     case "exit":
       if (recorder.active) await toggleRecording();
@@ -453,6 +521,12 @@ window.addEventListener("keydown", (e) => {
   const typing = a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement;
   if (typing || !started || overlay.innerHTML || document.querySelector(".modal-bg")) return;
   if (e.key === "m" || e.key === "M") dockAction("mic");
+  if (e.key === "e" || e.key === "E") togglePopover("emote");
+  if (e.key === "Escape") closeFloating();
+  if (!e.ctrlKey && !e.altKey && /^[0-9]$/.test(e.key)) {
+    const i = e.key === "0" ? 9 : Number(e.key) - 1;
+    if (EMOTES[i]) doEmote(EMOTES[i][0]);
+  }
   if (e.key === "Enter") {
     openRight("chat");
     renderDock();
@@ -475,6 +549,7 @@ function openRight(p: typeof rightPanel) {
     refreshIntegrations();
   }
   if (p === "meetings") renderMeetings();
+  if (p === "team") renderTeam();
 }
 
 const closeRight = () => {
@@ -806,6 +881,8 @@ function pushStatus() {
   const meet = ongoingMeeting();
   if (prefs.shareMeeting && meet) s = `Em reunião até ${hm(new Date(meet.end))}`;
   else if (prefs.shareMusic && nowPlaying?.playing && !s) s = `Ouvindo: ${nowPlaying.title} - ${nowPlaying.artist}`;
+  else if (prefs.shareMusic && ytmState?.playing && !s) s = `Ouvindo: ${ytmState.title} - ${ytmState.artist}`;
+  if (!s && holdStatus) s = holdStatus;
   if (s === lastStatus || !net) return;
   lastStatus = s;
   net.send({ t: "status", text: s });
@@ -854,6 +931,17 @@ function renderApps() {
            <button class="round" data-sc="next" aria-label="Próxima">${icon("next", 15)}</button>
          </div>`;
 
+  const ytmHtml = !native
+    ? ""
+    : !ytmState
+      ? `<div class="connect">${icon("music", 20)}<div class="meta"><div class="t-m">YouTube Music</div><div class="note">Toca dentro do app. Entre com sua conta Google na primeira vez.</div></div><button class="btn secondary sm" data-y="open">Abrir</button></div>`
+      : `<div class="np">${ytmState.cover ? `<img src="${esc(ytmState.cover)}" alt="">` : '<span class="cover"></span>'}
+           <div class="meta"><div class="t-m">${esc(ytmState.title || "YouTube Music")}</div><div class="t-s c2">${esc(ytmState.artist || "Escolha uma música")}</div></div>
+           <button class="round" data-yc="previous" aria-label="Anterior">${icon("prev", 15)}</button>
+           <button class="round primary" data-yc="toggle" aria-label="Tocar ou pausar">${icon(ytmState.playing ? "pause" : "play", 15)}</button>
+           <button class="round" data-yc="next" aria-label="Próxima">${icon("next", 15)}</button>
+         </div><button class="btn ghost sm" data-y="open" style="align-self:flex-start">Mostrar janela do YouTube Music</button>`;
+
   el.innerHTML = `
     <div class="panel-head"><div class="t-m">Agenda e apps</div><button class="x-btn" data-close>${icon("x", 18)}</button></div>
     <div class="scroll" style="display:flex;flex-direction:column;gap:16px">
@@ -861,7 +949,7 @@ function renderApps() {
         <div class="section-head"><span class="label">Hoje</span>${integ.google && mailUnread != null ? `<button class="mail-link" data-open="https://mail.google.com">${icon("mail", 14)} ${mailUnread} não lidos</button>` : ""}</div>
         ${agendaHtml}
       </div>
-      ${native ? `<div class="section"><span class="label">Música</span>${musicHtml}</div>` : ""}
+      ${native ? `<div class="section"><span class="label">Música</span>${musicHtml}${ytmHtml}</div>` : ""}
       ${native ? `<div class="section">
         <label class="toggle-row"><span>Mostrar “Em reunião” no meu status</span><span class="switch"><input type="checkbox" data-pref="shareMeeting" ${prefs.shareMeeting ? "checked" : ""}><span></span></span></label>
         <label class="toggle-row"><span>Mostrar a música que estou ouvindo</span><span class="switch"><input type="checkbox" data-pref="shareMusic" ${prefs.shareMusic ? "checked" : ""}><span></span></span></label>
@@ -949,6 +1037,8 @@ function renderApps() {
     run(integrations.spotifyConnect, "Spotify conectado");
   });
   el.querySelectorAll<HTMLElement>("[data-sc]").forEach((b) => b.addEventListener("click", () => run(() => integrations.spotifyControl(b.dataset.sc as "play" | "pause" | "next" | "previous"))));
+  el.querySelectorAll<HTMLElement>('[data-y="open"]').forEach((b) => b.addEventListener("click", () => ytm.open(true).catch((err) => toast(String(err), true))));
+  el.querySelectorAll<HTMLElement>("[data-yc]").forEach((b) => b.addEventListener("click", () => ytm.control(b.dataset.yc as "toggle" | "next" | "previous").catch((err) => toast(String(err), true))));
   el.querySelector("#creds")?.addEventListener("submit", (e) => {
     e.preventDefault();
     const f = new FormData(e.target as HTMLFormElement);
@@ -958,6 +1048,708 @@ function renderApps() {
     );
   });
 }
+
+// ------------------------------------------------------------ estado extra (rede)
+function sendState(patch: Record<string, unknown>) {
+  world.me?.applyExtra(patch);
+  net?.send({ t: "state", patch });
+}
+
+/** Fecha menus, cartões e popovers flutuantes. */
+function closeFloating() {
+  document.querySelectorAll(".ctx-menu, .person-card").forEach((el) => el.remove());
+  if (popover) togglePopover(popover);
+}
+document.addEventListener("pointerdown", (e) => {
+  const t = e.target as HTMLElement;
+  if (!t.closest(".ctx-menu, .person-card")) document.querySelectorAll(".ctx-menu, .person-card").forEach((el) => el.remove());
+});
+
+function floatAt(el: HTMLElement, x: number, y: number) {
+  document.querySelectorAll(".ctx-menu, .person-card").forEach((o) => o.remove());
+  el.style.left = "0px";
+  el.style.top = "0px";
+  hud.appendChild(el);
+  const r = el.getBoundingClientRect();
+  el.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
+  el.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
+}
+
+function menu(x: number, y: number, title: string, items: [string, string, () => void][]) {
+  const el = document.createElement("div");
+  el.className = "panel ctx-menu";
+  el.innerHTML = `<div class="ctx-title">${esc(title)}</div>` + items.map(([ic, label], i) => `<button data-i="${i}">${icon(ic, 16)}<span>${esc(label)}</span></button>`).join("");
+  el.querySelectorAll<HTMLElement>("[data-i]").forEach((b) =>
+    b.addEventListener("click", () => {
+      el.remove();
+      items[Number(b.dataset.i)][2]();
+    }),
+  );
+  floatAt(el, x, y);
+}
+
+// ------------------------------------------------------------ pessoas: menu e cartão
+function goTo(id: string) {
+  const a = world.others.get(id);
+  if (a) world.walkTo(a.root.position.x + 0.8, a.root.position.z + 0.8);
+}
+
+function callPerson(id: string) {
+  const z = world.currentZone;
+  net.send({ t: "to", to: id, msg: { kind: "call", zone: z?.name ?? "Área aberta", x: world.me.root.position.x, z: world.me.root.position.z } });
+  toast(`Chamando ${world.others.get(id)?.info.name ?? "a pessoa"}...`);
+}
+
+const agendaWait = new Map<string, (items: any[] | null) => void>();
+function requestAgenda(id: string): Promise<any[] | null> {
+  return new Promise((res) => {
+    agendaWait.set(id, res);
+    net.send({ t: "to", to: id, msg: { kind: "agenda_req" } });
+    setTimeout(() => {
+      if (agendaWait.get(id) === res) {
+        agendaWait.delete(id);
+        res(null);
+      }
+    }, 6000);
+  });
+}
+
+async function showAgenda(id: string) {
+  const a = world.others.get(id);
+  if (!a) return;
+  const bg = modal(`Agenda de ${a.info.name}`, `<div class="note">Buscando...</div>`);
+  const items = await requestAgenda(id);
+  const body = $(".modal-body", bg);
+  if (!body) return;
+  if (items === null) body.innerHTML = `<div class="note">A pessoa não respondeu (o app dela pode estar sem a agenda conectada).</div>`;
+  else if (!items.length) body.innerHTML = `<div class="note">Agenda livre nas próximas 24 h.</div>`;
+  else
+    body.innerHTML = items
+      .map((e) => `<div class="event"><div class="tm">${e.allDay ? "Dia todo" : `${hm(new Date(e.start))} – ${hm(new Date(e.end))}`}</div><div class="t-m">${esc(e.title)}</div></div>`)
+      .join("");
+}
+
+function openAvatarMenu(id: string, x: number, y: number, isMe: boolean) {
+  if (isMe) {
+    menu(x, y, "Você", [
+      ["smile", "Emotes", () => togglePopover("emote")],
+      ...(world.me.holding ? ([["x", `Largar ${HOLD_ITEMS[world.me.holding]?.label ?? "item"}`, () => setHolding(null)]] as [string, string, () => void][]) : []),
+      ["shirt", "Personagem", () => dockAction("char")],
+      ["settings", "Configurações", openSettings],
+    ]);
+    return;
+  }
+  const a = world.others.get(id);
+  if (!a) return;
+  const items: [string, string, () => void][] = [
+    ["users", "Chamar para cá", () => callPerson(id)],
+    ["chevron-right", "Ir até a pessoa", () => goTo(id)],
+    ["calendar", "Ver agenda", () => showAgenda(id)],
+    [
+      "hand",
+      "Acenar",
+      () => {
+        net.send({ t: "wave", to: id });
+        toast("Aceno enviado");
+      },
+    ],
+    ["activity", "Ver atividade", () => openPersonCard(id, x, y)],
+  ];
+  menu(x, y, a.info.name, items);
+}
+
+const since = (t?: number) => {
+  if (!t) return "";
+  const m = Math.max(0, Math.round((Date.now() / 1000 - t) / 60));
+  return m < 1 ? "agora" : m < 60 ? `há ${m} min` : `há ${Math.floor(m / 60)} h ${m % 60} min`;
+};
+
+function openPersonCard(id: string, x: number, y: number) {
+  const a = id === myId ? world.me : world.others.get(id);
+  if (!a) return;
+  const act = a.extra.activity;
+  const zones = world.layout?.zones ?? [];
+  const zn = zones.find((z) => z.id === a.info.zone)?.name ?? "Área aberta";
+  const hold = a.extra.hold && HOLD_ITEMS[a.extra.hold];
+  const el = document.createElement("div");
+  el.className = "panel person-card";
+  el.innerHTML = `
+    <div class="pc-head"><span class="avatar" style="background:${lookColor(a.look)}">${esc(initials(a.info.name))}</span>
+      <div class="meta"><div class="t-m">${esc(a.info.name)}${id === myId ? " (você)" : ""}</div><div class="t-s c2">${esc(a.info.status || zn)}</div></div></div>
+    <div class="pc-row"><span class="label">Onde</span><span>${esc(zn)}</span></div>
+    <div class="pc-row"><span class="label">Atividade</span><span>${act?.app ? `${esc(act.app)}${act.title ? `<br><span class="t-s c2">${esc(act.title)}</span>` : ""}<br><span class="t-s c3">${since(act.since)}${act.share === false && isAdmin ? " · visível só para a gestão" : ""}</span>` : '<span class="c3">Não compartilhada</span>'}</span></div>
+    ${hold ? `<div class="pc-row"><span class="label">Agora</span><span>${hold.emoji} ${esc(hold.status)}</span></div>` : ""}
+    ${a.extra.cam ? `<div class="pc-row"><span class="label">Câmera</span><span>Ligada</span></div>` : ""}
+    ${id !== myId ? `<div class="pc-actions"><button class="btn primary sm" data-a="call">Chamar</button><button class="btn secondary sm" data-a="go">Ir até</button><button class="btn ghost sm" data-a="agenda">Agenda</button></div>` : ""}`;
+  el.querySelector('[data-a="call"]')?.addEventListener("click", () => (el.remove(), callPerson(id)));
+  el.querySelector('[data-a="go"]')?.addEventListener("click", () => (el.remove(), goTo(id)));
+  el.querySelector('[data-a="agenda"]')?.addEventListener("click", () => (el.remove(), showAgenda(id)));
+  floatAt(el, x + 12, y - 20);
+}
+
+/** Mensagens diretas (chamar, agenda...). */
+function onDirect(from: string, name: string, msg: any) {
+  if (!msg?.kind) return;
+  if (msg.kind === "call") {
+    notify("call");
+    const bg = modal(
+      "Chamado",
+      `<div class="call-box"><div class="t-m">${esc(name)} está chamando você</div><div class="note">Para: ${esc(msg.zone)}</div></div>`,
+      [
+        ["Agora não", "ghost", () => net.send({ t: "to", to: from, msg: { kind: "call_reply", ok: false } })],
+        [
+          "Ir agora",
+          "primary",
+          () => {
+            const a = world.others.get(from);
+            const x = a ? a.root.position.x : msg.x;
+            const z = a ? a.root.position.z : msg.z;
+            world.walkTo(x + 0.9, z + 0.9);
+            net.send({ t: "to", to: from, msg: { kind: "call_reply", ok: true } });
+          },
+        ],
+      ],
+    );
+    setTimeout(() => bg.remove(), 45_000);
+  } else if (msg.kind === "call_reply") {
+    toast(msg.ok ? `${name} está vindo` : `${name} não pode agora`);
+  } else if (msg.kind === "agenda_req") {
+    const items = (integ.google ? agenda : []).slice(0, 8).map((e) => ({ start: e.start, end: e.end, allDay: e.allDay, title: prefs.shareAgendaTitles ? e.title : "Ocupado" }));
+    net.send({ t: "to", to: from, msg: { kind: "agenda", items, connected: integ.google } });
+  } else if (msg.kind === "agenda") {
+    const cb = agendaWait.get(from);
+    agendaWait.delete(from);
+    cb?.(msg.connected === false ? null : msg.items ?? []);
+  }
+}
+
+// ------------------------------------------------------------ modais genéricos
+function modal(title: string, body: string, actions: [string, string, () => void | boolean][] = [], wide = false) {
+  const bg = document.createElement("div");
+  bg.className = "modal-bg";
+  bg.innerHTML = `<div class="panel modal ${wide ? "wide" : ""}"><div class="panel-head"><div class="t-m">${esc(title)}</div><button class="x-btn" data-x>${icon("x", 18)}</button></div>
+    <div class="modal-body">${body}</div>
+    ${actions.length ? `<div class="modal-actions">${actions.map(([l, k], i) => `<button class="btn ${k} sm" data-ma="${i}">${esc(l)}</button>`).join("")}</div>` : ""}</div>`;
+  const close = () => bg.remove();
+  bg.addEventListener("pointerdown", (e) => e.target === bg && close());
+  $("[data-x]", bg).addEventListener("click", close);
+  bg.querySelectorAll<HTMLElement>("[data-ma]").forEach((b) =>
+    b.addEventListener("click", () => {
+      if (actions[Number(b.dataset.ma)][2]() !== false) close();
+    }),
+  );
+  document.body.appendChild(bg);
+  return bg;
+}
+
+// ------------------------------------------------------------ emotes e soundpad
+let popover: "emote" | "pad" | null = null;
+function togglePopover(id: string) {
+  document.querySelector(".popover")?.remove();
+  popover = popover === id ? null : (id as typeof popover);
+  renderDock();
+  if (!popover) return;
+  const el = document.createElement("div");
+  el.className = "panel popover";
+  hud.appendChild(el);
+  if (popover === "emote") {
+    el.innerHTML = `<div class="label">Emotes · teclas 1–0</div><div class="emote-grid">${EMOTES.map(([id, emo, label], i) => `<button data-e="${id}" title="${esc(label)} (${(i + 1) % 10})"><span>${emo}</span><small>${esc(label)}</small></button>`).join("")}</div>`;
+    el.querySelectorAll<HTMLElement>("[data-e]").forEach((b) => b.addEventListener("click", () => doEmote(b.dataset.e!)));
+  } else renderPad(el);
+}
+
+let lastEmote = 0;
+function doEmote(id: string) {
+  if (!world?.me || performance.now() - lastEmote < 600) return;
+  lastEmote = performance.now();
+  world.me.playEmote(id);
+  net.send({ t: "fx", data: { emote: id } });
+}
+
+async function renderPad(el: HTMLElement) {
+  const custom = await listCustom();
+  const btn = (s: PadSound, rm = false) => `<button class="pad" data-p="${esc(s.id)}"><span>${s.emoji ?? "🔊"}</span><small>${esc(s.name)}</small>${rm ? `<i data-rm="${esc(s.id)}" title="Remover">×</i>` : ""}</button>`;
+  el.innerHTML = `<div class="section-head"><span class="label">Soundpad</span><span class="t-s c3">Quem está perto ouve</span></div>
+    <div class="pad-grid">${PAD_SOUNDS.map((s) => btn(s)).join("")}${custom.map((s) => btn(s, true)).join("")}
+      <label class="pad add" title="Adicionar som (mp3/wav até 3 MB)">${icon("plus", 18)}<small>Adicionar</small><input type="file" accept="audio/*" hidden></label></div>
+    <label class="slider-row"><span class="t-s">Volume</span><input type="range" min="0" max="1" step="0.05" value="${soundPrefs.soundpad}"></label>`;
+  el.querySelectorAll<HTMLElement>("[data-p]").forEach((b) =>
+    b.addEventListener("click", async (e) => {
+      const rm = (e.target as HTMLElement).closest("[data-rm]") as HTMLElement | null;
+      if (rm) {
+        await removeCustom(rm.dataset.rm!);
+        renderPad(el);
+        return;
+      }
+      try {
+        await media.ensureSoundpad();
+      } catch {
+        /* sem sala de áudio: toca só local */
+      }
+      playPad(b.dataset.p!);
+    }),
+  );
+  el.querySelector<HTMLInputElement>('input[type="file"]')?.addEventListener("change", async (e) => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    try {
+      await addCustom(f);
+      renderPad(el);
+    } catch (err) {
+      toast(String((err as Error).message ?? err), true);
+    }
+  });
+  el.querySelector<HTMLInputElement>('input[type="range"]')?.addEventListener("input", (e) => {
+    soundPrefs.soundpad = Number((e.target as HTMLInputElement).value);
+    prefs.sound = { ...soundPrefs };
+    savePrefs();
+  });
+}
+
+// ------------------------------------------------------------ cozinha e itens interativos
+let holdStatus = "";
+let holdTimer = 0;
+function setHolding(kind: string | null, minutes = 4) {
+  clearTimeout(holdTimer);
+  holdStatus = kind ? HOLD_ITEMS[kind]?.status ?? "" : "";
+  sendState({ hold: kind });
+  lastStatus = null;
+  pushStatus();
+  if (kind) holdTimer = window.setTimeout(() => setHolding(null), minutes * 60_000);
+}
+
+/** Anda até o item e só então executa a ação. */
+function nearItem(it: Item, then: () => void) {
+  const me = world.me.root.position;
+  const d = Math.hypot(me.x - it.x, me.z - it.z);
+  if (d < 2.2) return then();
+  world.walkTo(it.x + 1.1, it.z + 1.1);
+  const t0 = Date.now();
+  const iv = setInterval(() => {
+    const p = world.me.root.position;
+    if (Math.hypot(p.x - it.x, p.z - it.z) < 2.2) {
+      clearInterval(iv);
+      then();
+    } else if (Date.now() - t0 > 12_000) clearInterval(iv);
+  }, 200);
+}
+
+function onItemClick(it: Item, x: number, y: number): boolean {
+  const take = (kind: string, sound: "pour" | "open" = "pour") => () =>
+    nearItem(it, () => {
+      kitchenSound(sound);
+      setHolding(kind);
+      toast(`${HOLD_ITEMS[kind].emoji} ${HOLD_ITEMS[kind].label} na mão`);
+    });
+  switch (it.type) {
+    case "coffee":
+      menu(x, y, "Café", [["plus", "Pegar um café", take("cafe")]]);
+      return true;
+    case "water":
+      menu(x, y, "Bebedouro", [["plus", "Pegar água", take("agua")]]);
+      return true;
+    case "fridge":
+      menu(x, y, "Geladeira", [
+        ["plus", "Pegar um lanche", take("lanche", "open")],
+        ["plus", "Pegar um refrigerante", take("refri", "open")],
+      ]);
+      return true;
+    case "microwave":
+      menu(x, y, "Micro-ondas", [
+        [
+          "plus",
+          "Esquentar a marmita",
+          () =>
+            nearItem(it, () => {
+              toast("Esquentando... 5 s");
+              kitchenSound("beep");
+              setTimeout(() => {
+                kitchenSound("beep");
+                setHolding("marmita", 20);
+                toast("🍱 Marmita pronta. Bom almoço!");
+              }, 5000);
+            }),
+        ],
+      ]);
+      return true;
+    case "fin_panel":
+      openFinance();
+      return true;
+    case "weather_panel":
+      openWeather(it);
+      return true;
+    case "goal_panel":
+      openGoal(it);
+      return true;
+    case "api_panel":
+      openApiPanel(it);
+      return true;
+  }
+  return false;
+}
+
+/** Salva a configuração de um item no layout do escritório (vale para todos). */
+function saveItemCfg(it: Item, cfg: any) {
+  const layout: Layout = JSON.parse(JSON.stringify(world.layout));
+  const found = layout.items.find((i) => i.id === it.id);
+  if (!found) return;
+  found.cfg = cfg;
+  net.send({ t: "layout_save", layout });
+  toast("Painel atualizado");
+}
+
+async function openFinance() {
+  const bg = modal("Painel financeiro", `<div class="note">Carregando cotações...</div>`, [], true);
+  const d = await financeData(true);
+  const body = $(".modal-body", bg);
+  if (!body) return;
+  if (!d) {
+    body.innerHTML = `<div class="note">Não deu para buscar as cotações agora. Tente de novo em alguns minutos.</div>`;
+    return;
+  }
+  body.innerHTML = `<div class="fin-grid">${d.quotes
+    .map((q) => `<div class="fin-card"><div class="label">${esc(q.name)}</div><div class="t-l">${fmtBRL(q.bid)}</div><div class="t-s ${q.pct >= 0 ? "up" : "down"}">${q.pct >= 0 ? "▲" : "▼"} ${Math.abs(q.pct).toFixed(2)}% hoje</div></div>`)
+    .join("")}
+    ${d.selic != null ? `<div class="fin-card"><div class="label">Selic (meta)</div><div class="t-l">${d.selic.toLocaleString("pt-BR")}% a.a.</div><div class="t-s c3">Banco Central</div></div>` : ""}
+    ${d.ipca != null ? `<div class="fin-card"><div class="label">IPCA 12 meses</div><div class="t-l">${d.ipca.toLocaleString("pt-BR")}%</div><div class="t-s c3">Banco Central</div></div>` : ""}
+    </div><div class="note">Atualizado às ${hm(d.updated)} · AwesomeAPI e Banco Central (SGS)</div>`;
+}
+
+async function openWeather(it: Item) {
+  const env = world.layout?.env ?? {};
+  const bg = modal("Clima", `<div class="note">Carregando...</div>`);
+  const w = await weatherData(env.lat, env.lon, env.city);
+  const body = $(".modal-body", bg);
+  if (!body) return;
+  body.innerHTML = w
+    ? `<div class="t-l">${Math.round(w.temp)}°C · ${esc(weatherText(w.code))}</div><div class="note">${esc(w.city)} · mín ${Math.round(w.min)}° / máx ${Math.round(w.max)}°</div>`
+    : `<div class="note">Sem dados do clima agora.</div>`;
+  void it;
+}
+
+function openGoal(it: Item) {
+  const c: GoalCfg = { ...DEFAULT_GOAL, ...(it.cfg ?? {}) };
+  const pct = c.target ? Math.min(100, Math.round((c.current / c.target) * 100)) : 0;
+  modal(
+    c.title,
+    `<div class="goal-view"><div class="t-l">${fmtNum(c.current, c.unit)} <span class="c3 t-m">de ${fmtNum(c.target, c.unit)}</span></div>
+      <div class="goal-bar"><i style="width:${pct}%"></i></div><div class="t-s c2">${pct}% da meta${c.deadline ? ` · até ${esc(new Date(c.deadline + "T12:00").toLocaleDateString("pt-BR"))}` : ""}</div></div>
+    <form class="inline-form" id="goal-form">
+      <label class="field"><span class="label">Título</span><input class="input" name="title" value="${esc(c.title)}" maxlength="40"></label>
+      <div class="row2"><label class="field"><span class="label">Atual</span><input class="input" name="current" type="number" step="any" value="${c.current}"></label>
+      <label class="field"><span class="label">Meta</span><input class="input" name="target" type="number" step="any" value="${c.target}"></label></div>
+      <div class="row2"><label class="field"><span class="label">Unidade</span><select class="input" name="unit">${["R$", "un", "%", "vendas", "leads", "clientes"].map((u) => `<option ${u === c.unit ? "selected" : ""}>${u}</option>`).join("")}</select></label>
+      <label class="field"><span class="label">Prazo</span><input class="input" name="deadline" type="date" value="${esc(c.deadline ?? "")}"></label></div>
+    </form>`,
+    [
+      ["Cancelar", "ghost", () => {}],
+      [
+        "Salvar meta",
+        "primary",
+        () => {
+          const f = new FormData($<HTMLFormElement>("#goal-form"));
+          saveItemCfg(it, {
+            title: String(f.get("title") || "Meta"),
+            current: Number(f.get("current")) || 0,
+            target: Number(f.get("target")) || 0,
+            unit: String(f.get("unit")),
+            deadline: String(f.get("deadline") || "") || undefined,
+          });
+        },
+      ],
+    ],
+  );
+}
+
+function openApiPanel(it: Item) {
+  const c: CustomCfg = { ...DEFAULT_CUSTOM, ...(it.cfg ?? {}) };
+  const bg = modal(
+    "Painel de API",
+    `<div class="t-l" id="api-val">...</div>
+    <form class="inline-form" id="api-form">
+      <label class="field"><span class="label">Título</span><input class="input" name="title" value="${esc(c.title)}" maxlength="40"></label>
+      <label class="field"><span class="label">URL (https, resposta JSON)</span><input class="input" name="url" value="${esc(c.url)}"></label>
+      <label class="field"><span class="label">Caminho do valor (ex.: USDBRL.bid ou data.0.valor)</span><input class="input" name="path" value="${esc(c.path)}"></label>
+      <div class="row2"><label class="field"><span class="label">Prefixo</span><input class="input" name="prefix" value="${esc(c.prefix ?? "")}"></label>
+      <label class="field"><span class="label">Sufixo</span><input class="input" name="suffix" value="${esc(c.suffix ?? "")}"></label></div>
+      <div class="note">Exemplos: dólar (AwesomeAPI), Selic (api.bcb.gov.br), um endpoint do Verkz System que devolva JSON.</div>
+    </form>`,
+    [
+      ["Testar", "secondary", () => (test(), false)],
+      [
+        "Salvar",
+        "primary",
+        () => {
+          const f = new FormData($<HTMLFormElement>("#api-form"));
+          const url = String(f.get("url")).trim();
+          if (!/^https:\/\//.test(url)) {
+            toast("A URL precisa começar com https://", true);
+            return false;
+          }
+          saveItemCfg(it, { title: String(f.get("title")), url, path: String(f.get("path")).trim(), prefix: String(f.get("prefix")), suffix: String(f.get("suffix")) });
+        },
+      ],
+    ],
+  );
+  const test = async () => {
+    const f = new FormData($<HTMLFormElement>("#api-form", bg));
+    const v = await customValue({ title: "", url: String(f.get("url")), path: String(f.get("path")), prefix: String(f.get("prefix")), suffix: String(f.get("suffix")) }, true).catch((e) => `Erro: ${e}`);
+    $("#api-val", bg).textContent = String(v ?? "Sem valor nesse caminho");
+  };
+  test();
+}
+
+// ------------------------------------------------------------ clima, estações e datas especiais
+async function applyEnv() {
+  if (!world?.env || !world.layout) return;
+  const cfg: EnvConfig = world.layout.env ?? {};
+  world.env.enabled = prefs.weatherFx;
+  let weather: Weather = "sol";
+  if (cfg.weather && cfg.weather !== "auto") weather = cfg.weather;
+  else {
+    const w = await weatherData(cfg.lat, cfg.lon, cfg.city).catch(() => null);
+    if (w) weather = weatherFromCode(w.code);
+  }
+  const season: Season = cfg.season && cfg.season !== "auto" ? cfg.season : seasonByDate();
+  const holiday = resolveHoliday(cfg);
+  const h = new Date().getHours() + new Date().getMinutes() / 60;
+  const night = cfg.daynight ? (h >= 19 || h < 5 ? 1 : h >= 18 ? h - 18 : h < 6 ? 6 - h : 0) : 0;
+  world.env.set(weather, season, holiday, night);
+  if (world.holiday?.id !== holiday?.id) world.setHoliday(holiday);
+}
+
+// ------------------------------------------------------------ atividade (app em uso)
+let lastActivity = "";
+let activitySince = 0;
+function startActivity() {
+  if (!isNative) return;
+  setInterval(async () => {
+    if (!connected || !world?.me) return;
+    let a = null;
+    try {
+      a = await activeApp();
+    } catch {
+      return;
+    }
+    const app = a?.app ?? "";
+    const title = (a?.title ?? "").slice(0, 120);
+    const key = `${app}|${title}|${prefs.shareActivity}`;
+    if (key === lastActivity) return;
+    if (!lastActivity.startsWith(app + "|")) activitySince = Math.floor(Date.now() / 1000);
+    lastActivity = key;
+    sendState({ activity: app ? { app, title, share: prefs.shareActivity, since: activitySince } : null });
+  }, 5000);
+}
+
+function renderTeam() {
+  if (rightPanel !== "team") return;
+  const el = $("#right");
+  const all = [...world.others.values()].sort((a, b) => a.info.name.localeCompare(b.info.name));
+  el.innerHTML = `<div class="panel-head"><div class="t-m">Atividade da equipe</div><button class="x-btn" data-close>${icon("x", 18)}</button></div>
+    <div class="note">Visível só para a gestão. Mostra o app em primeiro plano de cada pessoa.</div>
+    <div class="scroll"><div class="team-list">${
+      all.length
+        ? all
+            .map((a) => {
+              const act = a.extra.activity;
+              return `<div class="team-row" data-id="${a.info.id}"><span class="avatar" style="background:${lookColor(a.look)}">${esc(initials(a.info.name))}</span>
+              <div class="meta"><div class="nm">${esc(a.info.name)}</div><div class="st">${act?.app ? `<b>${esc(act.app)}</b>${act.title ? ` — ${esc(act.title)}` : ""}` : "Sem dados (app web ou versão antiga)"}</div><div class="t-s c3">${act?.app ? since(act.since) : ""}${act && act.share === false ? " · compartilhamento desligado" : ""}</div></div></div>`;
+            })
+            .join("")
+        : `<div class="empty">Ninguém mais online.</div>`
+    }</div></div>`;
+  $("[data-close]", el).addEventListener("click", closeRight);
+  el.querySelectorAll<HTMLElement>(".team-row").forEach((r) => r.addEventListener("click", (e) => openPersonCard(r.dataset.id!, e.clientX, e.clientY)));
+}
+setInterval(() => rightPanel === "team" && renderTeam(), 15_000);
+
+// ------------------------------------------------------------ atualizações automáticas
+function startUpdates() {
+  if (!isNative) return;
+  const run = async () => {
+    try {
+      const u = await checkUpdate();
+      if (u && !pendingUpdate) {
+        pendingUpdate = u;
+        showUpdateBanner();
+      }
+    } catch (e) {
+      console.warn("update:", e);
+    }
+  };
+  setTimeout(run, 8000);
+  setInterval(run, 6 * 3600_000);
+}
+
+function showUpdateBanner() {
+  if (!pendingUpdate || document.querySelector(".update-banner")) return;
+  const el = document.createElement("div");
+  el.className = "panel update-banner";
+  el.innerHTML = `${icon("download", 18)}<div class="meta"><div class="t-m">Nova versão ${esc(pendingUpdate.version)}</div><div class="t-s c2">${esc(pendingUpdate.notes ?? "Melhorias e correções")}</div></div>
+    <button class="btn ghost sm" data-later>Depois</button><button class="btn primary sm" data-now>Atualizar</button>`;
+  $("[data-later]", el).addEventListener("click", () => el.remove());
+  $("[data-now]", el).addEventListener("click", async () => {
+    const b = $<HTMLButtonElement>("[data-now]", el);
+    b.disabled = true;
+    try {
+      if (recorder?.active) await toggleRecording();
+      await pendingUpdate!.install((p) => (b.textContent = `${p}%`));
+    } catch (e) {
+      toast(`Falha ao atualizar: ${e}`, true);
+      b.disabled = false;
+      b.textContent = "Tentar de novo";
+    }
+  });
+  hud.appendChild(el);
+}
+
+// ------------------------------------------------------------ configurações
+async function openSettings() {
+  const dev = await media.listDevices();
+  const ver = await appVersion().catch(() => "web");
+  const mp = prefs.media;
+  const opt = (list: MediaDeviceInfo[], sel?: string) =>
+    `<option value="">Padrão do sistema</option>` + list.filter((d) => d.deviceId && d.deviceId !== "default").map((d, i) => `<option value="${esc(d.deviceId)}" ${d.deviceId === sel ? "selected" : ""}>${esc(d.label || `Dispositivo ${i + 1}`)}</option>`).join("");
+  const sw = (name: string, label: string, on: boolean, note = "") =>
+    `<label class="toggle-row"><span>${label}${note ? `<br><span class="t-s c3">${note}</span>` : ""}</span><span class="switch"><input type="checkbox" name="${name}" ${on ? "checked" : ""}><span></span></span></label>`;
+  const env: EnvConfig = world.layout?.env ?? {};
+  const tabs = ["Áudio e vídeo", "Sons", "Privacidade", "Aparência", ...(isAdmin ? ["Escritório"] : []), "Sobre"];
+  const bg = modal(
+    "Configurações",
+    `<div class="tabs">${tabs.map((t, i) => `<button type="button" data-tab="${i}" class="${i ? "" : "on"}">${t}</button>`).join("")}</div>
+    <form id="settings" class="settings">
+      <section data-sec="0">
+        <label class="field"><span class="label">Microfone</span><select class="input" name="micId">${opt(dev.mics, mp.micId)}</select></label>
+        <label class="field"><span class="label">Câmera</span><select class="input" name="camId">${opt(dev.cams, mp.camId)}</select></label>
+        <label class="field"><span class="label">Saída de som</span><select class="input" name="speakerId">${opt(dev.speakers, mp.speakerId)}</select></label>
+        <div class="row2"><label class="field"><span class="label">Qualidade da câmera</span><select class="input" name="camQuality"><option value="360" ${mp.camQuality === "360" ? "selected" : ""}>Leve (360p)</option><option value="720" ${mp.camQuality === "720" ? "selected" : ""}>HD (720p)</option></select></label>
+        <label class="field"><span class="label">Alcance da voz</span><select class="input" name="range">${Object.keys(RANGES).map((k) => `<option value="${k}" ${k === mp.range ? "selected" : ""}>${{ curto: "Curto", medio: "Médio", longo: "Longo" }[k as keyof typeof RANGES]}</option>`).join("")}</select></label></div>
+        ${sw("noiseSuppression", "Redução de ruído", mp.noiseSuppression)}
+        ${sw("micOnJoin", "Microfone ligado ao entrar", mp.micOnJoin)}
+        ${sw("mirror", "Espelhar minha câmera", mp.mirror)}
+      </section>
+      <section data-sec="1" hidden>
+        <label class="slider-row"><span>Volume geral</span><input type="range" name="master" min="0" max="1" step="0.05" value="${soundPrefs.master}"></label>
+        <label class="slider-row"><span>Volume do soundpad</span><input type="range" name="soundpad" min="0" max="1" step="0.05" value="${soundPrefs.soundpad}"></label>
+        ${sw("steps", "Som de passos e corrida", soundPrefs.steps)}
+        ${sw("approach", "Som quando alguém se aproxima", soundPrefs.approach)}
+        ${sw("notify", "Sons de mensagem, aceno e chamado", soundPrefs.notify)}
+      </section>
+      <section data-sec="2" hidden>
+        ${sw("shareActivity", "Mostrar o app que estou usando", prefs.shareActivity, "A gestão sempre vê o app em uso, para acompanhamento da equipe.")}
+        ${sw("shareAgendaTitles", "Mostrar os títulos da minha agenda", prefs.shareAgendaTitles, "Desligado, os outros só veem “Ocupado” nos horários.")}
+        ${sw("shareMeeting", "Mostrar “Em reunião” no meu status", prefs.shareMeeting)}
+        ${sw("shareMusic", "Mostrar a música que estou ouvindo", prefs.shareMusic)}
+      </section>
+      <section data-sec="3" hidden>
+        ${sw("weatherFx", "Efeitos de clima (chuva, neve, folhas)", prefs.weatherFx, "Desligue em computadores mais fracos.")}
+        ${sw("eventSkin", "Usar a skin das datas especiais", prefs.look.eventSkin !== false, "Gorro no Natal, chapéu de bruxa no Halloween...")}
+      </section>
+      ${
+        isAdmin
+          ? `<section data-sec="4" hidden>
+        <div class="note">Vale para todo o escritório.</div>
+        <div class="row2"><label class="field"><span class="label">Clima</span><select class="input" name="env_weather"><option value="auto">Automático (clima real)</option>${WEATHERS.map(([k, l]) => `<option value="${k}" ${env.weather === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label class="field"><span class="label">Estação</span><select class="input" name="env_season"><option value="auto">Pela data</option>${SEASONS.map(([k, l]) => `<option value="${k}" ${env.season === k ? "selected" : ""}>${l}</option>`).join("")}</select></label></div>
+        <label class="field"><span class="label">Data especial</span><select class="input" name="env_holiday"><option value="auto">Automática pelo calendário</option><option value="nenhum" ${env.holiday === "nenhum" ? "selected" : ""}>Nenhuma</option>${Object.values(HOLIDAYS).map((h) => `<option value="${h.id}" ${env.holiday === h.id ? "selected" : ""}>${esc(h.name)}</option>`).join("")}</select></label>
+        <div class="row2"><label class="field"><span class="label">Cidade do clima</span><input class="input" name="env_city" value="${esc(env.city ?? "Campo Grande")}"></label>
+        <label class="field"><span class="label">Lat, Lon</span><input class="input" name="env_ll" value="${env.lat ?? -20.4697}, ${env.lon ?? -54.6201}"></label></div>
+        ${sw("env_daynight", "Dia e noite pelo horário real", !!env.daynight)}
+      </section>`
+          : ""
+      }
+      <section data-sec="${tabs.length - 1}" hidden>
+        <div class="pc-row"><span class="label">Versão</span><span>${esc(String(ver))}</span></div>
+        ${isNative ? `<button type="button" class="btn secondary sm" data-check>Procurar atualização</button>` : ""}
+        <label class="field"><span class="label">Chave de gestão</span><input class="input" name="adminKey" type="password" value="${esc(prefs.adminKey)}" placeholder="Só para a gestão"></label>
+        <div class="note">${isAdmin ? "Você está conectado como gestão." : "Com a chave de gestão você vê a atividade da equipe e configura o escritório. Vale ao entrar de novo."}</div>
+      </section>
+    </form>`,
+    [
+      ["Cancelar", "ghost", () => {}],
+      ["Salvar", "primary", () => saveSettings(bg)],
+    ],
+    true,
+  );
+  bg.querySelectorAll<HTMLElement>("[data-tab]").forEach((t) =>
+    t.addEventListener("click", () => {
+      bg.querySelectorAll("[data-tab]").forEach((x) => x.classList.toggle("on", x === t));
+      bg.querySelectorAll<HTMLElement>("[data-sec]").forEach((s) => (s.hidden = s.dataset.sec !== t.dataset.tab));
+    }),
+  );
+  bg.querySelector("[data-check]")?.addEventListener("click", async () => {
+    try {
+      const u = await checkUpdate();
+      if (!u) return toast("Você já está na versão mais recente");
+      pendingUpdate = u;
+      showUpdateBanner();
+    } catch (e) {
+      toast(`Não consegui verificar: ${e}`, true);
+    }
+  });
+}
+
+function saveSettings(bg: HTMLElement) {
+  const f = $<HTMLFormElement>("#settings", bg);
+  const v = (n: string) => (f.elements.namedItem(n) as HTMLInputElement | null)?.value ?? "";
+  const c = (n: string) => !!(f.elements.namedItem(n) as HTMLInputElement | null)?.checked;
+  const mp = prefs.media;
+  const devChanged = mp.micId !== (v("micId") || undefined) || mp.camId !== (v("camId") || undefined) || mp.speakerId !== (v("speakerId") || undefined);
+  Object.assign(mp, {
+    micId: v("micId") || undefined,
+    camId: v("camId") || undefined,
+    speakerId: v("speakerId") || undefined,
+    camQuality: v("camQuality") as "360" | "720",
+    range: v("range") as keyof typeof RANGES,
+    noiseSuppression: c("noiseSuppression"),
+    micOnJoin: c("micOnJoin"),
+    mirror: c("mirror"),
+  });
+  media.prefs = mp;
+  if (devChanged) media.applyDevices();
+  Object.assign(soundPrefs, { master: Number(v("master")), soundpad: Number(v("soundpad")), steps: c("steps"), approach: c("approach"), notify: c("notify") });
+  prefs.sound = { ...soundPrefs };
+  const shareChanged = prefs.shareActivity !== c("shareActivity");
+  prefs.shareActivity = c("shareActivity");
+  prefs.shareAgendaTitles = c("shareAgendaTitles");
+  prefs.shareMeeting = c("shareMeeting");
+  prefs.shareMusic = c("shareMusic");
+  prefs.weatherFx = c("weatherFx");
+  if (prefs.look.eventSkin !== c("eventSkin")) {
+    prefs.look = { ...prefs.look, eventSkin: c("eventSkin") };
+    world.me.setLook(prefs.look);
+    net.send({ t: "look", look: prefs.look });
+  }
+  const newAdmin = v("adminKey").trim();
+  const adminChanged = newAdmin !== prefs.adminKey;
+  prefs.adminKey = newAdmin;
+  savePrefs();
+  if (shareChanged) lastActivity = "";
+  if (isAdmin && f.elements.namedItem("env_weather")) {
+    const [lat, lon] = v("env_ll").split(",").map((x) => Number(x.trim()));
+    const envCfg: EnvConfig = {
+      weather: v("env_weather") as EnvConfig["weather"],
+      season: v("env_season") as EnvConfig["season"],
+      holiday: v("env_holiday"),
+      daynight: c("env_daynight"),
+      city: v("env_city").trim() || undefined,
+      lat: Number.isFinite(lat) ? lat : undefined,
+      lon: Number.isFinite(lon) ? lon : undefined,
+    };
+    if (JSON.stringify(envCfg) !== JSON.stringify(world.layout.env ?? {})) {
+      const layout: Layout = { ...JSON.parse(JSON.stringify(world.layout)), env: envCfg };
+      net.send({ t: "layout_save", layout });
+    }
+  }
+  applyEnv();
+  pushStatus();
+  toast(adminChanged ? "Salvo. A chave de gestão vale na próxima entrada." : "Configurações salvas");
+  if (adminChanged) {
+    net.close();
+    setTimeout(() => start(), 300);
+  }
+}
+void refreshWidgets;
 
 // ------------------------------------------------------------ início
 if (prefs.name && prefs.key && new URLSearchParams(location.search).has("auto")) start();

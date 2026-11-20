@@ -64,3 +64,75 @@ export const DEFAULT_SHORTCUTS: Shortcut[] = [
   { name: "YouTube Music", target: "https://music.youtube.com" },
   { name: "Verkz System", target: "https://verkzsystem.tech" },
 ];
+
+// ------------------------------------------------------------------ HTTP (APIs dos painéis)
+/** GET de JSON. No app instalado passa pelo Rust (sem problema de CORS). */
+export async function httpJson<T = unknown>(url: string): Promise<T> {
+  if (isNative) {
+    const text = await invoke<string>("http_get", { url });
+    return JSON.parse(text) as T;
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return (await r.json()) as T;
+}
+
+// ------------------------------------------------------------------ atividade (app em primeiro plano)
+export interface ActiveApp {
+  app: string;
+  title: string;
+}
+export const activeApp = () => call<ActiveApp | null>("active_app");
+
+// ------------------------------------------------------------------ YouTube Music
+export interface YtmState {
+  title: string;
+  artist: string;
+  cover?: string;
+  playing: boolean;
+}
+export const ytm = {
+  open: (show = true) => call<void>("ytm_open", { show }),
+  control: (action: "play" | "pause" | "toggle" | "next" | "previous") => call<void>("ytm_control", { action }),
+  /** Recebe o que está tocando (a janela do YouTube Music manda a cada poucos segundos). */
+  async listen(cb: (s: YtmState | null) => void) {
+    if (!isNative) return;
+    const { listen } = await import("@tauri-apps/api/event");
+    await listen<YtmState | null>("ytm-state", (e) => cb(e.payload));
+  },
+};
+
+// ------------------------------------------------------------------ atualizações automáticas
+export interface UpdateInfo {
+  version: string;
+  notes?: string;
+  install: (onProgress?: (pct: number) => void) => Promise<void>;
+}
+export async function appVersion() {
+  if (!isNative) return "web";
+  const { getVersion } = await import("@tauri-apps/api/app");
+  return getVersion();
+}
+export async function checkUpdate(): Promise<UpdateInfo | null> {
+  if (!isNative) return null;
+  const { check } = await import("@tauri-apps/plugin-updater");
+  const u = await check();
+  if (!u) return null;
+  return {
+    version: u.version,
+    notes: u.body ?? undefined,
+    install: async (onProgress) => {
+      let total = 0;
+      let got = 0;
+      await u.downloadAndInstall((ev) => {
+        if (ev.event === "Started") total = ev.data.contentLength ?? 0;
+        if (ev.event === "Progress") {
+          got += ev.data.chunkLength;
+          if (total) onProgress?.(Math.round((got / total) * 100));
+        }
+      });
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    },
+  };
+}

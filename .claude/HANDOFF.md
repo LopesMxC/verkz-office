@@ -108,3 +108,18 @@ Identity no LiveKit = id do peer no servidor.
 - Assinatura/notarização Apple (precisa de conta Apple Developer) e certificado Windows.
 - Login com Google no lugar da chave única.
 - Persistir chat em banco (hoje: últimas 100 mensagens em memória).
+
+## v0.2 (nov/2026)
+- Protocolo novo: `{t:"state",patch}` (mescla em peer.extra; null apaga) → `state{id,patch}`;
+  `{t:"to",to,msg}` → `from{from,name,msg}` (call, call_reply, agenda_req, agenda); `{t:"fx",data}` → `fx{from,data}` (emotes).
+  `join` aceita `admin_key`; `welcome.admin`. ADMIN_KEY (env) = gestão: recebe activity completa; os outros só
+  `{app,share,since}` quando share=true.
+- extra: `activity{app,title,share,since}`, `hold` (cafe/agua/lanche/refri/marmita), `cam`.
+- Módulos: sound.ts (WebAudio, soundpad publicado como trilha "soundpad"), env.ts (clima/estações/datas),
+  widgets.ts (painéis com textura de canvas), extras.rs (active_app, http_get, YouTube Music em janela oculta).
+- layout.env (EnvConfig) e item.cfg (painéis) ficam no layout salvo no servidor.
+- Updater: tauri-plugin-updater, endpoint https://verkzsystem.tech/apps/verkz-office/latest.json,
+  chave em .chaves/ (pubkey no tauri.conf.json), deploy/gerar-update.ps1 monta instaladores/update.
+- Regra de UI: todo painel/modal novo com padding interno de 20px+, blocos a 16px e campos a 12px.
+- Pendente produção: TURN (turn.verkzsystem.tech) no LiveKit + liberar 7881/tcp, 7882/udp, 3478/udp no
+  firewall da Hostinger; ADMIN_KEY no stack; rebuild da imagem do servidor.

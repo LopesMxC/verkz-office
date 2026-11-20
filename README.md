@@ -22,6 +22,21 @@ quem entra numa sala privada só é ouvido lá dentro.
 - **Agenda e apps:** botão do calendário: reuniões do dia com "Entrar no Meet", e-mails não lidos, Spotify
   (tocando agora e controles) e atalhos (YouTube Music, Gmail, Drive, Verkz System, ou qualquer link/programa).
   O status "Em reunião" e "Ouvindo: ..." aparece sozinho acima do personagem.
+- **Correr:** segure Shift. Passos e corrida têm som (dá para desligar em Configurações).
+- **Emotes:** tecla E ou botão da carinha; atalhos 1 a 0 (acenar, joinha, palmas, rir, dançar...).
+- **Soundpad:** botão do alto-falante. Quem está perto ouve. Dá para subir seus próprios sons (até 3 MB).
+- **Clique em alguém:** cartão com sala, atividade (app em uso) e o que está fazendo.
+  **Botão direito:** chamar para cá, ir até a pessoa, ver agenda, acenar.
+- **Cozinha:** clique no café, bebedouro, geladeira ou micro-ondas; o personagem vai até lá e pega o item.
+- **Painéis:** financeiro (dólar, euro, bitcoin, Selic, IPCA), meta (clique para editar), clima, relógio e
+  painel de API (qualquer URL https que devolva JSON). Ficam em "Editar escritório".
+- **Clima e datas:** chuva, neve, sol e estações do lado de fora; Natal, Halloween, Páscoa, aniversário da VERKZ
+  etc. com enfeites e skin do evento (desligável no personagem).
+- **Configurações** (engrenagem): microfone, câmera, saída de som, alcance da voz, sons, privacidade e aparência.
+- **Gestão:** quem entra com a *chave de gestão* (Configurações > Sobre) vê a "Atividade da equipe" com o app
+  em uso de cada pessoa, e configura clima/datas do escritório.
+- **YouTube Music:** em Agenda e apps > Música > Abrir.
+- **Atualização automática:** o app procura versão nova em verkzsystem.tech/apps/verkz-office ao abrir e a cada 6 h.
 
 ## 1. Subir o servidor na VPS Hostinger (KVM2)
 1. No painel DNS do domínio, crie dois registros **A** apontando para o IP da VPS:
@@ -93,6 +108,14 @@ Assim o time instala e só digita nome + chave do escritório.
 > Mac sem assinatura Apple: na 1ª vez, clique com o botão direito no app → Abrir.
 > Para tirar esse aviso é preciso conta Apple Developer (US$ 99/ano) e configurar a assinatura no workflow.
 > Windows pode mostrar o aviso do SmartScreen pelo mesmo motivo ("Mais informações" → "Executar assim mesmo").
+
+## 4. Publicar uma atualização
+1. Aumente `version` em `app/src-tauri/tauri.conf.json` (ex.: 0.2.0 → 0.2.1).
+2. Rode o `compilador.bat`. No fim ele cria `instaladores\update\` com o instalador assinado e o `latest.json`.
+3. Suba o conteúdo de `instaladores\update\` para `https://verkzsystem.tech/apps/verkz-office/`.
+   Todos os apps abertos avisam "Nova versão" e atualizam com um clique.
+- A chave que assina as atualizações fica em `.chaves\verkz-office.key`. **Guarde uma cópia** e nunca envie para o
+  GitHub (já está no .gitignore). Sem ela, os apps instalados não aceitam atualizações novas.
 
 ## Desenvolvimento
 Veja `CLAUDE.md` (visão técnica) e `.claude/HANDOFF.md` (estado atual e próximos passos).

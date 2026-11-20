@@ -34,6 +34,8 @@ mod rec;
 #[derive(Clone)]
 struct Config {
     office_key: String,
+    /// Chave do gestor (CEO): quem entra com ela vê a atividade de todos.
+    admin_key: String,
     livekit_url: String,
     livekit_api_key: String,
     livekit_api_secret: String,
@@ -59,10 +61,14 @@ struct Peer {
     /// Está gravando a reunião agora (todos veem o aviso).
     #[serde(default)]
     recording: bool,
+    /// Estado extra compartilhado (atividade, item na mão, câmera, etc.). Mesclado por `state`.
+    #[serde(default)]
+    extra: Value,
 }
 
 struct Conn {
     peer: Peer,
+    admin: bool,
     tx: mpsc::UnboundedSender<String>,
 }
 
@@ -79,7 +85,7 @@ pub(crate) type Shared = Arc<AppState>;
 #[derive(Deserialize, Debug)]
 #[serde(tag = "t", rename_all = "snake_case")]
 enum ClientMsg {
-    Join { key: String, name: String, #[serde(default)] color: String, #[serde(default)] look: Value },
+    Join { key: String, name: String, #[serde(default)] color: String, #[serde(default)] look: Value, #[serde(default)] admin_key: String },
     Look { look: Value },
     Move { x: f32, z: f32, dir: f32, moving: bool, zone: Option<String> },
     Chat { text: String, zone: Option<String> },
@@ -87,6 +93,12 @@ enum ClientMsg {
     LayoutSave { layout: Value },
     Wave { to: String },
     Rec { on: bool },
+    /// Mescla campos no estado extra do peer e avisa todo mundo.
+    State { patch: Value },
+    /// Mensagem direta para outra pessoa (chamar, pedir agenda, responder...).
+    To { to: String, msg: Value },
+    /// Efeito para todos (emote etc.).
+    Fx { data: Value },
     Ping,
 }
 
@@ -111,6 +123,18 @@ struct LkClaims {
     nbf: u64,
     exp: u64,
     video: VideoGrant,
+}
+
+/// O que um participante pode ver de outro (sem a atividade privada, se não for gestor).
+fn peer_view(p: &Peer, admin: bool) -> Peer {
+    let mut v = p.clone();
+    if !admin {
+        if let Some(act) = v.extra.get("activity").cloned() {
+            let shared = act.get("share").and_then(|x| x.as_bool()).unwrap_or(false);
+            v.extra["activity"] = if shared { json!({"app": act.get("app"), "share": true, "since": act.get("since")}) } else { Value::Null };
+        }
+    }
+    v
 }
 
 pub(crate) fn now() -> u64 {
@@ -201,7 +225,8 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
         };
 
         match (parsed, &my_id) {
-            (ClientMsg::Join { key, name, color, look }, None) => {
+            (ClientMsg::Join { key, name, color, look, admin_key }, None) => {
+                let is_admin = !st.cfg.admin_key.is_empty() && admin_key == st.cfg.admin_key;
                 if key != st.cfg.office_key {
                     let _ = tx.send(json!({"t":"error","msg":"Chave do escritório inválida"}).to_string());
                     break;
@@ -220,8 +245,9 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                     zone: None,
                     look,
                     recording: false,
+                    extra: json!({}),
                 };
-                let peers: Vec<Peer> = st.conns.lock().await.values().map(|c| c.peer.clone()).collect();
+                let peers: Vec<Peer> = st.conns.lock().await.values().map(|c| peer_view(&c.peer, is_admin)).collect();
                 let welcome = json!({
                     "t": "welcome",
                     "id": id,
@@ -229,6 +255,7 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                     "peers": peers,
                     "layout": *st.layout.read().await,
                     "history": *st.history.lock().await,
+                    "admin": is_admin,
                     "livekit": {
                         "url": st.cfg.livekit_url,
                         "token": livekit_token(&st.cfg, &id, &peer.name),
@@ -236,7 +263,7 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                 });
                 let _ = tx.send(welcome.to_string());
                 st.broadcast(&json!({"t":"peer_join","peer":peer}), None).await;
-                st.conns.lock().await.insert(id.clone(), Conn { peer, tx: tx.clone() });
+                st.conns.lock().await.insert(id.clone(), Conn { peer, admin: is_admin, tx: tx.clone() });
                 info!("entrou: {id}");
                 my_id = Some(id);
             }
@@ -317,6 +344,57 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                 }
                 st.broadcast(&json!({"t":"rec","id":id,"on":on}), None).await;
             }
+            (ClientMsg::State { patch }, Some(id)) => {
+                if !patch.is_object() || patch.to_string().len() > 8192 {
+                    continue;
+                }
+                if let Some(c) = st.conns.lock().await.get_mut(id) {
+                    if !c.peer.extra.is_object() {
+                        c.peer.extra = json!({});
+                    }
+                    let obj = c.peer.extra.as_object_mut().unwrap();
+                    for (k, v) in patch.as_object().unwrap() {
+                        if v.is_null() {
+                            obj.remove(k);
+                        } else {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+                // atividade: o gestor sempre vê (app + janela); os outros só o nome do app, e só se a pessoa compartilhar
+                if let Some(act) = patch.get("activity") {
+                    let shared = act.get("share").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let mut public = patch.clone();
+                    if act.is_null() || !shared {
+                        public["activity"] = Value::Null;
+                    } else {
+                        public["activity"] = json!({"app": act.get("app"), "share": true, "since": act.get("since")});
+                    }
+                    let conns = st.conns.lock().await;
+                    for (cid, c) in conns.iter() {
+                        if cid == id {
+                            continue;
+                        }
+                        let p = if c.admin { &patch } else { &public };
+                        let _ = c.tx.send(json!({"t":"state","id":id,"patch":p}).to_string());
+                    }
+                } else {
+                    st.broadcast(&json!({"t":"state","id":id,"patch":patch}), Some(id)).await;
+                }
+            }
+            (ClientMsg::To { to, msg }, Some(id)) => {
+                if msg.to_string().len() > 65536 {
+                    continue;
+                }
+                let name = st.conns.lock().await.get(id).map(|c| c.peer.name.clone()).unwrap_or_default();
+                st.send_to(&to, &json!({"t":"from","from":id,"name":name,"msg":msg})).await;
+            }
+            (ClientMsg::Fx { data }, Some(id)) => {
+                if data.to_string().len() > 4096 {
+                    continue;
+                }
+                st.broadcast(&json!({"t":"fx","from":id,"data":data}), Some(id)).await;
+            }
             (ClientMsg::Ping, Some(_)) => {
                 let _ = tx.send(json!({"t":"pong"}).to_string());
             }
@@ -343,6 +421,7 @@ async fn main() {
 
     let cfg = Config {
         office_key: env("OFFICE_KEY", "verkz"),
+        admin_key: env("ADMIN_KEY", ""),
         livekit_url: env("LIVEKIT_URL", "ws://localhost:7880"),
         livekit_api_key: env("LIVEKIT_API_KEY", "devkey"),
         livekit_api_secret: env("LIVEKIT_API_SECRET", "secret"),

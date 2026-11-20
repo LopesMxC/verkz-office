@@ -45,6 +45,8 @@ export const MODEL_FILES: Record<string, string> = {
 };
 
 const cache = new Map<string, THREE.Object3D>();
+/** Materiais das árvores e arbustos (o clima e a estação mudam a cor deles). */
+export const foliageMaterials: THREE.Material[] = [];
 let loading: Promise<void> | null = null;
 
 /** Troca os materiais PBR dos modelos pelo sombreamento em tons do mundo (mesma luz para tudo). */
@@ -97,6 +99,7 @@ export function loadModels(base = "./models/"): Promise<void> {
             const tint = (mm: THREE.Material) => {
               const c = mm.clone() as THREE.MeshToonMaterial;
               c.color.multiply(new THREE.Color(0.95, 1.0, 0.62));
+              foliageMaterials.push(c);
               return c;
             };
             mesh.material = Array.isArray(mesh.material) ? mesh.material.map(tint) : tint(mesh.material);

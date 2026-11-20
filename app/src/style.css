@@ -341,3 +341,111 @@ kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px s
 .notes .fala .t { color: var(--text-2); font-variant-numeric: tabular-nums; }
 .notes .fala b { color: var(--accent); font-weight: 600; }
 .notes .foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ------------------------------------------------------------ v0.2: emotes, menus, cozinha, painéis, configurações */
+.c3 { color: var(--muted); }
+.up { color: var(--accent); }
+.down { color: var(--danger); }
+.bubble { position: relative; }
+.bubble::after { content: ""; position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); border: 7px solid transparent; border-top-color: var(--border-strong); border-bottom: 0; }
+.nameplate.speaking .bubble::after { border-top-color: var(--accent); }
+.cam-ph { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: linear-gradient(160deg, #24242a, #141417); }
+.cam-ph span { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.cam-ph small { font-size: 10.5px; color: var(--text-2); }
+.bubble video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.emote-pop { font-size: 30px; line-height: 1; filter: drop-shadow(0 4px 6px rgba(0,0,0,.5)); }
+.emote-pop.pop { animation: emote-pop 2.6s ease-out forwards; }
+@keyframes emote-pop { 0% { transform: translateY(8px) scale(.3); opacity: 0 } 12% { transform: translateY(-4px) scale(1.25); opacity: 1 } 22% { transform: scale(1) } 80% { opacity: 1 } 100% { transform: translateY(-26px); opacity: 0 } }
+.activity-tag { font-size: 10.5px; font-weight: 600; color: var(--text-2); background: rgba(13,13,13,.78); border: 1px solid var(--border); padding: 1px 8px; border-radius: 999px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ctx-menu, .person-card { position: fixed; z-index: 60; min-width: 210px; padding: 6px; box-shadow: var(--shadow); animation: pop-in .12s ease-out; }
+@keyframes pop-in { from { transform: scale(.96); opacity: 0 } }
+.ctx-title { padding: 6px 10px 8px; font-size: 12px; font-weight: 700; color: var(--text-2); border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.ctx-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; background: none; border-radius: var(--r-sm); text-align: left; }
+.ctx-menu button:hover { background: var(--raised); }
+.ctx-menu button .ico { color: var(--text-2); }
+.person-card { width: 280px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.pc-head { display: flex; gap: 10px; align-items: center; }
+.pc-head .avatar { width: 38px; height: 38px; }
+.pc-row { display: grid; grid-template-columns: 76px 1fr; gap: 8px; font-size: 13px; }
+.pc-row .label { margin: 0; }
+.pc-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.popover { position: absolute; bottom: 86px; left: 50%; transform: translateX(-50%); padding: 12px; width: 420px; max-width: calc(100vw - 24px); display: flex; flex-direction: column; gap: 10px; z-index: 40; animation: pop-in .12s ease-out; }
+.emote-grid, .pad-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.emote-grid button, .pad { position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border: 1px solid var(--border); background: var(--raised); border-radius: var(--r-md); cursor: pointer; }
+.emote-grid button:hover, .pad:hover { border-color: var(--accent); }
+.emote-grid span, .pad span { font-size: 22px; line-height: 26px; }
+.emote-grid small, .pad small { font-size: 10.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.pad i { position: absolute; top: 2px; right: 6px; font-style: normal; color: var(--muted); }
+.pad i:hover { color: var(--danger); }
+.pad.add { border-style: dashed; color: var(--text-2); justify-content: center; }
+.slider-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; }
+.slider-row input[type="range"] { flex: 1; max-width: 220px; accent-color: var(--accent); }
+
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 14px; }
+.modal.wide { width: 560px; max-width: calc(100vw - 32px); }
+.modal-body { display: flex; flex-direction: column; gap: 12px; max-height: 64vh; overflow: auto; }
+.call-box { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+select.input { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--text-2) 50%), linear-gradient(135deg, var(--text-2) 50%, transparent 50%); background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 28px; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.tabs button { border: 0; background: none; padding: 6px 10px; border-radius: var(--r-sm); color: var(--text-2); font-weight: 600; }
+.tabs button.on { background: var(--accent-soft); color: var(--accent); }
+.settings section { display: flex; flex-direction: column; gap: 10px; }
+.settings section[hidden] { display: none; }
+
+.fin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.fin-card { background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.goal-view { display: flex; flex-direction: column; gap: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.goal-bar { height: 10px; background: var(--raised); border-radius: 999px; overflow: hidden; }
+.goal-bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+
+.team-list { display: flex; flex-direction: column; gap: 4px; padding: 0 8px 12px; }
+.team-row { display: flex; gap: 10px; padding: 8px; border-radius: var(--r-md); cursor: pointer; }
+.team-row:hover { background: var(--raised); }
+.team-row .meta { min-width: 0; }
+.team-row .st { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+.update-banner { position: absolute; top: 76px; right: 20px; display: flex; align-items: center; gap: 12px; padding: 12px 14px; z-index: 45; max-width: 420px; }
+.update-banner > .ico { color: var(--accent); }
+.update-banner .meta { flex: 1; min-width: 0; }
+
+/* ------------------------------------------------------------ espaçamento padrão dos painéis novos
+   Regra: todo painel tem padding interno de 20px, blocos separados por 16px e campos por 12px. */
+.modal { width: 460px; max-width: calc(100vw - 32px); max-height: calc(100vh - 48px); padding: 20px 24px 22px; display: flex; flex-direction: column; gap: 16px; box-shadow: var(--shadow); animation: pop-in .14s ease-out; }
+.modal.wide { width: 600px; }
+.modal .panel-head { padding: 0 0 4px; }
+.modal-body { gap: 14px; padding: 2px 4px 2px 0; }
+.modal-actions { padding-top: 16px; margin-top: 4px; border-top: 1px solid var(--border); gap: 10px; }
+.modal .inline-form { padding: 16px; gap: 12px; }
+.modal .row2 { gap: 12px; }
+.tabs { gap: 6px; padding-bottom: 12px; margin-bottom: 4px; }
+.tabs button { padding: 8px 12px; }
+.settings { padding-top: 4px; }
+.settings section { gap: 14px; }
+.settings .toggle-row { padding: 10px 12px; background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-md); }
+.settings .slider-row { padding: 10px 12px; background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-md); }
+.settings .note { margin-bottom: 2px; }
+.settings .pc-row { padding: 4px 0; }
+.ctx-menu { padding: 8px; min-width: 230px; }
+.ctx-title { padding: 6px 12px 10px; margin-bottom: 6px; }
+.ctx-menu button { padding: 10px 12px; gap: 12px; }
+.person-card { width: 300px; padding: 18px; gap: 12px; }
+.pc-head { padding-bottom: 12px; border-bottom: 1px solid var(--border); gap: 12px; }
+.pc-row { gap: 10px; padding: 2px 0; }
+.pc-actions { padding-top: 12px; border-top: 1px solid var(--border); gap: 8px; }
+.popover { padding: 16px; gap: 14px; bottom: 92px; }
+.emote-grid, .pad-grid { gap: 8px; }
+.emote-grid button, .pad { padding: 10px 6px; gap: 4px; }
+.fin-grid { gap: 12px; }
+.fin-card { padding: 14px 16px; gap: 4px; }
+.goal-view { gap: 10px; padding-bottom: 16px; }
+.call-box { padding: 4px 0 8px; gap: 6px; }
+.side.right .note { margin: 0; }
+.team-list { padding: 4px 0 8px; gap: 6px; }
+.team-row { padding: 10px 12px; gap: 12px; }
+.update-banner { padding: 14px 18px; gap: 14px; }
+@media (max-width: 640px) { .row2, .fin-grid { grid-template-columns: 1fr; } .modal { padding: 16px 18px; } }
+.tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.tabs button { padding: 8px 11px; white-space: nowrap; flex: none; }

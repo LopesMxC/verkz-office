@@ -3,6 +3,7 @@ import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 import { LOGO_PATH, NEON } from "./logo";
 import { pixelTexture, rng, toon } from "./toon";
 import { model } from "./models";
+import { widgetTexture } from "./widgets";
 
 export interface Item {
   id: string;
@@ -10,6 +11,8 @@ export interface Item {
   x: number;
   z: number;
   rot: number;
+  /** Configuração do item (painel de meta, painel personalizado...). */
+  cfg?: any;
   /** Sala dona da parede (paredes geradas automaticamente). */
   room?: string;
 }
@@ -32,6 +35,8 @@ export interface Layout {
   spawn: { x: number; z: number };
   items: Item[];
   zones: Zone[];
+  /** Clima, estação e datas especiais (configurado pela gestão). */
+  env?: import("./env").EnvConfig;
 }
 
 interface Def {
@@ -41,7 +46,11 @@ interface Def {
   blocks: boolean;
   /** Fica fora do prédio (árvores etc.): não aparece na paleta do editor por padrão. */
   outdoor?: boolean;
-  build: () => THREE.Object3D;
+  /** Clicável fora do modo edição (cozinha, painéis). */
+  interactive?: boolean;
+  /** Item de enfeite de data especial (não aparece na paleta). */
+  decor?: boolean;
+  build: (it?: Item) => THREE.Object3D;
 }
 
 // =====================================================================
@@ -222,6 +231,16 @@ function plantPot(potMat: THREE.Material, scale = 1) {
   );
   g.scale.setScalar(scale);
   return g;
+}
+
+/** Tela em um pedestal, com a textura viva do painel. */
+function screenPanel(tex: THREE.Texture) {
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.0), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
+  face.position.set(0, 1.25, 0.07);
+  face.rotation.x = -0.12;
+  const frameBox = box(1.72, 1.1, 0.1, M.dark, 0, 0.7, 0);
+  frameBox.rotation.x = -0.12;
+  return group(box(0.5, 0.06, 0.34, M.dark), box(0.08, 0.72, 0.08, M.steel), frameBox, face);
 }
 
 export const DEFS: Record<string, Def> = {
@@ -441,6 +460,7 @@ export const DEFS: Record<string, Def> = {
     build: () => group(box(3, 0.88, 0.8, M.offwhite), box(3.05, 0.06, 0.85, M.white, 0, 0.88, 0), box(0.5, 0.3, 0.4, M.steel, -0.8, 0.94, -0.1), cyl(0.12, 0.1, 0.12, M.water, 0.6, 0.94, 0.1, 8)),
   },
   coffee: {
+    interactive: true,
     label: "Café",
     w: 2,
     d: 0.8,
@@ -456,6 +476,7 @@ export const DEFS: Record<string, Def> = {
       ),
   },
   water: {
+    interactive: true,
     label: "Bebedouro",
     w: 0.6,
     d: 0.6,
@@ -488,6 +509,234 @@ export const DEFS: Record<string, Def> = {
     // desenhada direto na textura do piso (World.makeFloorTexture); aqui só um marcador
     build: () => new THREE.Group(),
   },
+  fridge: {
+    label: "Geladeira",
+    w: 0.9,
+    d: 0.8,
+    blocks: true,
+    interactive: true,
+    build: () =>
+      group(
+        box(0.9, 1.9, 0.75, M.white),
+        box(0.88, 0.02, 0.02, M.grey, 0, 1.25, 0.38),
+        box(0.05, 0.4, 0.05, M.grey, 0.36, 1.4, 0.39),
+        box(0.05, 0.6, 0.05, M.grey, 0.36, 0.5, 0.39),
+        box(0.16, 0.12, 0.01, M.neonToon, -0.2, 1.6, 0.38),
+      ),
+  },
+  microwave: {
+    label: "Micro-ondas",
+    w: 0.8,
+    d: 0.6,
+    blocks: true,
+    interactive: true,
+    build: () =>
+      group(
+        box(0.8, 0.88, 0.6, M.offwhite),
+        box(0.82, 0.05, 0.62, M.white, 0, 0.88, 0),
+        box(0.58, 0.34, 0.42, M.dark, -0.05, 0.93, 0),
+        box(0.36, 0.24, 0.01, M.screenA, -0.1, 0.98, 0.215),
+        box(0.08, 0.26, 0.01, M.steel, 0.2, 0.97, 0.215),
+      ),
+  },
+  fin_panel: {
+    label: "Painel financeiro",
+    w: 1.8,
+    d: 0.4,
+    blocks: true,
+    interactive: true,
+    build: (it) => screenPanel(widgetTexture(it?.id ?? "x", "fin_panel", it?.cfg ?? {})),
+  },
+  goal_panel: {
+    label: "Painel de meta",
+    w: 1.8,
+    d: 0.4,
+    blocks: true,
+    interactive: true,
+    build: (it) => screenPanel(widgetTexture(it?.id ?? "x", "goal_panel", it?.cfg ?? {})),
+  },
+  weather_panel: {
+    label: "Painel de clima",
+    w: 1.8,
+    d: 0.4,
+    blocks: true,
+    interactive: true,
+    build: (it) => screenPanel(widgetTexture(it?.id ?? "x", "weather_panel", it?.cfg ?? {})),
+  },
+  clock_panel: {
+    label: "Relógio mundial",
+    w: 1.8,
+    d: 0.4,
+    blocks: true,
+    interactive: true,
+    build: (it) => screenPanel(widgetTexture(it?.id ?? "x", "clock_panel", it?.cfg ?? {})),
+  },
+  api_panel: {
+    label: "Painel de API",
+    w: 1.8,
+    d: 0.4,
+    blocks: true,
+    interactive: true,
+    build: (it) => screenPanel(widgetTexture(it?.id ?? "x", "api_panel", it?.cfg ?? {})),
+  },
+  // ---------- enfeites de datas especiais
+  xmas_tree: {
+    label: "Árvore de Natal",
+    w: 1.4,
+    d: 1.4,
+    blocks: true,
+    decor: true,
+    build: () => {
+      const g = group(cyl(0.12, 0.14, 0.4, M.trunk), box(0.5, 0.25, 0.5, M.red));
+      const cones: [number, number, number][] = [[0.75, 0.7, 0.4], [0.58, 0.6, 0.95], [0.4, 0.5, 1.4]];
+      for (const [r, h, y] of cones) {
+        const c = new THREE.Mesh(new THREE.ConeGeometry(r, h, 8), M.leafDark);
+        c.position.y = y + h / 2;
+        c.castShadow = true;
+        g.add(c);
+      }
+      const balls = [M.red, M.yellow, M.blue, M.neonToon];
+      for (let i = 0; i < 14; i++) {
+        const a = i * 2.4;
+        const y = 0.55 + (i / 14) * 1.25;
+        const r = 0.72 - (y - 0.4) * 0.38;
+        g.add(blob(0.05, balls[i % 4], Math.cos(a) * r, y, Math.sin(a) * r));
+      }
+      const star = blob(0.12, new THREE.MeshBasicMaterial({ color: 0xffd35c }), 0, 2.0, 0);
+      g.add(star);
+      return g;
+    },
+  },
+  gift: {
+    label: "Presente",
+    w: 0.5,
+    d: 0.5,
+    blocks: false,
+    decor: true,
+    build: () => {
+      const cols = [M.red, M.blue, M.neonToon, M.purple, M.yellow];
+      const c = cols[Math.floor(Math.random() * cols.length)];
+      const s = 0.3 + Math.random() * 0.15;
+      return group(box(s, s, s, c), box(s + 0.01, s + 0.01, 0.06, M.white), box(0.06, s + 0.01, s + 0.01, M.white));
+    },
+  },
+  xmas_lights: { label: "Pisca-pisca", w: 0.1, d: 0.1, blocks: false, decor: true, build: () => new THREE.Group() },
+  balloons: {
+    label: "Balões",
+    w: 0.6,
+    d: 0.6,
+    blocks: false,
+    decor: true,
+    build: () => {
+      const g = group(box(0.16, 0.06, 0.16, M.dark));
+      const cols = [M.neonToon, M.white, M.dark, M.neonToon];
+      cols.forEach((c, i) => {
+        const x = (i % 2 ? 0.18 : -0.18) * (i > 1 ? 0.6 : 1);
+        const y = 1.5 + (i % 2) * 0.25 + (i > 1 ? 0.4 : 0);
+        g.add(box(0.01, y - 0.05, 0.01, M.grey, x * 0.5, 0.05, 0));
+        const b = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), c);
+        b.scale.y = 1.2;
+        b.position.set(x, y + 0.2, 0);
+        b.castShadow = true;
+        g.add(b);
+      });
+      return g;
+    },
+  },
+  flags: {
+    label: "Bandeirinhas",
+    w: 0.2,
+    d: 0.2,
+    blocks: false,
+    decor: true,
+    build: () => {
+      const g = new THREE.Group();
+      const cols = [M.red, M.yellow, M.blue, M.leaf, M.purple, M.orange];
+      for (let line = 0; line < 2; line++)
+        for (let i = 0; i < 18; i++) {
+          const x = -6 + i * 0.7;
+          const y = 2.6 - Math.sin((i / 17) * Math.PI) * 0.5;
+          const fl = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.3, 3), cols[(i + line) % cols.length]);
+          fl.rotation.x = Math.PI;
+          fl.position.set(x, y, line * 2.5 - 1.2);
+          g.add(fl);
+        }
+      return g;
+    },
+  },
+  bonfire: {
+    label: "Fogueira",
+    w: 1,
+    d: 1,
+    blocks: true,
+    decor: true,
+    build: () => {
+      const g = new THREE.Group();
+      for (let i = 0; i < 5; i++) {
+        const l = cyl(0.06, 0.06, 0.8, M.trunk);
+        l.rotation.z = Math.PI / 2;
+        l.rotation.y = (i / 5) * Math.PI;
+        l.position.y = 0.08;
+        g.add(l);
+      }
+      g.add(blob(0.28, new THREE.MeshBasicMaterial({ color: 0xff8a2b }), 0, 0.35, 0), blob(0.18, new THREE.MeshBasicMaterial({ color: 0xffd35c }), 0, 0.55, 0));
+      return g;
+    },
+  },
+  pumpkin: {
+    label: "Abóbora",
+    w: 0.6,
+    d: 0.6,
+    blocks: true,
+    decor: true,
+    build: () => {
+      const p = new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 8), M.orange);
+      p.scale.y = 0.75;
+      p.position.y = 0.22;
+      p.castShadow = true;
+      return group(p, box(0.06, 0.12, 0.06, M.leafDark, 0, 0.42, 0), box(0.08, 0.06, 0.02, M.dark, -0.1, 0.27, 0.28), box(0.08, 0.06, 0.02, M.dark, 0.1, 0.27, 0.28), box(0.18, 0.04, 0.02, M.dark, 0, 0.15, 0.29));
+    },
+  },
+  egg: {
+    label: "Ovo de Páscoa",
+    w: 0.4,
+    d: 0.4,
+    blocks: false,
+    decor: true,
+    build: () => {
+      const cols = [M.purple, M.yellow, M.blue, M.red, M.neonToon];
+      const e = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), cols[Math.floor(Math.random() * cols.length)]);
+      e.scale.y = 1.3;
+      e.position.y = 0.2;
+      e.castShadow = true;
+      return group(e, box(0.33, 0.04, 0.04, M.white, 0, 0.2, 0));
+    },
+  },
+  neon_sale: {
+    label: "Placa Black Friday",
+    w: 2,
+    d: 0.3,
+    blocks: true,
+    decor: true,
+    build: () => {
+      const c = document.createElement("canvas");
+      c.width = 512;
+      c.height = 192;
+      const g = c.getContext("2d")!;
+      g.fillStyle = "#0d0d0d";
+      g.fillRect(0, 0, 512, 192);
+      g.font = "800 76px Montserrat, sans-serif";
+      g.fillStyle = "#C8F501";
+      g.textAlign = "center";
+      g.fillText("BLACK", 256, 90);
+      g.fillText("FRIDAY", 256, 168);
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.72), new THREE.MeshBasicMaterial({ map: t, toneMapped: false }));
+      face.position.set(0, 1.3, 0.07);
+      return group(box(2, 0.8, 0.12, M.dark, 0, 0.9, 0), box(0.08, 0.9, 0.08, M.dark, -0.7, 0, 0), box(0.08, 0.9, 0.08, M.dark, 0.7, 0, 0), face);
+    },
+  },
   tree: {
     label: "Árvore",
     w: 1.6,
@@ -518,7 +767,7 @@ export const DEFS: Record<string, Def> = {
 };
 
 /** Tipos que aparecem na paleta do editor. */
-export const PALETTE = Object.keys(DEFS);
+export const PALETTE = Object.keys(DEFS).filter((k) => !DEFS[k].decor);
 
 export function footprint(it: Item) {
   const d = DEFS[it.type];
@@ -529,7 +778,7 @@ export function footprint(it: Item) {
 
 export function buildItem(it: Item): THREE.Object3D {
   const def = DEFS[it.type];
-  const obj = def ? def.build() : box(1, 1, 1, M.grey);
+  const obj = def ? def.build(it) : box(1, 1, 1, M.grey);
   obj.position.set(it.x, 0, it.z);
   obj.rotation.y = -(it.rot * Math.PI) / 180;
   obj.userData.itemId = it.id;

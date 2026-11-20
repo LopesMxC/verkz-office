@@ -129,8 +129,12 @@ export function openCreator(host: HTMLElement, start: Look): Promise<Look | null
         .map(([k, l]) => `<button class="${cat === k ? "sel" : ""}" data-cat="${k}">${l}</button>`)
         .join("");
       const sections: Record<Cat, string> = {
-        corpo: swatches("skin", "Tom de pele", PALETTES.skin),
-        cabelo: cards("hair", "Corte") + swatches("hairColor", "Cor do cabelo", PALETTES.hair),
+        corpo:
+          cards("body", "Corpo") +
+          swatches("skin", "Tom de pele", PALETTES.skin) +
+          cards("eyes", "Olhos") +
+          `<label class="toggle-row" style="margin-top:14px"><span>Skin das datas especiais<br><span class="t-s c2">Gorro no Natal, bruxa no Halloween...</span></span><span class="switch"><input type="checkbox" data-skin ${look.eventSkin !== false ? "checked" : ""}><span></span></span></label>`,
+        cabelo: cards("hair", "Corte") + swatches("hairColor", "Cor do cabelo", PALETTES.hair) + cards("beard", "Barba e bigode"),
         roupa:
           cards("top", "Parte de cima") +
           swatches("topColor", "Cor", PALETTES.cloth) +
@@ -141,6 +145,7 @@ export function openCreator(host: HTMLElement, start: Look): Promise<Look | null
           cards("head", "Na cabeça") +
           (look.head !== "nenhum" ? swatches("headColor", "Cor do acessório", PALETTES.cloth) : "") +
           cards("face", "Rosto") +
+          cards("ears", "Orelhas") +
           cards("neck", "Pescoço"),
       };
       body.innerHTML = sections[cat];
@@ -153,6 +158,13 @@ export function openCreator(host: HTMLElement, start: Look): Promise<Look | null
       if (b) {
         cat = b.dataset.cat as Cat;
         render();
+      }
+    });
+    body.addEventListener("change", (e) => {
+      const t = e.target as HTMLInputElement;
+      if (t.matches("[data-skin]")) {
+        look.eventSkin = t.checked;
+        pv.setLook(look);
       }
     });
     body.addEventListener("click", (e) => {

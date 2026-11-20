@@ -8,3 +8,5 @@ server/data/
 instaladores/
 compilador.env
 deploy/livekit.yaml
+.chaves/
+*.key

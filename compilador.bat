@@ -82,9 +82,15 @@ if defined FAZ_MAC (
   if errorlevel 1 goto :erro_mac
 )
 
+rem Arquivos da atualizacao automatica (sobem para verkzsystem.tech/apps/verkz-office/)
+powershell -NoProfile -ExecutionPolicy Bypass -File "deploy\gerar-update.ps1" -Pasta "%CD%\instaladores"
+
 echo.
 echo  ===============================================
 echo    Pronto! Instaladores em: %CD%\instaladores
+echo    Atualizacao automatica: suba o conteudo de instaladores\update
+echo    para https://verkzsystem.tech/apps/verkz-office/
+echo  ===============================================
 echo  ===============================================
 explorer "instaladores"
 pause
@@ -163,6 +169,7 @@ if errorlevel 1 call npm install
 if errorlevel 1 (popd & exit /b 1)
 
 echo.
+call :chave_assinatura
 echo [..] Compilando o Windows ^(a primeira vez leva de 5 a 15 minutos^)...
 call npx tauri build --bundles nsis
 if errorlevel 1 (popd & exit /b 1)
@@ -170,7 +177,25 @@ popd
 
 if not exist "instaladores" mkdir "instaladores"
 copy /y "app\src-tauri\target\release\bundle\nsis\*.exe" "instaladores\" >nul
+copy /y "app\src-tauri\target\release\bundle\nsis\*.exe.sig" "instaladores\" >nul 2>nul
 echo [ok] Instalador do Windows pronto.
+exit /b 0
+
+rem ---------------------------------------------------------------
+rem Chave que assina as atualizacoes (gera na primeira vez; NUNCA apague nem envie para o GitHub)
+rem ---------------------------------------------------------------
+:chave_assinatura
+if not exist ".chaves\verkz-office.key" (
+  echo [..] Gerando a chave de assinatura das atualizacoes ^(so na primeira vez^)...
+  if not exist ".chaves" mkdir ".chaves"
+  pushd app
+  call npx tauri signer generate --ci -w "..\.chaves\verkz-office.key" -p ""
+  popd
+  echo [!] ATENCAO: a chave publica mudou. Copie o conteudo de .chaves\verkz-office.key.pub
+  echo     para "pubkey" em app\src-tauri\tauri.conf.json e compile de novo.
+)
+set "TAURI_SIGNING_PRIVATE_KEY=%CD%\.chaves\verkz-office.key"
+set "TAURI_SIGNING_PRIVATE_KEY_PASSWORD="
 exit /b 0
 
 rem ---------------------------------------------------------------
@@ -249,6 +274,8 @@ if defined VITE_OFFICE_SERVER (
 if defined VERKZ_GOOGLE_CLIENT_ID gh secret set VERKZ_GOOGLE_CLIENT_ID --body "%VERKZ_GOOGLE_CLIENT_ID%" >nul || exit /b 1
 if defined VERKZ_GOOGLE_CLIENT_SECRET gh secret set VERKZ_GOOGLE_CLIENT_SECRET --body "%VERKZ_GOOGLE_CLIENT_SECRET%" >nul || exit /b 1
 if defined VERKZ_SPOTIFY_CLIENT_ID gh secret set VERKZ_SPOTIFY_CLIENT_ID --body "%VERKZ_SPOTIFY_CLIENT_ID%" >nul || exit /b 1
+call :chave_assinatura
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ".chaves\verkz-office.key" >nul || exit /b 1
 
 rem Pede o build so do Mac (guarda o ultimo build antes, para achar o novo depois)
 set "ANTES="
@@ -305,6 +332,7 @@ gh run download %RUNID% -n verkz-office-mac -D "%PASTA_MAC%"
 if errorlevel 1 exit /b 1
 del /q "instaladores\*.dmg" 2>nul
 for /r "%PASTA_MAC%" %%f in (*.dmg) do copy /y "%%f" "instaladores\" >nul
+for /r "%PASTA_MAC%" %%f in (*.app.tar.gz *.app.tar.gz.sig) do copy /y "%%f" "instaladores\" >nul
 rmdir /s /q "%PASTA_MAC%"
 if not exist "instaladores\*.dmg" (
   echo [ERRO] O GitHub terminou, mas o .dmg nao veio no download.
