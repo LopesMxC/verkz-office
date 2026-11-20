@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 import { LOGO_PATH, LOGO_SVG, NEON } from "./logo";
+import { pixelTexture, rng, toon } from "./toon";
 
 export interface Item {
   id: string;
@@ -37,21 +38,61 @@ interface Def {
 }
 
 // ---------- materiais compartilhados (leve: poucos materiais reaproveitados)
+// Paleta pensada para pixel art: tons médios legíveis sobre o piso escuro, neon só nos detalhes.
+const woodTex = pixelTexture(16, 16, (g) => {
+  const r = rng(7);
+  g.fillStyle = "#7a5638";
+  g.fillRect(0, 0, 16, 16);
+  for (let y = 0; y < 16; y += 4) {
+    g.fillStyle = "#6a4a30";
+    g.fillRect(0, y + 3, 16, 1);
+    for (let i = 0; i < 3; i++) {
+      g.fillStyle = r() > 0.5 ? "#86603f" : "#704e33";
+      g.fillRect(Math.floor(r() * 14), y + 1, 2 + Math.floor(r() * 3), 1);
+    }
+  }
+});
+const wallTex = pixelTexture(16, 16, (g) => {
+  g.fillStyle = "#2c2c33";
+  g.fillRect(0, 0, 16, 16);
+  g.fillStyle = "#34343c";
+  g.fillRect(0, 0, 16, 7);
+  g.fillStyle = "#24242a";
+  g.fillRect(0, 7, 16, 1);
+  g.fillRect(0, 15, 16, 1);
+  g.fillStyle = "#3a3a43";
+  g.fillRect(0, 0, 16, 1);
+});
+const fabricTex = pixelTexture(8, 8, (g) => {
+  g.fillStyle = "#3d4f63";
+  g.fillRect(0, 0, 8, 8);
+  g.fillStyle = "#435770";
+  for (let i = 0; i < 8; i += 2) g.fillRect(i, (i * 3) % 8, 1, 1);
+});
 const M = {
-  wall: new THREE.MeshStandardMaterial({ color: 0x1b1b1d, roughness: 0.9, flatShading: true }),
-  dark: new THREE.MeshStandardMaterial({ color: 0x232326, roughness: 0.7, flatShading: true }),
-  mid: new THREE.MeshStandardMaterial({ color: 0x34343a, roughness: 0.6, flatShading: true }),
-  light: new THREE.MeshStandardMaterial({ color: 0x5a5a62, roughness: 0.5, flatShading: true }),
-  wood: new THREE.MeshStandardMaterial({ color: 0x3b2f27, roughness: 0.65, flatShading: true }),
-  fabric: new THREE.MeshStandardMaterial({ color: 0x2c2c30, roughness: 1, flatShading: true }),
-  leaf: new THREE.MeshStandardMaterial({ color: 0x3f6b2a, roughness: 0.8, flatShading: true }),
-  pot: new THREE.MeshStandardMaterial({ color: 0x18181a, roughness: 0.4, flatShading: true }),
-  screen: new THREE.MeshStandardMaterial({ color: 0x0b0b0b, emissive: 0x9fc200, emissiveIntensity: 0.25, roughness: 0.2 }),
-  neon: new THREE.MeshStandardMaterial({ color: NEON, emissive: NEON, emissiveIntensity: 2.2 }),
-  neonSoft: new THREE.MeshStandardMaterial({ color: NEON, emissive: NEON, emissiveIntensity: 0.9 }),
-  cap: new THREE.MeshStandardMaterial({ color: 0x2e2e33, roughness: 0.8, flatShading: true }),
-  rug: new THREE.MeshStandardMaterial({ color: 0x202018, roughness: 1, flatShading: true }),
-  glass: new THREE.MeshStandardMaterial({ color: 0x9fb0b8, transparent: true, opacity: 0.25, roughness: 0.1 }),
+  wall: toon("#ffffff", { map: wallTex }),
+  cap: toon("#45454f"),
+  dark: toon("#2a2a31"),
+  mid: toon("#4a4a55"),
+  light: toon("#8a8a96"),
+  white: toon("#e8e6df"),
+  wood: toon("#ffffff", { map: woodTex }),
+  woodDark: toon("#5a3f2a"),
+  fabric: toon("#ffffff", { map: fabricTex }),
+  fabricDark: toon("#334355"),
+  chair: toon("#2f3644"),
+  leaf: toon("#5c9e3f"),
+  leafLight: toon("#7cc04f"),
+  pot: toon("#c9c2b4"),
+  screen: toon("#1d2a12", { emissive: 0.35 }),
+  neon: new THREE.MeshBasicMaterial({ color: NEON, toneMapped: false }),
+  neonSoft: toon(NEON, { emissive: 0.6 }),
+  rug: toon("#26301a"),
+  glass: toon("#9fd0e0", { transparent: true, opacity: 0.3 }),
+  board: toon("#f1f0ea"),
+  book1: toon("#c0533b"),
+  book2: toon("#3b6fc0"),
+  book3: toon("#e0b23c"),
 };
 
 function box(w: number, h: number, d: number, mat: THREE.Material, x = 0, y = 0, z = 0) {
@@ -99,15 +140,18 @@ let floorLogoTex: THREE.Texture | null = null;
 function floorLogoTexture() {
   if (floorLogoTex) return floorLogoTex;
   const c = document.createElement("canvas");
-  c.width = c.height = 512;
+  c.width = c.height = 96;
   const ctx = c.getContext("2d")!;
   const img = new Image();
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
   img.onload = () => {
-    ctx.clearRect(0, 0, 512, 512);
-    ctx.globalAlpha = 0.09; // bem discreta no piso
-    ctx.drawImage(img, 56, 96, 400, 283);
+    ctx.clearRect(0, 0, 96, 96);
+    ctx.globalAlpha = 1; // bem discreta no piso
+    ctx.drawImage(img, 12, 20, 72, 51);
     tex.needsUpdate = true;
   };
   img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(LOGO_SVG);
@@ -117,9 +161,10 @@ function floorLogoTexture() {
 
 function chair() {
   return group(
-    cyl(0.04, 0.04, 0.4, M.light, 0, 0, 0, 8),
-    box(0.5, 0.08, 0.5, M.fabric, 0, 0.4, 0),
-    box(0.5, 0.5, 0.08, M.fabric, 0, 0.48, -0.22),
+    cyl(0.04, 0.04, 0.4, M.mid, 0, 0, 0, 6),
+    box(0.44, 0.04, 0.44, M.mid, 0, 0.02, 0),
+    box(0.5, 0.09, 0.5, M.chair, 0, 0.4, 0),
+    box(0.5, 0.5, 0.08, M.chair, 0, 0.48, -0.22),
   );
 }
 
@@ -133,7 +178,7 @@ export const DEFS: Record<string, Def> = {
     w: 1,
     d: 1,
     blocks: true,
-    build: () => group(box(1, 1.25, 1, M.wall), box(1.001, 0.04, 1.001, M.cap, 0, 1.25, 0), box(0.12, 0.045, 0.12, M.neonSoft, 0, 1.25, 0)),
+    build: () => group(box(1, 1.25, 1, M.wall), box(1.001, 0.06, 1.001, M.cap, 0, 1.25, 0)),
   },
   glass_wall: {
     label: "Vidro",
@@ -150,8 +195,8 @@ export const DEFS: Record<string, Def> = {
     build: () =>
       group(
         box(2, 0.06, 1, M.wood, 0, 0.72, 0),
-        box(0.06, 0.72, 0.9, M.dark, -0.95, 0, 0),
-        box(0.06, 0.72, 0.9, M.dark, 0.95, 0, 0),
+        box(0.08, 0.72, 0.9, M.woodDark, -0.94, 0, 0),
+        box(0.08, 0.72, 0.9, M.woodDark, 0.94, 0, 0),
         monitor(-0.45, -0.25),
         monitor(0.45, 0.25),
         box(0.45, 0.02, 0.15, M.mid, -0.45, 0.78, 0.1),
@@ -167,7 +212,7 @@ export const DEFS: Record<string, Def> = {
     build: () =>
       group(
         box(4, 0.08, 1.6, M.wood, 0, 0.72, 0),
-        box(3.4, 0.72, 0.3, M.dark, 0, 0, 0),
+        box(3.4, 0.72, 0.3, M.woodDark, 0, 0, 0),
         box(3.6, 0.01, 0.05, M.neonSoft, 0, 0.8, 0),
       ),
   },
@@ -183,7 +228,7 @@ export const DEFS: Record<string, Def> = {
     w: 1.4,
     d: 0.8,
     blocks: true,
-    build: () => group(box(1.4, 0.06, 0.8, M.wood, 0, 0.36, 0), box(1.2, 0.36, 0.6, M.dark)),
+    build: () => group(box(1.4, 0.06, 0.8, M.wood, 0, 0.36, 0), box(1.2, 0.36, 0.6, M.woodDark)),
   },
   sofa: {
     label: "Sofá",
@@ -196,8 +241,8 @@ export const DEFS: Record<string, Def> = {
         box(3, 0.6, 0.25, M.fabric, 0, 0.3, -0.38),
         box(0.25, 0.3, 1, M.fabric, -1.38, 0.42, 0),
         box(0.25, 0.3, 1, M.fabric, 1.38, 0.42, 0),
-        box(1.3, 0.12, 0.7, M.mid, -0.66, 0.42, 0.08),
-        box(1.3, 0.12, 0.7, M.mid, 0.66, 0.42, 0.08),
+        box(1.3, 0.12, 0.7, M.fabricDark, -0.66, 0.42, 0.08),
+        box(1.3, 0.12, 0.7, M.fabricDark, 0.66, 0.42, 0.08),
       ),
   },
   plant: {
@@ -209,7 +254,7 @@ export const DEFS: Record<string, Def> = {
       const leaves = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), M.leaf);
       leaves.position.y = 0.95;
       leaves.castShadow = true;
-      const top = new THREE.Mesh(new THREE.IcosahedronGeometry(0.28, 0), M.leaf);
+      const top = new THREE.Mesh(new THREE.IcosahedronGeometry(0.28, 0), M.leafLight);
       top.position.set(0.1, 1.3, 0.05);
       top.castShadow = true;
       return group(cyl(0.25, 0.2, 0.55, M.pot), leaves, top);
@@ -221,12 +266,20 @@ export const DEFS: Record<string, Def> = {
     d: 3,
     blocks: false,
     build: () => {
-      const r = box(4, 0.02, 3, M.rug);
-      r.castShadow = false;
-      const edge = new THREE.Mesh(new THREE.PlaneGeometry(4.05, 3.05), new THREE.MeshBasicMaterial({ color: NEON, transparent: true, opacity: 0.12 }));
-      edge.rotation.x = -Math.PI / 2;
-      edge.position.y = 0.005;
-      return group(edge, r);
+      const tex = pixelTexture(32, 24, (g) => {
+        g.fillStyle = "#2b3320";
+        g.fillRect(0, 0, 32, 24);
+        g.fillStyle = "#3a4628";
+        g.fillRect(2, 2, 28, 20);
+        g.fillStyle = "#2b3320";
+        g.fillRect(4, 4, 24, 16);
+        g.fillStyle = "#C8F501";
+        for (let i = 6; i < 26; i += 4) g.fillRect(i, 11, 2, 2);
+      });
+      const r = new THREE.Mesh(new THREE.BoxGeometry(4, 0.03, 3), [M.rug, M.rug, toon("#ffffff", { map: tex }), M.rug, M.rug, M.rug]);
+      r.position.y = 0.015;
+      r.receiveShadow = true;
+      return r;
     },
   },
   lamp: {
@@ -248,7 +301,7 @@ export const DEFS: Record<string, Def> = {
     w: 2,
     d: 0.3,
     blocks: true,
-    build: () => group(box(2, 1.1, 0.06, new THREE.MeshStandardMaterial({ color: 0xdedede, roughness: 0.3, flatShading: true }), 0, 0.9, 0), box(2.05, 0.05, 0.12, M.mid, 0, 0.88, 0.04)),
+    build: () => group(box(2, 1.1, 0.06, M.board, 0, 0.9, 0), box(2.05, 0.05, 0.12, M.mid, 0, 0.88, 0.04)),
   },
   bookshelf: {
     label: "Estante",
@@ -256,8 +309,8 @@ export const DEFS: Record<string, Def> = {
     d: 0.5,
     blocks: true,
     build: () => {
-      const g = group(box(2, 2, 0.5, M.dark));
-      const cols = [M.light, M.mid, M.neonSoft, M.wood];
+      const g = group(box(2, 2, 0.5, M.woodDark));
+      const cols = [M.book1, M.book2, M.book3, M.white, M.neonSoft];
       for (let s = 0; s < 3; s++) {
         g.add(box(1.9, 0.03, 0.45, M.mid, 0, 0.55 + s * 0.55, 0.02));
         for (let b = 0; b < 7; b++) {
@@ -273,7 +326,7 @@ export const DEFS: Record<string, Def> = {
     w: 3,
     d: 0.8,
     blocks: true,
-    build: () => group(box(3, 0.9, 0.8, M.dark), box(3.05, 0.05, 0.85, M.light, 0, 0.9, 0), box(3, 0.03, 0.02, M.neonSoft, 0, 0.4, 0.41)),
+    build: () => group(box(3, 0.9, 0.8, M.dark), box(3.05, 0.06, 0.85, M.white, 0, 0.9, 0), box(3, 0.03, 0.02, M.neonSoft, 0, 0.4, 0.41)),
   },
   coffee: {
     label: "Café",
@@ -283,7 +336,7 @@ export const DEFS: Record<string, Def> = {
     build: () =>
       group(
         box(2, 0.9, 0.8, M.dark),
-        box(2.05, 0.05, 0.85, M.light, 0, 0.9, 0),
+        box(2.05, 0.06, 0.85, M.white, 0, 0.9, 0),
         box(0.5, 0.55, 0.45, M.mid, -0.5, 0.95, -0.1),
         box(0.12, 0.05, 0.12, M.neon, -0.5, 1.35, 0.13),
         cyl(0.05, 0.04, 0.1, M.light, 0.3, 0.95, 0.1, 8),
@@ -313,12 +366,8 @@ export const DEFS: Record<string, Def> = {
     w: 6,
     d: 6,
     blocks: false,
-    build: () => {
-      const p = new THREE.Mesh(new THREE.PlaneGeometry(6, 6), new THREE.MeshBasicMaterial({ map: floorLogoTexture(), transparent: true, depthWrite: false }));
-      p.rotation.x = -Math.PI / 2;
-      p.position.y = 0.03;
-      return p;
-    },
+    // desenhada direto na textura do piso (World.makeFloorTexture); aqui só um marcador invisível
+    build: () => new THREE.Group(),
   },
 };
 

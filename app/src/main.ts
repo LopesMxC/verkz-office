@@ -161,6 +161,8 @@ function start() {
     world.onMove = (x, z, dir, moving, zone) => net.send({ t: "move", x, z, dir, moving, zone: zone?.id ?? null });
     world.onZoneChange = onZoneChange;
     world.start();
+    // ?debug expõe o mundo no console (útil para testes e capturas)
+    if (new URLSearchParams(location.search).has("debug")) (window as any).__office = { world, media };
     setInterval(renderPeople, 1000);
     startIntegrations();
   }
@@ -284,8 +286,8 @@ function renderDock() {
   const b = (id: string, ic: string, tip: string, cls = "", extra = "") =>
     `<button class="px-btn tip ${cls}" data-id="${id}" data-tip="${tip}">${ic}${extra}</button>`;
   dock.innerHTML = [
-    b("mic", icon("mic", 22, !media.micOn), media.micOn ? "Desligar microfone (M)" : "Ligar microfone (M)", media.micOn ? "on" : "off"),
-    b("cam", icon("cam", 22, !media.camOn), media.camOn ? "Desligar câmera" : "Ligar câmera", media.camOn ? "on" : ""),
+    b("mic", icon(media.micOn ? "mic" : "mic-off", 20), media.micOn ? "Desligar microfone (M)" : "Ligar microfone (M)", media.micOn ? "on" : "off"),
+    b("cam", icon(media.camOn ? "video" : "video-off", 20), media.camOn ? "Desligar câmera" : "Ligar câmera", media.camOn ? "on" : ""),
     b("screen", icon("screen", 22), media.screenOn ? "Parar de compartilhar" : "Compartilhar tela", media.screenOn ? "on" : ""),
     `<span class="sep"></span>`,
     b("people", icon("people", 22), "Pessoas", leftOpen ? "on" : ""),

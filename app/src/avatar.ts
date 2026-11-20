@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { toon } from "./toon";
 
 /** Aparência do personagem. Tudo em voxels para casar com o pixel art. */
 export interface Look {
@@ -103,19 +104,8 @@ export function normalizeLook(l: any, fallbackColor = "#C8F501"): Look {
   return { ...base, ...(l && typeof l === "object" ? l : {}) };
 }
 
-const matCache = new Map<string, THREE.MeshStandardMaterial>();
 function mat(color: string, emissive = false) {
-  const k = color + emissive;
-  let m = matCache.get(k);
-  if (!m) {
-    m = new THREE.MeshStandardMaterial({ color, roughness: 0.8, flatShading: true });
-    if (emissive) {
-      m.emissive = new THREE.Color(color);
-      m.emissiveIntensity = 0.6;
-    }
-    matCache.set(k, m);
-  }
-  return m;
+  return toon(color, emissive ? { emissive: 0.5 } : {});
 }
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -213,8 +203,10 @@ export function buildCharacter(look: Look): Character {
   head.position.set(0, 1.25, 0);
   root.add(head);
   vox(head, L.skin, 0.42, 0.4, 0.4, 0, 0, 0);
-  vox(head, "#141414", 0.06, 0.07, 0.02, -0.09, 0.0, 0.205);
-  vox(head, "#141414", 0.06, 0.07, 0.02, 0.09, 0.0, 0.205);
+  vox(head, "#141414", 0.07, 0.09, 0.02, -0.09, 0.0, 0.205);
+  vox(head, "#141414", 0.07, 0.09, 0.02, 0.09, 0.0, 0.205);
+  vox(head, "#ffffff", 0.025, 0.03, 0.02, -0.075, 0.02, 0.212);
+  vox(head, "#ffffff", 0.025, 0.03, 0.02, 0.105, 0.02, 0.212);
   vox(head, shade(L.skin, 0.85), 0.06, 0.04, 0.03, 0, -0.07, 0.205);
   vox(head, L.skin, 0.06, 0.1, 0.08, -0.22, 0, 0);
   vox(head, L.skin, 0.06, 0.1, 0.08, 0.22, 0, 0);

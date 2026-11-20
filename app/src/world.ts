@@ -4,7 +4,8 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPixelatedPass } from "three/addons/postprocessing/RenderPixelatedPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { buildItem, DEFS, footprint, Item, Layout, Zone } from "./furniture";
-import { NEON } from "./logo";
+import { LOGO_PATH, NEON } from "./logo";
+import { rng, toon } from "./toon";
 import { buildCharacter, Character, Look, lookColor, normalizeLook } from "./avatar";
 
 export interface PeerInfo {
@@ -43,7 +44,7 @@ export class Avatar {
 
     this.ring = new THREE.Mesh(
       new THREE.RingGeometry(0.36, 0.48, 4, 1),
-      new THREE.MeshBasicMaterial({ color: isMe ? NEON : lookColor(this.look), transparent: true, opacity: isMe ? 0.95 : 0.5, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ color: isMe ? NEON : lookColor(this.look), side: THREE.DoubleSide }),
     );
     this.ring.rotation.x = -Math.PI / 2;
     this.ring.rotation.z = Math.PI / 4;
@@ -142,7 +143,7 @@ export class World {
   blockers: Rect[] = [];
   me!: Avatar;
   others = new Map<string, Avatar>();
-  zoom = 1.45;
+  zoom = 1.8;
   camTarget = new THREE.Vector3();
   keys = new Set<string>();
   path: THREE.Vector3[] = [];
@@ -171,13 +172,13 @@ export class World {
     this.labels.domElement.className = "labels";
     host.appendChild(this.labels.domElement);
 
-    this.scene.background = new THREE.Color(0x0d0d0d);
+    this.scene.background = new THREE.Color(0x0b0b0c);
 
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
 
-    const hemi = new THREE.HemisphereLight(0xf2f6e6, 0x2a2a2a, 1.7);
+    const hemi = new THREE.HemisphereLight(0xfff3df, 0x3a3428, 1.25);
     this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xfff8ec, 2.1);
+    const sun = new THREE.DirectionalLight(0xffe9c8, 2.4);
     sun.position.set(14, 26, 10);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
@@ -186,14 +187,14 @@ export class World {
     sun.shadow.bias = -0.0005;
     sun.shadow.normalBias = 0.02;
     this.scene.add(sun);
-    const fill = new THREE.PointLight(NEON, 6, 30, 1.6);
+    const fill = new THREE.PointLight(NEON, 4, 18, 1.6);
     fill.position.set(0, 6, -8);
     this.scene.add(fill);
 
     this.scene.add(this.itemGroup, this.zoneGroup);
 
     this.composer = new EffectComposer(this.renderer);
-    this.pixelPass = new RenderPixelatedPass(this.pixelSize, this.scene, this.camera, { normalEdgeStrength: 0.35, depthEdgeStrength: 0.6 });
+    this.pixelPass = new RenderPixelatedPass(this.pixelSize, this.scene, this.camera, { normalEdgeStrength: 0.22, depthEdgeStrength: 0.5 });
     this.composer.addPass(this.pixelPass);
     this.composer.addPass(new OutputPass());
 
@@ -233,10 +234,10 @@ export class World {
     if (this.floor) this.floor.removeFromParent();
 
     const { w, d } = layout.size;
-    const floorTex = this.makeFloorTexture(w, d);
+    const floorTex = this.makeFloorTexture(layout);
     this.floor = new THREE.Mesh(
       new THREE.PlaneGeometry(w + 1, d + 1),
-      new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.85, metalness: 0.05 }),
+      toon("#ffffff", { map: floorTex }),
     );
     this.floor.rotation.x = -Math.PI / 2;
     this.floor.receiveShadow = true;
@@ -248,40 +249,88 @@ export class World {
     this.currentZone = null;
   }
 
-  private makeFloorTexture(w: number, d: number) {
-    const px = 16;
+  /** Piso pintado pixel a pixel: concreto no salão, carpete nas salas privadas, madeira nas áreas abertas. */
+  private makeFloorTexture(layout: Layout) {
+    const { w, d } = layout.size;
+    const px = 16; // pixels de textura por metro
+    const W = (w + 1) * px;
+    const H = (d + 1) * px;
     const c = document.createElement("canvas");
-    c.width = (w + 1) * px;
-    c.height = (d + 1) * px;
+    c.width = W;
+    c.height = H;
     const g = c.getContext("2d")!;
-    g.fillStyle = "#161618";
-    g.fillRect(0, 0, c.width, c.height);
-    for (let i = 0; i <= w + 1; i++) {
-      for (let j = 0; j <= d + 1; j++) {
-        if ((i + j) % 2 === 0) {
-          g.fillStyle = "#19191b";
-          g.fillRect(i * px, j * px, px, px);
+    const r = rng(42);
+    // concreto escuro em placas de 2 m
+    g.fillStyle = "#222228";
+    g.fillRect(0, 0, W, H);
+    for (let i = 0; i < W; i += px * 2)
+      for (let j = 0; j < H; j += px * 2) {
+        g.fillStyle = (i / (px * 2) + j / (px * 2)) % 2 ? "#26262c" : "#232329";
+        g.fillRect(i, j, px * 2, px * 2);
+        g.fillStyle = "#1b1b20";
+        g.fillRect(i, j, px * 2, 1);
+        g.fillRect(i, j, 1, px * 2);
+      }
+    for (let k = 0; k < W * H * 0.012; k++) {
+      g.fillStyle = r() > 0.5 ? "#2a2a31" : "#1e1e23";
+      g.fillRect(Math.floor(r() * W), Math.floor(r() * H), 1, 1);
+    }
+    const toPx = (x: number, z: number) => [(x + (w + 1) / 2) * px, (z + (d + 1) / 2) * px];
+    for (const zn of layout.zones) {
+      const [x0, y0] = toPx(zn.x - zn.w / 2, zn.z - zn.d / 2);
+      const zw = zn.w * px;
+      const zh = zn.d * px;
+      if (zn.private) {
+        // carpete grafite com trama
+        g.fillStyle = "#262a33";
+        g.fillRect(x0, y0, zw, zh);
+        for (let i = 0; i < zw; i += 2)
+          for (let j = (i / 2) % 2; j < zh; j += 2) {
+            g.fillStyle = "#2a2f39";
+            g.fillRect(x0 + i, y0 + j, 1, 1);
+          }
+        g.fillStyle = "#C8F501";
+        g.globalAlpha = 0.55;
+        g.fillRect(x0, y0, zw, 1);
+        g.fillRect(x0, y0 + zh - 1, zw, 1);
+        g.fillRect(x0, y0, 1, zh);
+        g.fillRect(x0 + zw - 1, y0, 1, zh);
+        g.globalAlpha = 1;
+      } else {
+        // tábuas de madeira
+        for (let j = 0; j < zh; j += 4) {
+          let i = -((j / 4) % 3) * 8;
+          while (i < zw) {
+            const len = 16 + Math.floor(r() * 12);
+            const tone = ["#4a3524", "#523b28", "#45311f", "#4e3826"][Math.floor(r() * 4)];
+            g.fillStyle = tone;
+            g.fillRect(x0 + Math.max(0, i), y0 + j, Math.min(len, zw - Math.max(0, i)), 3);
+            g.fillStyle = "#3a2919";
+            g.fillRect(x0 + Math.max(0, i), y0 + j + 3, Math.min(len, zw - Math.max(0, i)), 1);
+            i += len;
+            if (i < zw) g.fillRect(x0 + i - 1, y0 + j, 1, 3);
+          }
         }
       }
     }
-    g.strokeStyle = "rgba(200,245,1,0.05)";
-    g.lineWidth = 1;
-    for (let i = 0; i <= w + 1; i++) {
-      g.beginPath();
-      g.moveTo(i * px + 0.5, 0);
-      g.lineTo(i * px + 0.5, c.height);
-      g.stroke();
-    }
-    for (let j = 0; j <= d + 1; j++) {
-      g.beginPath();
-      g.moveTo(0, j * px + 0.5);
-      g.lineTo(c.width, j * px + 0.5);
-      g.stroke();
+    // logo da VERKZ pintado no piso (bem discreto)
+    const logo = new Path2D(LOGO_PATH);
+    for (const it of layout.items.filter((i) => i.type === "floor_logo")) {
+      const [cx, cy] = toPx(it.x, it.z);
+      const size = 5 * px; // ~5 m de largura
+      g.save();
+      g.translate(cx, cy);
+      g.scale(size / 560, size / 560);
+      g.translate(-547, -547);
+      g.fillStyle = "#2e3514";
+      g.fill(logo, "evenodd");
+      g.restore();
     }
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
     t.magFilter = THREE.NearestFilter;
     t.minFilter = THREE.NearestFilter;
+    t.generateMipmaps = false;
     return t;
   }
 
@@ -308,31 +357,11 @@ export class World {
   addZoneMesh(z: Zone) {
     const g = new THREE.Group();
     g.userData.zoneId = z.id;
-    const fill = new THREE.Mesh(
-      new THREE.PlaneGeometry(z.w, z.d),
-      new THREE.MeshBasicMaterial({ color: z.private ? NEON : 0xffffff, transparent: true, opacity: z.private ? 0.045 : 0.025, depthWrite: false }),
-    );
-    fill.rotation.x = -Math.PI / 2;
-    fill.position.y = 0.008;
-    g.add(fill);
-    const pts = [
-      new THREE.Vector3(-z.w / 2, 0.015, -z.d / 2),
-      new THREE.Vector3(z.w / 2, 0.015, -z.d / 2),
-      new THREE.Vector3(z.w / 2, 0.015, z.d / 2),
-      new THREE.Vector3(-z.w / 2, 0.015, z.d / 2),
-      new THREE.Vector3(-z.w / 2, 0.015, -z.d / 2),
-    ];
-    const line = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints(pts),
-      new THREE.LineDashedMaterial({ color: NEON, dashSize: 0.3, gapSize: 0.2, transparent: true, opacity: z.private ? 0.55 : 0.2 }),
-    );
-    line.computeLineDistances();
-    g.add(line);
     const tag = document.createElement("div");
     tag.className = "zone-tag" + (z.private ? " private" : "");
-    tag.innerHTML = (z.private ? '<span class="lock"></span>' : "") + z.name;
+    tag.textContent = z.name;
     const lbl = new CSS2DObject(tag);
-    lbl.position.set(-z.w / 2 + 0.2, 0.05, -z.d / 2 + 0.3);
+    lbl.position.set(-z.w / 2 + 0.3, 0.05, -z.d / 2 + 0.4);
     lbl.center.set(0, 0);
     g.add(lbl);
     g.position.set(z.x, 0, z.z);
@@ -497,7 +526,7 @@ export class World {
 
     const el = this.labels.domElement;
     el.addEventListener("wheel", (e) => {
-      this.zoom = THREE.MathUtils.clamp(this.zoom * (e.deltaY > 0 ? 0.9 : 1.1), 0.45, 2.6);
+      this.zoom = THREE.MathUtils.clamp(this.zoom * (e.deltaY > 0 ? 0.9 : 1.1), 0.8, 3.2);
       this.updateFrustum();
       e.preventDefault();
     }, { passive: false });
