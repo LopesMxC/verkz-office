@@ -50,7 +50,17 @@ No app, o endereço do servidor fica `wss://office.verkzcompany.com.br/ws`.
 
 YouTube Music não tem API pública: ele entra como atalho que abre o app/site.
 
-## 3. Gerar os instaladores (Mac .dmg e Windows .exe)
+## 3. Gerar os instaladores
+
+**No seu PC Windows (mais simples):** dê dois cliques em `compilador.bat`.
+- Na 1ª vez ele instala o que faltar (Node, Rust e as ferramentas de C++ da Microsoft) e pede para abrir de novo.
+- Pergunta o domínio do escritório uma vez e guarda em `compilador.env`.
+- As chaves do Google/Spotify são opcionais: copie `compilador.env.exemplo` para `compilador.env` e preencha.
+- O instalador `.exe` sai na pasta `instaladores`.
+
+**Instalador do Mac:** só dá para gerar num Mac (dois cliques em `compilador-mac.command`) ou pelo GitHub (abaixo).
+
+### Pelo GitHub (Mac e Windows de uma vez)
 1. Suba o projeto num repositório no GitHub.
 2. Em *Settings → Secrets and variables → Actions*:
    - **Variables:** `OFFICE_SERVER` = `wss://office.verkzcompany.com.br/ws`

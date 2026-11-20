@@ -68,6 +68,11 @@ Servidor → cliente: `welcome{id,me,peers,layout,history,livekit{url,token}}`, 
 `peer_leave`, `peer_move`, `chat`, `status`, `look`, `layout`, `wave`, `error`, `pong`.
 Identity no LiveKit = id do peer no servidor.
 
+## Build local
+- `compilador.bat` (Windows, gera .exe NSIS em instaladores/) e `compilador-mac.command` (gera .dmg).
+  Lêem `compilador.env` (VITE_OFFICE_SERVER + chaves VERKZ_*). Não testados num Windows real ainda.
+- Hostinger VPS só tem Linux (não existe Windows Server lá): deploy segue com Ubuntu + deploy/setup.sh.
+
 ## Depois da v1
 - Assinatura/notarização Apple (precisa de conta Apple Developer) e certificado Windows.
 - Login com Google no lugar da chave única.
