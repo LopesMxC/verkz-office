@@ -69,8 +69,17 @@ Servidor → cliente: `welcome{id,me,peers,layout,history,livekit{url,token}}`, 
 Identity no LiveKit = id do peer no servidor.
 
 ## Build local
-- `compilador.bat` (Windows, gera .exe NSIS em instaladores/) e `compilador-mac.command` (gera .dmg).
-  Lêem `compilador.env` (VITE_OFFICE_SERVER + chaves VERKZ_*). Não testados num Windows real ainda.
+- `compilador.bat` (Windows): menu 1 Windows local (.exe NSIS) / 2 Mac pelo GitHub / 3 os dois.
+  Opção Mac: instala git + gh (winget), `gh auth login --web`, cria repo privado `<usuario>/verkz-office`,
+  commit + push, grava `OFFICE_SERVER` (variable) e `VERKZ_*` (secrets), `gh workflow run build.yml
+  -f plataforma=mac`, espera com `gh run watch` e baixa o artifact `verkz-office-mac` para instaladores/.
+  Na opção 3 o Mac é disparado antes e o Windows compila enquanto o GitHub trabalha.
+- `compilador-mac.command` (gera .dmg num Mac). Ambos lêem `compilador.env` (VITE_OFFICE_SERVER + VERKZ_*).
+  Não testados num Windows/Mac real ainda (estrutura do .bat checada por script; Wine não roda no sandbox).
+- Workflow: input `plataforma` (todas/mac/windows); rodada manual só gera Artifacts (`verkz-office-mac`,
+  `verkz-office-windows`); tag `v*` gera os dois + Release rascunho. `.gitattributes` fixa CRLF no .bat.
+- `deploy/setup.sh` para sem mexer em nada se 80/443 já estiverem ocupadas por outro sistema
+  (ex.: n8n/Traefik na mesma VPS). Nesse caso falta adaptar o compose para o proxy existente.
 - Hostinger VPS só tem Linux (não existe Windows Server lá): deploy segue com Ubuntu + deploy/setup.sh.
 
 ## Depois da v1

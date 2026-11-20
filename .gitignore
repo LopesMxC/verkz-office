@@ -7,3 +7,4 @@ server/data/
 *.log
 instaladores/
 compilador.env
+deploy/livekit.yaml

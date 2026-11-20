@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # Instala tudo numa VPS Ubuntu limpa (Hostinger KVM2). Rodar como root dentro da pasta deploy/.
 set -euo pipefail
+cd "$(dirname "$0")"
+
+# As portas 80/443 precisam estar livres (ou já serem do Caddy deste escritório).
+# Se outro sistema já usa (n8n, Traefik, Nginx...), para aqui sem mexer em nada.
+if ss -Hltn '( sport = :80 or sport = :443 )' 2>/dev/null | grep -q . \
+  && ! { command -v docker >/dev/null && docker compose ps --services --status running 2>/dev/null | grep -qx caddy; }; then
+  echo "As portas 80/443 desta VPS já estão em uso por outro programa:"
+  ss -Hltnp '( sport = :80 or sport = :443 )' 2>/dev/null | awk '{print "  " $4 "  " $6}' || true
+  echo "Nada foi alterado. Veja a parte \"VPS que já tem outro sistema\" no tutorial."
+  exit 1
+fi
 
 if ! command -v docker >/dev/null; then
   curl -fsSL https://get.docker.com | sh
