@@ -222,6 +222,16 @@ if errorlevel 1 git commit -q -m "Atualizacao para gerar os instaladores"
 set "RAMO="
 for /f "usebackq delims=" %%b in (`git branch --show-current`) do set "RAMO=%%b"
 if not defined RAMO set "RAMO=main"
+rem Se o GitHub tem commits que esta pasta nao tem, junta os dois (vale o que esta nesta pasta)
+git ls-remote --exit-code --heads origin %RAMO% >nul 2>nul
+if not errorlevel 1 (
+  git pull -q --rebase -X theirs origin %RAMO%
+  if errorlevel 1 (
+    git rebase --abort >nul 2>nul
+    echo [ERRO] Nao consegui juntar esta pasta com o que ja esta no GitHub.
+    exit /b 1
+  )
+)
 echo [..] Enviando o codigo para o GitHub...
 git push -q -u origin %RAMO%
 if errorlevel 1 (
