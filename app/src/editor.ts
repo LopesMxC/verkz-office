@@ -37,15 +37,15 @@ const COLORS = ["#C8F501", "#0D0D0D", "#f4f1ea", "#9aa0ab", "#5d606c", "#c0392b"
 /** Categorias da paleta de móveis. */
 const CATEGORIES: [string, string, RegExp][] = [
   ["todos", "Todos", /.*/],
-  ["escritorio", "Escritório", /^(elevator|desk|office_chair|exec_chair|conf_table|whiteboard|tv|cabinet|bookshelf|.*_panel|speaker|neon_logo|floor_logo|cabinet_plain|shelf_.*)$/],
-  ["assentos", "Assentos", /^(chair.*|wood_chair|stool.*|sofa.*|armchair.*|beanbag|k_chair_.|pillow_.)$/],
-  ["mesas", "Mesas", /^(table.*|coffee_table|k_table.*|k_round.*|conf_table|desk)$/],
-  ["cozinha", "Cozinha", /^(k_.*|fridge|microwave|coffee|water|counter)$/],
+  ["escritorio", "Escritório", /^(elevator|desk|office_chair|exec_chair|conf_table|whiteboard|tv|cabinet|bookshelf|.*_panel|speaker|neon_logo|floor_logo|cabinet_plain|shelf_.*|p_(standing_desk|desk_l|printer|locker|filing|safe|trash|recycle|corkboard|kanban|projector|phone_booth))$/],
+  ["assentos", "Assentos", /^(chair.*|wood_chair|stool.*|sofa.*|armchair.*|beanbag|k_chair_.|pillow_.|p_(gamer_chair|bench|sofa_l|hammock|lounge))$/],
+  ["mesas", "Mesas", /^(table.*|coffee_table|k_table.*|k_round.*|conf_table|desk|p_(bar_table|side_table|desk_l|standing_desk))$/],
+  ["cozinha", "Cozinha", /^(k_.*|fridge|microwave|coffee|water|counter|p_(vending|espresso|fruit_bowl|water_jug))$/],
   ["tapetes", "Tapetes", /^rug.*$/],
-  ["plantas", "Plantas", /^(plant.*|bamboo|cactus.*)$/],
-  ["decor", "Decoração", /^(frame.*|photo_.*|photo_frame|lamp.*|books|book_single|k_pillar|clock_panel|neon_.*|cabinet_small.*)$/],
-  ["lazer", "Lazer e descanso", /^(radio|pool_table|ping_pong|arcade|bed.*|beanbag|tv)$/],
-  ["banheiro", "Banheiro", /^(toilet|sink|stall|k_towelrail)$/],
+  ["plantas", "Plantas", /^(plant.*|bamboo|cactus.*|p_(monstera|succulents|fern|planter_long|olive))$/],
+  ["decor", "Decoração", /^(frame.*|photo_.*|photo_frame|lamp.*|books|book_single|k_pillar|clock_panel|neon_.*|cabinet_small.*|p_(aquarium|globe|trophy|trophy_cup|neon_ring|clock_wall|mirror|floor_lamp|vase|books|bookcase_full|coat_rack|fireplace))$/],
+  ["lazer", "Lazer e descanso", /^(radio|pool_table|ping_pong|arcade|bed.*|beanbag|tv|p_(foosball|dartboard|videogame|guitar|keyboard|basket|hammock|lounge))$/],
+  ["banheiro", "Banheiro", /^(toilet|sink|stall|k_towelrail|p_(towel|hamper|mirror))$/],
 ];
 
 type Tool = null | "zone" | "wall" | "erase" | string; // string = tipo de móvel

@@ -647,3 +647,12 @@ body.screen-mode .screens { display: none; }
   .screen-people { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
   .sp-tile { width: 120px; height: 84px; }
 }
+
+/* ---------- v0.6.1: botão flutuante de visão (isométrica / aérea) */
+.view-switch { position: absolute; right: 20px; bottom: 20px; display: flex; gap: 4px; padding: 5px; border-radius: 14px; z-index: 6; }
+.view-switch button { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--text-2); font: 600 12.5px/1 inherit; font-family: inherit; cursor: pointer; transition: background .15s, color .15s; }
+.view-switch button:hover { background: var(--raised); color: var(--text); }
+.view-switch button.on { background: var(--accent, #C8F501); color: #0D0D0D; }
+body.screen-mode .view-switch { display: none; }
+@media (max-width: 1560px) { .view-switch span { display: none; } .view-switch button { padding: 0 10px; } }
+@media (max-width: 760px) { .view-switch { right: calc(10px + env(safe-area-inset-right)); bottom: calc(80px + env(safe-area-inset-bottom)); } }

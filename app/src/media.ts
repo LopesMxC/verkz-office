@@ -612,8 +612,9 @@ export class Media {
           // de longe a voz perde os agudos, como num ambiente de verdade
           const far = clamp01((rel.dist - full) / (silent - full));
           cutoff = 18000 * (1 - far) * (1 - far) + 1800;
-          // lado na tela (câmera isométrica): direita da tela = (+x, -z)
-          const side = (rel.dx - rel.dz) / Math.SQRT2;
+          // lado na tela (vale para a visão isométrica e para a aérea)
+          const r = this.world.screenRight;
+          const side = rel.dx * r.x + rel.dz * r.z;
           pan = Math.max(-0.7, Math.min(0.7, side / (rel.dist + 1.5)));
         }
         if (Math.abs(v.vol - v.sent) > 0.002) {

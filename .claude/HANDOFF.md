@@ -277,3 +277,34 @@ Identity no LiveKit = id do peer no servidor.
   pelo navegador; estágio web = FROM verkz-office-web:0.10.0 (fonte = v0.5.1 exceto media.ts), aplica o patch,
   confere md5 e roda vite build. Conferido: /health ok, bundle index-Bp4_GPfh.js com "Áudio 3D", fontes servidas.
   Instaladores Windows/Mac/Linux 0.6.0 ainda não gerados: rodar compilador.bat e deploy/gerar-update.ps1.
+
+## v0.6.1 — pedidos de 21/11/2026 18:32 (só web/app)
+- **Visões:** `world.view` = "iso" (câmera em alvo + (24,24,24)) ou "aerea" (alvo + (0,40,0), camera.up = (0,0,-1),
+  norte para cima). `world.setView`, `world.screenRight` (o pan do áudio 3D usa), WASD e fitZoom por visão.
+  Botão flutuante `.view-switch` (canto inferior direito) + tecla V; fica salvo em `prefs.view`.
+- **Itens só no mesmo cômodo:** `ROOM_ITEMS` + `sameRoomAs(it)` (main.ts). Mesma sala; na área aberta até
+  `OPEN_REACH` = 6 m. De outro cômodo o menu só oferece "Ir até <sala>" (`goToItem`), e ao chegar o menu abre.
+  Vale para rádio/caixa de som, cozinha, máquina de lanches, jogos, elevador, quadros com foto e painéis.
+- **Seu Zé:** porta aberta só por ele toca a 15% do volume e sem a batida de fechar (`onDoorOpen(dist, npc)`).
+- **+49 móveis feitos em código** (prefixo `p_`, NEW_DEFS no fim de furniture.ts, sem arquivo de modelo, então o
+  deploy por patch funciona): escritório (mesa de pé, mesa em L, impressora, lockers, arquivo, cofre, lixeiras,
+  mural, quadro de tarefas, tela de projeção, cabine de ligação), assentos (cadeira gamer e banco, sentáveis via
+  SEATS; sofá em L, rede, espreguiçadeira), mesas (bistrô, canto), lazer (pebolim, dardos, videogame, violão,
+  teclado, basquete), decoração (aquário, globo, troféus, neon, relógio, espelho, luminária de arco, vaso, livros,
+  estante cheia, cabideiro, lareira), plantas (costela-de-adão, suculentas, samambaia, floreira, oliveira),
+  cozinha (máquina de lanches clicável, expresso, fruteira, garrafão), banheiro (toalheiro, cesto).
+  Categorias do editor atualizadas; itens de parede entram em WALL_MOUNT.
+- **Produção (21/11/2026 ~18:55):** imagem verkz-office-server:0.13.0 (stack 4) = FROM estágio web da 0.12.0
+  (sha256:a32acb86f9bb..., fonte v0.6.0) + patch da v0.6.1 (contexto de 13 KB, md5 conferidos). Bundle index-Cs-aIr6R.js.
+  Para a próxima: o estágio web desta build tem a fonte v0.6.1 (procure o ID no log "Step 4/9" da 0.13.0).
+
+## v0.6.2 — gráficos e visual (21/11/2026 19:08)
+- **Visão 2D:** `ViewMode` = "iso" | "aerea" | "2d". O 2D usa câmera quase de cima (alvo + (0,40,9), dá para ver
+  o rosto), troca os materiais por MeshBasicMaterial (cor chapada, sem luz) via `flatMats`, desliga sombras e
+  reforça o contorno. `world.topDown` vale para aérea e 2D (WASD, enquadramento, lado do som).
+  Botão flutuante tem Isométrica, Aérea e 2D; V alterna entre as três; também em Configurações > Aparência > Visão.
+- **Opções gráficas finas** (`GfxOptions`, `world.setGfx`, `prefs.gfx`): sombras, contorno, limite de quadros
+  (sem limite, 60, 30) e resolução (automática, 100%, 75%, 50%). Somam com a Qualidade (leve continua 30 fps).
+- Botão de visão só com ícones abaixo de 1560 px de largura (não encosta no dock).
+- **Produção (21/11/2026 ~19:16):** verkz-office-server:0.14.0 rodando na stack 4 (estágio web com a
+  fonte v0.6.2 = c5971df87bd0, md5 conferidos; use como base do próximo patch). Bundle index-6Cx4TUIg.js.

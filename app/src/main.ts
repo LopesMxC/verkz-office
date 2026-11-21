@@ -1,5 +1,5 @@
 import "./style.css";
-import { World, PeerInfo, EMOTES, HOLD_ITEMS, SEATS, GraphicStyle } from "./world";
+import { World, PeerInfo, EMOTES, HOLD_ITEMS, SEATS, GraphicStyle, ViewMode, GfxOptions } from "./world";
 import { Net } from "./net";
 import { Media, MediaPrefs, RANGES } from "./media";
 import { Editor } from "./editor";
@@ -46,6 +46,10 @@ interface Prefs {
   quality: "leve" | "equilibrada" | "bonita";
   /** Estilo visual do mundo. */
   style: GraphicStyle;
+  /** Visão: isométrica 3D, aérea 3D ou 2D. */
+  view: ViewMode;
+  /** Opções gráficas finas: sombras, contorno, limite de quadros, resolução. */
+  gfx: GfxOptions;
 }
 
 /** Cargos da equipe: cada um tem a sua sala no mapa (zona com `role`). */
@@ -77,6 +81,8 @@ function loadPrefs(): Prefs {
     autoUpdate: p.autoUpdate ?? true,
     quality: p.quality === "leve" || p.quality === "bonita" ? p.quality : "equilibrada",
     style: (["padrao", "realista", "desenho", "retro"] as const).includes(p.style as any) ? (p.style as GraphicStyle) : "padrao",
+    view: p.view === "aerea" || p.view === "2d" ? p.view : "iso",
+    gfx: { shadows: true, outline: true, fps: 0, scale: 0, ...(p.gfx ?? {}) },
   };
 }
 const prefs = loadPrefs();
@@ -210,6 +216,7 @@ function start() {
   if (!started) {
     started = true;
     world = new World($("#stage"));
+    world.gfx = { ...prefs.gfx };
     world.setQuality(prefs.quality);
     world.setStyle(prefs.style);
     if (import.meta.env.DEV) (window as any).__verkz = { world, prefs, get editor() { return editor; } };
@@ -225,11 +232,16 @@ function start() {
     media.onToggle = (_w, on) => toggleSound(on);
     // som real de porta, mais baixo conforme a distância
     const doorVol = (dist: number) => Math.max(0, 1 - dist / 9);
-    world.onDoorOpen = (dist) => doorSound("open", doorVol(dist));
-    world.onDoorClose = (dist) => doorSound("close", doorVol(dist));
+    // portas que o Seu Zé abre: bem mais baixinho (e ele não bate a porta)
+    world.onDoorOpen = (dist, npc) => doorSound("open", doorVol(dist) * (npc ? 0.15 : 1));
+    world.onDoorClose = (dist, npc) => {
+      if (!npc) doorSound("close", doorVol(dist));
+    };
     preloadDoorSounds();
     startRadio();
     world.onOverviewChange = () => renderDock();
+    world.setView(prefs.view);
+    mountViewSwitch();
     world.onEnterMyRoom = () => doorChime();
     world.onStep = (run, vol) => {
       if (soundPrefs.steps) footstep(run, vol);
@@ -1589,7 +1601,60 @@ function nearItem(it: Item, then: () => void) {
   }, 200);
 }
 
+/** Itens que a pessoa usa (rádio, café, jogos, painéis...): só funcionam no mesmo cômodo. */
+const ROOM_ITEMS = new Set([
+  "cleiton", "coffee", "water", "fridge", "microwave", "elevator", "pool_table", "ping_pong", "speaker", "radio",
+  "photo_wall", "photo_big", "photo_easel", "photo_desk", "fin_panel", "weather_panel", "goal_panel", "api_panel", "p_vending",
+]);
+/** Distância máxima para usar um item quando os dois estão na área aberta (sem sala). */
+const OPEN_REACH = 6;
+
+/** Estou no mesmo cômodo do item? (mesma sala; na área aberta, até OPEN_REACH metros) */
+function sameRoomAs(it: Item) {
+  const iz = world.zoneAt(it.x, it.z);
+  const mz = world.zoneAt(world.me.root.position.x, world.me.root.position.z);
+  if (iz || mz) return iz?.id === mz?.id;
+  const p = world.me.root.position;
+  return Math.hypot(p.x - it.x, p.z - it.z) <= OPEN_REACH;
+}
+
 function onItemClick(it: Item, x: number, y: number): boolean {
+  if (!ROOM_ITEMS.has(it.type) || sameRoomAs(it)) return useItem(it, x, y);
+  // de outro cômodo: só dá para ir até lá (chegando, o menu abre)
+  const z = world.zoneAt(it.x, it.z);
+  const label = DEFS[it.type]?.label ?? "Item";
+  menu(x, y, `${label} · ${z ? `fica em ${z.name}` : "longe de você"}`, [
+    [
+      "map",
+      z ? `Ir até ${z.name}` : "Ir até lá",
+      () =>
+        goToItem(it, () => {
+          const r = world.host.getBoundingClientRect();
+          useItem(it, r.left + r.width / 2, r.top + r.height / 2 - 40);
+        }),
+    ],
+  ]);
+  return true;
+}
+
+/** Anda até o item e espera chegar no cômodo dele. */
+function goToItem(it: Item, then: () => void) {
+  world.walkTo(it.x + 1.1, it.z + 1.1);
+  const t0 = Date.now();
+  const iv = setInterval(() => {
+    const p = world.me.root.position;
+    if (sameRoomAs(it) && Math.hypot(p.x - it.x, p.z - it.z) < 2.6) {
+      clearInterval(iv);
+      then();
+    } else if (Date.now() - t0 > 20_000 || (!world.walking && Date.now() - t0 > 1000)) {
+      clearInterval(iv);
+      if (sameRoomAs(it)) then();
+      else toast("Não deu para chegar até lá", true);
+    }
+  }, 200);
+}
+
+function useItem(it: Item, x: number, y: number): boolean {
   const take = (kind: string, sound: "pour" | "open" = "pour") => () =>
     nearItem(it, () => {
       kitchenSound(sound);
@@ -1623,6 +1688,12 @@ function onItemClick(it: Item, x: number, y: number): boolean {
       menu(x, y, "Geladeira", [
         ["plus", "Pegar um lanche", take("lanche", "open")],
         ["plus", "Pegar um refrigerante", take("refri", "open")],
+      ]);
+      return true;
+    case "p_vending":
+      menu(x, y, "Máquina de lanches", [
+        ["plus", "Comprar um lanche", take("lanche", "open")],
+        ["plus", "Comprar um refrigerante", take("refri", "open")],
       ]);
       return true;
     case "microwave":
@@ -2237,6 +2308,35 @@ function startPoolScene(it: Item, role: "host" | "guest" | "solo") {
   };
 }
 
+/** Botão flutuante: escolhe entre a visão isométrica e a aérea (fica salvo). */
+function mountViewSwitch() {
+  document.querySelector(".view-switch")?.remove();
+  const el = document.createElement("div");
+  el.className = "view-switch panel";
+  el.innerHTML = `<button data-v="iso" title="Visão isométrica 3D (V)">${icon("cube", 17)}<span>Isométrica</span></button><button data-v="aerea" title="Visão aérea 3D (V)">${icon("plan", 17)}<span>Aérea</span></button><button data-v="2d" title="Visão 2D, plana (V)">${icon("square", 17)}<span>2D</span></button>`;
+  const sync = () => el.querySelectorAll<HTMLElement>("[data-v]").forEach((b) => b.classList.toggle("on", b.dataset.v === world.view));
+  el.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-v]");
+    if (!b) return;
+    setView(b.dataset.v as ViewMode);
+  });
+  world.onViewChange = sync;
+  sync();
+  hud.appendChild(el);
+}
+function setView(v: ViewMode) {
+  world.setView(v);
+  prefs.view = v;
+  savePrefs();
+}
+window.addEventListener("keydown", (e) => {
+  // V troca a visão (fora de campos de texto)
+  if (e.key.toLowerCase() !== "v" || e.ctrlKey || e.metaKey || e.altKey || !world?.me) return;
+  const t = e.target as HTMLElement;
+  if (t.closest("input, textarea, select, [contenteditable]")) return;
+  setView(world.view === "iso" ? "aerea" : world.view === "aerea" ? "2d" : "iso");
+});
+
 // ------------------------------------------------------------ rádio (YouTube na sala)
 /** Todos os rádios ligados agora (o mais novo vale, se dois ligaram a mesma caixa). */
 function radioSources(): RadioSource[] {
@@ -2503,6 +2603,12 @@ async function openSettings() {
         ${sw("shareMusic", "Mostrar a música que estou ouvindo", prefs.shareMusic)}
       </section>
       <section data-sec="3" hidden>
+        <div class="label">Visual</div>
+        <label class="field"><span class="label">Visão</span><select class="input" name="view">
+          <option value="iso" ${prefs.view === "iso" ? "selected" : ""}>3D isométrica (diagonal, padrão)</option>
+          <option value="aerea" ${prefs.view === "aerea" ? "selected" : ""}>3D aérea (de cima, com luz e sombra)</option>
+          <option value="2d" ${prefs.view === "2d" ? "selected" : ""}>2D (plano de cima, cores chapadas, mais leve)</option>
+        </select></label>
         <label class="field"><span class="label">Estilo visual</span><select class="input" name="style">
           <option value="padrao" ${prefs.style === "padrao" ? "selected" : ""}>Padrão (traço fino, cores chapadas)</option>
           <option value="realista" ${prefs.style === "realista" ? "selected" : ""}>Realista (luz e sombras suaves, reflexos)</option>
@@ -2514,6 +2620,15 @@ async function openSettings() {
           <option value="equilibrada" ${prefs.quality === "equilibrada" ? "selected" : ""}>Equilibrada (recomendada)</option>
           <option value="bonita" ${prefs.quality === "bonita" ? "selected" : ""}>Bonita (mais nítida, usa mais a placa de vídeo)</option>
         </select></label>
+        <div class="label" style="margin-top:8px">Gráficos</div>
+        <div class="row2"><label class="field"><span class="label">Limite de quadros</span><select class="input" name="gfx_fps">
+          ${[[0, "Sem limite (o máximo da tela)"], [60, "60 por segundo"], [30, "30 por segundo (economiza bateria)"]].map(([k, l]) => `<option value="${k}" ${prefs.gfx.fps === k ? "selected" : ""}>${l}</option>`).join("")}
+        </select></label>
+        <label class="field"><span class="label">Resolução</span><select class="input" name="gfx_scale">
+          ${[[0, "Automática (pela qualidade)"], [1, "100% (mais nítida)"], [0.75, "75%"], [0.5, "50% (mais leve)"]].map(([k, l]) => `<option value="${k}" ${prefs.gfx.scale === k ? "selected" : ""}>${l}</option>`).join("")}
+        </select></label></div>
+        ${sw("gfx_shadows", "Sombras", prefs.gfx.shadows, "Sombra dos móveis e das pessoas (no 2D não tem sombra).")}
+        ${sw("gfx_outline", "Contorno nas bordas", prefs.gfx.outline, "As linhas que desenham as bordas. Desligar deixa mais leve.")}
         ${sw("weatherFx", "Efeitos de clima (chuva, neve, folhas)", prefs.weatherFx, "Desligue em computadores mais fracos.")}
         ${sw("eventSkin", "Usar a skin das datas especiais", prefs.look.eventSkin !== false, "Gorro no Natal, chapéu de bruxa no Halloween...")}
       </section>
@@ -2622,6 +2737,13 @@ function saveSettings(bg: HTMLElement) {
     prefs.quality = q;
     world.setQuality(q);
   }
+  const gfx: GfxOptions = { shadows: c("gfx_shadows"), outline: c("gfx_outline"), fps: Number(v("gfx_fps")) || 0, scale: Number(v("gfx_scale")) || 0 };
+  if (JSON.stringify(gfx) !== JSON.stringify(prefs.gfx)) {
+    prefs.gfx = gfx;
+    world.setGfx(gfx);
+  }
+  const vw = v("view") as ViewMode;
+  if (vw && vw !== prefs.view) setView(vw);
   if (f.elements.namedItem("autoUpdate")) prefs.autoUpdate = c("autoUpdate");
   if (prefs.look.eventSkin !== c("eventSkin")) {
     prefs.look = { ...prefs.look, eventSkin: c("eventSkin") };

@@ -1529,3 +1529,698 @@ function cleiton(): THREE.Object3D {
   g.userData.anim = { kind: "cleiton", bug, antL, antR };
   return g;
 }
+
+// =====================================================================
+// v0.6.1: mais móveis e enfeites (feitos aqui mesmo, sem arquivo de modelo)
+// =====================================================================
+const P = {
+  black: toon("#1d1f27"),
+  metal: toon("#b9bdc8"),
+  gold: toon("#e2b13c"),
+  green: toon("#3c8c5a"),
+  teal: toon("#2bb3a3"),
+  pink: toon("#f08bb0"),
+  cream: toon("#f3ead7"),
+  leather: toon("#7a4a2c"),
+  fabric: toon("#5a6b8f"),
+  felt: toon("#2f7d4f"),
+  sand: toon("#e9d7a8"),
+  note1: toon("#ffe66b"),
+  note2: toon("#ff9fc4"),
+  note3: toon("#8fd8ff"),
+  note4: toon("#b8f08a"),
+  cork: toon("#c89a5f"),
+  glow: Object.assign(new THREE.MeshBasicMaterial({ color: 0xff4fa3, toneMapped: false }), { userData: { shared: true } }),
+};
+
+/** Post-its espalhados numa superfície vertical (x de -w/2 a w/2, y de y0 a y0+h). */
+function notes(w: number, h: number, y0: number, z: number, n: number, seed: number) {
+  const r = rng(seed);
+  const g = new THREE.Group();
+  const mats = [P.note1, P.note2, P.note3, P.note4];
+  for (let i = 0; i < n; i++) g.add(box(0.12, 0.12, 0.01, mats[i % 4], -w / 2 + 0.1 + r() * (w - 0.2), y0 + 0.04 + r() * (h - 0.2), z));
+  return g;
+}
+
+function bookRow(w: number, y: number, z: number, seed: number) {
+  const r = rng(seed);
+  const g = new THREE.Group();
+  const cols = [M.red, M.blue, M.yellow, M.purple, P.green, P.teal, M.orange];
+  let x = -w / 2 + 0.03;
+  while (x < w / 2 - 0.08) {
+    const bw = 0.04 + r() * 0.04;
+    const bh = 0.18 + r() * 0.1;
+    g.add(box(bw, bh, 0.18, cols[Math.floor(r() * cols.length)], x + bw / 2, y, z));
+    x += bw + 0.005;
+  }
+  return g;
+}
+
+/** Móvel aberto na frente (+z): laterais, fundo, topo e base (para ver o que tem dentro). */
+function openCase(w: number, h: number, d: number, mat: THREE.Material, back: THREE.Material) {
+  const t = 0.05;
+  return group(
+    box(t, h, d, mat, -w / 2 + t / 2, 0, 0),
+    box(t, h, d, mat, w / 2 - t / 2, 0, 0),
+    box(w, t, d, mat, 0, h - t, 0),
+    box(w, 0.08, d, mat, 0, 0, 0),
+    box(w - 2 * t, h - 0.1, 0.02, back, 0, 0.05, -d / 2 + 0.02),
+  );
+}
+
+function leafy(r: number, x: number, y: number, z: number) {
+  return group(blob(r, M.leaf, x, y, z), blob(r * 0.7, M.leafLight, x + r * 0.4, y + r * 0.3, z - r * 0.2), blob(r * 0.7, M.leafDark, x - r * 0.4, y + r * 0.1, z + r * 0.3));
+}
+
+const NEW_DEFS: Record<string, Def> = {
+  // ---------- escritório
+  p_standing_desk: {
+    label: "Mesa de pé (regulável)",
+    w: 1.4,
+    d: 0.7,
+    blocks: true,
+    build: () =>
+      group(
+        box(0.08, 1.0, 0.5, P.black, -0.6, 0, 0),
+        box(0.08, 1.0, 0.5, P.black, 0.6, 0, 0),
+        box(1.4, 0.04, 0.7, M.wood, 0, 1.0, 0),
+        box(0.2, 0.03, 0.14, M.dark, 0, 1.04, -0.15),
+        box(0.05, 0.16, 0.05, M.dark, 0, 1.05, -0.15),
+        box(0.62, 0.38, 0.05, M.dark, 0, 1.18, -0.15),
+        box(0.56, 0.32, 0.01, M.screenC, 0, 1.21, -0.124),
+        box(0.42, 0.02, 0.14, M.dark, 0, 1.04, 0.15),
+      ),
+  },
+  p_desk_l: {
+    label: "Mesa em L",
+    w: 1.8,
+    d: 1.6,
+    blocks: true,
+    build: () =>
+      group(
+        box(1.8, 0.05, 0.7, M.wood, 0, 0.72, -0.45),
+        box(0.7, 0.05, 0.9, M.wood, 0.55, 0.72, 0.35),
+        box(0.05, 0.72, 0.6, M.offwhite, -0.85, 0, -0.45),
+        box(0.05, 0.72, 0.6, M.offwhite, 0.85, 0, 0.35),
+        box(0.5, 0.6, 0.6, M.offwhite, 0.55, 0, 0.45),
+        monitor(-0.35, -0.6, M.screenA),
+        monitor(0.3, -0.6, M.screenB),
+      ),
+  },
+  p_printer: {
+    label: "Impressora",
+    w: 0.6,
+    d: 0.5,
+    blocks: true,
+    build: () =>
+      group(
+        box(0.6, 0.55, 0.5, M.offwhite, 0, 0, 0),
+        box(0.56, 0.22, 0.45, M.white, 0, 0.55, 0),
+        box(0.3, 0.02, 0.22, M.white, 0, 0.77, 0.05),
+        box(0.12, 0.04, 0.02, P.teal, 0.18, 0.66, 0.23),
+        box(0.4, 0.03, 0.1, M.dark, 0, 0.6, 0.24),
+      ),
+  },
+  p_locker: {
+    label: "Armário de armários (lockers)",
+    w: 1.2,
+    d: 0.5,
+    blocks: true,
+    build: () => {
+      const g = group(box(1.2, 1.8, 0.5, M.steel, 0, 0, 0));
+      for (let i = 0; i < 3; i++) {
+        const x = -0.4 + i * 0.4;
+        g.add(box(0.36, 1.7, 0.01, M.grey, x, 0.05, 0.255));
+        for (let k = 0; k < 4; k++) g.add(box(0.2, 0.015, 0.01, M.dark, x, 1.45 + k * 0.05, 0.262));
+        g.add(box(0.03, 0.1, 0.02, M.dark, x + 0.13, 0.85, 0.265));
+      }
+      return g;
+    },
+  },
+  p_filing: {
+    label: "Arquivo de pastas",
+    w: 0.5,
+    d: 0.6,
+    blocks: true,
+    build: () => {
+      const g = group(box(0.5, 1.3, 0.6, M.grey, 0, 0, 0));
+      for (let i = 0; i < 4; i++) g.add(box(0.44, 0.28, 0.01, M.offwhite, 0, 0.05 + i * 0.31, 0.305), box(0.14, 0.03, 0.02, M.dark, 0, 0.27 + i * 0.31, 0.315));
+      return g;
+    },
+  },
+  p_safe: {
+    label: "Cofre",
+    w: 0.6,
+    d: 0.6,
+    blocks: true,
+    build: () =>
+      group(
+        box(0.6, 0.7, 0.6, P.black, 0, 0, 0),
+        box(0.5, 0.6, 0.01, M.dark, 0, 0.05, 0.305),
+        cyl(0.07, 0.07, 0.03, P.gold, 0, 0.35, 0.31),
+        box(0.03, 0.14, 0.03, P.metal, 0.17, 0.28, 0.32),
+      ),
+  },
+  p_trash: {
+    label: "Lixeira",
+    w: 0.35,
+    d: 0.35,
+    blocks: false,
+    build: () => group(cyl(0.16, 0.13, 0.42, M.steel, 0, 0, 0, 10), cyl(0.17, 0.17, 0.03, M.dark, 0, 0.42, 0, 10)),
+  },
+  p_recycle: {
+    label: "Lixeiras de reciclagem",
+    w: 1.2,
+    d: 0.4,
+    blocks: true,
+    build: () =>
+      group(
+        ...[M.blue, M.red, P.green, M.yellow].map((mat, i) => group(box(0.26, 0.6, 0.36, mat, -0.42 + i * 0.28, 0, 0), box(0.28, 0.04, 0.38, M.dark, -0.42 + i * 0.28, 0.6, 0))),
+      ),
+  },
+  p_corkboard: {
+    label: "Mural de recados",
+    w: 1.2,
+    d: 0.1,
+    blocks: false,
+    build: () => hung(group(box(1.2, 0.8, 0.04, M.woodDark, 0, -0.4, 0), box(1.1, 0.7, 0.02, P.cork, 0, -0.35, 0.02), notes(1.1, 0.7, -0.35, 0.035, 9, 7))),
+  },
+  p_kanban: {
+    label: "Quadro de tarefas (post-its)",
+    w: 1.8,
+    d: 0.6,
+    blocks: true,
+    build: () =>
+      group(
+        box(0.05, 1.7, 0.05, M.steel, -0.85, 0, 0),
+        box(0.05, 1.7, 0.05, M.steel, 0.85, 0, 0),
+        box(0.5, 0.04, 0.05, M.steel, -0.85, 0, 0),
+        box(0.5, 0.04, 0.05, M.steel, 0.85, 0, 0),
+        box(1.7, 1.0, 0.04, M.board, 0, 0.6, 0),
+        box(0.01, 0.9, 0.045, M.grey, -0.28, 0.65, 0),
+        box(0.01, 0.9, 0.045, M.grey, 0.28, 0.65, 0),
+        notes(0.5, 0.9, 0.62, 0.025, 4, 11).translateX(-0.57),
+        notes(0.5, 0.9, 0.62, 0.025, 3, 12),
+        notes(0.5, 0.9, 0.62, 0.025, 5, 13).translateX(0.57),
+      ),
+  },
+  p_projector: {
+    label: "Tela de projeção",
+    w: 2.2,
+    d: 0.5,
+    blocks: true,
+    build: () =>
+      group(
+        box(0.06, 2.0, 0.06, M.dark, -1.05, 0, 0),
+        box(0.06, 2.0, 0.06, M.dark, 1.05, 0, 0),
+        box(0.4, 0.04, 0.4, M.dark, -1.05, 0, 0),
+        box(0.4, 0.04, 0.4, M.dark, 1.05, 0, 0),
+        box(2.1, 0.1, 0.12, M.dark, 0, 1.95, 0),
+        box(2.0, 1.2, 0.02, M.white, 0, 0.75, 0),
+        box(2.0, 0.05, 0.03, M.dark, 0, 0.72, 0),
+      ),
+  },
+  p_phone_booth: {
+    label: "Cabine de ligação",
+    w: 1.2,
+    d: 1.2,
+    blocks: true,
+    build: () =>
+      group(
+        box(1.2, 0.08, 1.2, M.dark, 0, 0, 0),
+        box(1.2, 0.1, 1.2, M.dark, 0, 2.1, 0),
+        box(0.06, 2.1, 0.06, M.dark, -0.57, 0, -0.57),
+        box(0.06, 2.1, 0.06, M.dark, 0.57, 0, -0.57),
+        box(0.06, 2.1, 0.06, M.dark, -0.57, 0, 0.57),
+        box(0.06, 2.1, 0.06, M.dark, 0.57, 0, 0.57),
+        box(1.1, 2.0, 0.04, P.fabric, 0, 0.08, -0.56),
+        box(0.04, 2.0, 1.1, M.glass, -0.57, 0.08, 0),
+        box(0.04, 2.0, 1.1, M.glass, 0.57, 0.08, 0),
+        box(1.1, 2.0, 0.04, M.glass, 0, 0.08, 0.57),
+        box(0.7, 0.04, 0.35, M.wood, 0, 0.9, -0.35),
+        box(0.4, 0.06, 0.4, P.fabric, 0, 0.45, 0.1),
+        cyl(0.04, 0.04, 0.4, M.steel, 0, 0.05, 0.1, 6),
+        box(0.4, 0.04, 0.06, M.neonToon, 0, 2.18, 0.58),
+      ),
+  },
+
+  // ---------- assentos
+  p_gamer_chair: {
+    label: "Cadeira gamer",
+    w: 0.7,
+    d: 0.7,
+    blocks: false,
+    build: () =>
+      group(
+        box(0.5, 0.04, 0.5, M.dark, 0, 0.02, 0),
+        cyl(0.04, 0.04, 0.34, M.steel, 0, 0.04, 0, 6),
+        box(0.54, 0.1, 0.5, P.black, 0, 0.38, 0),
+        box(0.54, 0.9, 0.12, P.black, 0, 0.44, -0.24),
+        box(0.06, 0.8, 0.13, M.neonToon, -0.2, 0.5, -0.24),
+        box(0.06, 0.8, 0.13, M.neonToon, 0.2, 0.5, -0.24),
+        box(0.3, 0.14, 0.08, M.neonToon, 0, 1.12, -0.2),
+        box(0.06, 0.2, 0.38, M.dark, -0.29, 0.48, 0),
+        box(0.06, 0.2, 0.38, M.dark, 0.29, 0.48, 0),
+      ),
+  },
+  p_bench: {
+    label: "Banco de madeira",
+    w: 1.6,
+    d: 0.5,
+    blocks: false,
+    build: () =>
+      group(
+        box(1.6, 0.08, 0.45, M.wood, 0, 0.4, 0),
+        box(0.08, 0.4, 0.4, M.woodDark, -0.7, 0, 0),
+        box(0.08, 0.4, 0.4, M.woodDark, 0.7, 0, 0),
+      ),
+  },
+  p_sofa_l: {
+    label: "Sofá em L",
+    w: 2.4,
+    d: 1.8,
+    blocks: true,
+    build: () =>
+      group(
+        box(2.4, 0.4, 0.9, P.fabric, 0, 0, -0.45),
+        box(0.9, 0.4, 0.9, P.fabric, 0.75, 0, 0.45),
+        box(2.4, 0.45, 0.2, P.fabric, 0, 0.4, -0.8),
+        box(0.2, 0.3, 1.8, P.fabric, 1.1, 0.4, 0),
+        box(0.2, 0.3, 0.9, P.fabric, -1.1, 0.4, -0.45),
+        box(0.45, 0.1, 0.65, M.cushion, -0.7, 0.4, -0.38),
+        box(0.45, 0.1, 0.65, M.cushion, -0.2, 0.4, -0.38),
+        box(0.45, 0.1, 0.65, M.cushion, 0.35, 0.4, -0.38),
+        box(0.65, 0.1, 0.75, M.cushion, 0.72, 0.4, 0.42),
+        box(0.3, 0.3, 0.1, M.yellow, -0.75, 0.5, -0.62),
+        box(0.3, 0.3, 0.1, M.red, 0.6, 0.5, -0.62),
+      ),
+  },
+  p_hammock: {
+    label: "Rede",
+    w: 2.4,
+    d: 0.9,
+    blocks: true,
+    build: () => {
+      const g = group(
+        box(0.1, 1.5, 0.1, M.woodDark, -1.15, 0, 0),
+        box(0.1, 1.5, 0.1, M.woodDark, 1.15, 0, 0),
+        box(0.6, 0.06, 0.5, M.woodDark, -1.15, 0, 0),
+        box(0.6, 0.06, 0.5, M.woodDark, 1.15, 0, 0),
+      );
+      // pano da rede em gomos caindo para o meio
+      const cols = [M.red, M.yellow, P.green, M.blue];
+      for (let i = 0; i < 9; i++) {
+        const t = (i - 4) / 4;
+        g.add(box(0.22, 0.04, 0.7, cols[i % 4], t * 0.9, 0.55 + t * t * 0.5, 0));
+      }
+      g.add(box(0.3, 0.02, 0.02, M.beige, -1.0, 1.05, 0), box(0.3, 0.02, 0.02, M.beige, 1.0, 1.05, 0));
+      return g;
+    },
+  },
+  p_lounge: {
+    label: "Espreguiçadeira",
+    w: 0.7,
+    d: 1.7,
+    blocks: true,
+    build: () => {
+      const back = box(0.6, 0.06, 0.7, P.cream, 0, 0, 0);
+      back.rotation.x = -0.9;
+      back.position.set(0, 0.6, -0.55);
+      return group(box(0.6, 0.08, 1.1, P.cream, 0, 0.3, 0.25), back, box(0.05, 0.3, 1.5, M.woodDark, -0.28, 0, 0), box(0.05, 0.3, 1.5, M.woodDark, 0.28, 0, 0));
+    },
+  },
+
+  // ---------- mesas
+  p_bar_table: {
+    label: "Mesa alta (bistrô)",
+    w: 0.7,
+    d: 0.7,
+    blocks: true,
+    build: () => group(cyl(0.3, 0.3, 0.04, M.dark, 0, 0, 0, 12), cyl(0.04, 0.04, 1.0, M.steel, 0, 0.04, 0, 6), cyl(0.35, 0.35, 0.05, M.wood, 0, 1.04, 0, 14)),
+  },
+  p_side_table: {
+    label: "Mesa de canto",
+    w: 0.5,
+    d: 0.5,
+    blocks: true,
+    build: () => group(cyl(0.22, 0.22, 0.04, M.wood, 0, 0.5, 0, 12), cyl(0.03, 0.03, 0.5, M.dark, 0, 0, 0, 6), cyl(0.15, 0.15, 0.03, M.dark, 0, 0, 0, 10), cyl(0.06, 0.05, 0.12, P.teal, 0.05, 0.54, 0, 8)),
+  },
+
+  // ---------- lazer
+  p_foosball: {
+    label: "Pebolim",
+    w: 1.4,
+    d: 0.8,
+    blocks: true,
+    build: () => {
+      const g = group(
+        box(0.08, 0.7, 0.08, M.woodDark, -0.55, 0, -0.28),
+        box(0.08, 0.7, 0.08, M.woodDark, 0.55, 0, -0.28),
+        box(0.08, 0.7, 0.08, M.woodDark, -0.55, 0, 0.28),
+        box(0.08, 0.7, 0.08, M.woodDark, 0.55, 0, 0.28),
+        box(1.3, 0.25, 0.7, M.woodDark, 0, 0.7, 0),
+        box(1.2, 0.02, 0.6, P.felt, 0, 0.88, 0),
+      );
+      for (let i = 0; i < 6; i++) {
+        const x = -0.5 + i * 0.2;
+        g.add(cyl(0.012, 0.012, 1.1, P.metal, x, 0.92 - 0.55, 0, 6).rotateX(Math.PI / 2));
+        const mat = i % 2 ? M.red : M.blue;
+        for (let k = 0; k < 3; k++) g.add(box(0.04, 0.1, 0.05, mat, x, 0.86, -0.2 + k * 0.2));
+      }
+      return g;
+    },
+  },
+  p_dartboard: {
+    label: "Alvo de dardos",
+    w: 0.6,
+    d: 0.1,
+    blocks: false,
+    build: () => {
+      const g = new THREE.Group();
+      [[0.3, P.black], [0.25, M.red], [0.19, P.cream], [0.13, P.green], [0.07, P.cream], [0.03, M.red]].forEach(([r, mat], i) => {
+        const c = cyl(r as number, r as number, 0.03, mat as THREE.Material, 0, 0, 0.01 * i, 20);
+        c.rotation.x = Math.PI / 2;
+        c.position.set(0, -0.3, 0.01 * i);
+        g.add(c);
+      });
+      return hung(g);
+    },
+  },
+  p_videogame: {
+    label: "Videogame com TV",
+    w: 1.6,
+    d: 0.6,
+    blocks: true,
+    build: () =>
+      group(
+        box(1.6, 0.45, 0.5, M.woodDark, 0, 0, 0),
+        box(1.3, 0.75, 0.06, P.black, 0, 0.55, -0.1),
+        box(1.22, 0.67, 0.01, M.screenB, 0, 0.59, -0.065),
+        box(0.06, 0.12, 0.06, P.black, 0, 0.45, -0.1),
+        box(0.35, 0.06, 0.25, M.white, -0.4, 0.45, 0.05),
+        box(0.14, 0.03, 0.09, M.dark, 0.25, 0.45, 0.12),
+        box(0.14, 0.03, 0.09, M.dark, 0.45, 0.45, 0.12),
+      ),
+  },
+  p_guitar: {
+    label: "Violão no suporte",
+    w: 0.5,
+    d: 0.4,
+    blocks: false,
+    build: () => {
+      const body = group(blob(0.2, M.orange, 0, 0.3, 0), blob(0.15, M.orange, 0, 0.55, 0), cyl(0.05, 0.05, 0.02, M.dark, 0, 0.44, 0.13, 10).rotateX(Math.PI / 2), box(0.06, 0.6, 0.04, M.woodDark, 0, 0.62, 0.02), box(0.1, 0.14, 0.04, M.woodDark, 0, 1.2, 0.02));
+      body.scale.z = 0.5;
+      body.rotation.x = -0.25;
+      return group(box(0.3, 0.04, 0.3, M.dark, 0, 0, 0), body);
+    },
+  },
+  p_keyboard: {
+    label: "Teclado musical",
+    w: 1.3,
+    d: 0.5,
+    blocks: true,
+    build: () => {
+      const g = group(box(0.05, 0.75, 0.05, M.dark, -0.5, 0, 0).rotateZ(0.35), box(0.05, 0.75, 0.05, M.dark, 0.5, 0, 0).rotateZ(-0.35), box(1.2, 0.08, 0.35, P.black, 0, 0.75, 0), box(1.1, 0.02, 0.15, M.white, 0, 0.83, 0.07));
+      for (let i = 0; i < 14; i++) if (i % 7 !== 2 && i % 7 !== 6) g.add(box(0.03, 0.025, 0.08, P.black, -0.5 + i * 0.075 + 0.04, 0.85, 0.03));
+      return g;
+    },
+  },
+  p_basket: {
+    label: "Cesta de basquete",
+    w: 0.9,
+    d: 0.6,
+    blocks: true,
+    build: () => {
+      const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.015, 6, 16), M.orange);
+      hoop.rotation.x = Math.PI / 2;
+      hoop.position.set(0, 2.0, 0.2);
+      return group(box(0.6, 0.15, 0.5, M.dark, 0, 0, -0.1), cyl(0.04, 0.04, 2.2, M.steel, 0, 0.1, -0.2, 6), box(0.9, 0.6, 0.04, M.white, 0, 1.9, -0.05), box(0.3, 0.22, 0.045, M.red, 0, 2.0, -0.04), hoop, blob(0.11, M.orange, 0.25, 0.25, 0.2));
+    },
+  },
+
+  // ---------- decoração
+  p_aquarium: {
+    label: "Aquário",
+    w: 1.2,
+    d: 0.5,
+    blocks: true,
+    build: () => {
+      const g = group(
+        box(1.2, 0.7, 0.45, M.woodDark, 0, 0, 0),
+        box(1.2, 0.05, 0.45, M.dark, 0, 0.7, 0),
+        box(1.16, 0.08, 0.41, P.sand, 0, 0.75, 0),
+        box(1.16, 0.5, 0.41, M.water, 0, 0.83, 0),
+        box(1.2, 0.04, 0.45, M.dark, 0, 1.33, 0),
+        blob(0.06, M.grey, -0.3, 0.86, 0),
+        leafy(0.07, 0.35, 0.95, -0.05),
+      );
+      const fish = [M.orange, M.yellow, M.red].map((mat, i) => box(0.09, 0.05, 0.03, mat, -0.25 + i * 0.25, 1.0 + (i % 2) * 0.12, 0.21));
+      g.add(...fish);
+      return g;
+    },
+  },
+  p_globe: {
+    label: "Globo terrestre",
+    w: 0.4,
+    d: 0.4,
+    blocks: false,
+    build: () => group(cyl(0.12, 0.15, 0.05, M.woodDark, 0, 0, 0, 10), cyl(0.02, 0.02, 0.15, P.gold, 0, 0.05, 0, 6), blob(0.18, M.blue, 0, 0.38, 0), blob(0.1, P.green, 0.08, 0.42, 0.08), blob(0.07, P.green, -0.1, 0.33, 0.07)),
+  },
+  p_trophy: {
+    label: "Estante de troféus",
+    w: 1.2,
+    d: 0.4,
+    blocks: true,
+    build: () => {
+      const g = openCase(1.2, 1.6, 0.4, M.woodDark, P.black);
+      for (let s = 0; s < 3; s++) {
+        g.add(box(1.1, 0.03, 0.36, M.wood, 0, 0.3 + s * 0.45, 0));
+        for (let i = 0; i < 3; i++) {
+          const x = -0.35 + i * 0.35;
+          const y = 0.33 + s * 0.45;
+          const mat = (s + i) % 3 === 0 ? P.metal : P.gold;
+          g.add(box(0.12, 0.05, 0.12, P.black, x, y, 0), cyl(0.03, 0.03, 0.1, mat, x, y + 0.05, 0, 6), cyl(0.08, 0.04, 0.12, mat, x, y + 0.15, 0, 8));
+        }
+      }
+      return g;
+    },
+  },
+  p_neon_ring: {
+    label: "Neon redondo",
+    w: 0.9,
+    d: 0.1,
+    blocks: false,
+    build: () => {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.025, 6, 32), P.glow);
+      ring.position.set(0, -0.35, 0.02);
+      const inner = new THREE.Mesh(new THREE.TorusGeometry(0.28, 0.02, 6, 28), M.neon);
+      inner.position.set(0, -0.35, 0.02);
+      return hung(group(ring, inner));
+    },
+  },
+  p_clock_wall: {
+    label: "Relógio de parede",
+    w: 0.5,
+    d: 0.1,
+    blocks: false,
+    build: () => {
+      const face = cyl(0.24, 0.24, 0.04, P.cream, 0, 0, 0, 20);
+      face.rotation.x = Math.PI / 2;
+      face.position.set(0, -0.25, 0);
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.025, 6, 24), P.black);
+      rim.position.set(0, -0.25, 0.01);
+      return hung(group(face, rim, box(0.02, 0.14, 0.01, P.black, 0, -0.26, 0.03), box(0.1, 0.02, 0.01, P.black, 0.05, -0.25, 0.03), box(0.03, 0.03, 0.01, M.red, 0, -0.25, 0.035)));
+    },
+  },
+  p_mirror: {
+    label: "Espelho",
+    w: 0.7,
+    d: 0.1,
+    blocks: false,
+    build: () => hung(group(box(0.7, 1.1, 0.03, P.gold, 0, -0.6, 0), box(0.6, 1.0, 0.01, toon("#cfe6f2"), 0, -0.55, 0.02))),
+  },
+  p_floor_lamp: {
+    label: "Luminária de arco",
+    w: 1.2,
+    d: 0.5,
+    blocks: false,
+    build: () => {
+      const arm = box(0.04, 0.04, 1.1, P.metal, 0, 0, 0);
+      arm.rotation.y = Math.PI / 2;
+      arm.rotation.z = -0.25;
+      arm.position.set(0.05, 1.72, 0);
+      return group(
+        cyl(0.18, 0.2, 0.06, P.black, -0.45, 0, 0, 12),
+        cyl(0.025, 0.025, 1.75, P.metal, -0.45, 0.05, 0, 6),
+        arm,
+        cyl(0.025, 0.025, 0.12, P.metal, 0.55, 1.55, 0, 6),
+        cyl(0.08, 0.22, 0.22, P.cream, 0.55, 1.35, 0, 12),
+        blob(0.06, M.yellow, 0.55, 1.38, 0),
+      );
+    },
+  },
+  p_vase: {
+    label: "Vaso decorativo",
+    w: 0.4,
+    d: 0.4,
+    blocks: false,
+    build: () => group(cyl(0.12, 0.16, 0.35, P.teal, 0, 0, 0, 10), cyl(0.16, 0.1, 0.25, P.teal, 0, 0.35, 0, 10), cyl(0.07, 0.1, 0.1, P.teal, 0, 0.6, 0, 10), box(0.02, 0.5, 0.02, M.trunk, 0.02, 0.65, 0), blob(0.07, P.pink, 0.02, 1.15, 0), blob(0.06, P.pink, -0.08, 1.05, 0.04)),
+  },
+  p_books: {
+    label: "Pilha de livros",
+    w: 0.4,
+    d: 0.3,
+    blocks: false,
+    build: () => group(box(0.36, 0.06, 0.26, M.red, 0, 0, 0), box(0.32, 0.05, 0.24, M.blue, 0.01, 0.06, 0), box(0.34, 0.07, 0.25, P.green, -0.01, 0.11, 0), box(0.3, 0.05, 0.22, M.yellow, 0, 0.18, 0), blob(0.04, M.white, 0.05, 0.27, 0)),
+  },
+  p_bookcase_full: {
+    label: "Estante cheia de livros",
+    w: 1.4,
+    d: 0.4,
+    blocks: true,
+    build: () => {
+      const g = openCase(1.4, 2.0, 0.4, M.woodDark, M.woodDark);
+      for (let s = 0; s < 4; s++) g.add(box(1.3, 0.03, 0.36, M.wood, 0, 0.08 + s * 0.48, 0), bookRow(1.3, 0.11 + s * 0.48, 0, 20 + s));
+      return g;
+    },
+  },
+  p_coat_rack: {
+    label: "Cabideiro",
+    w: 0.5,
+    d: 0.5,
+    blocks: false,
+    build: () =>
+      group(
+        cyl(0.2, 0.22, 0.05, M.woodDark, 0, 0, 0, 10),
+        cyl(0.03, 0.03, 1.7, M.woodDark, 0, 0.05, 0, 6),
+        box(0.35, 0.03, 0.03, M.woodDark, 0, 1.6, 0),
+        box(0.03, 0.03, 0.35, M.woodDark, 0, 1.6, 0),
+        box(0.3, 0.6, 0.12, M.navy, 0.12, 1.0, 0.04),
+        blob(0.11, M.red, -0.13, 1.66, 0),
+      ),
+  },
+  p_fireplace: {
+    label: "Lareira elétrica",
+    w: 1.4,
+    d: 0.4,
+    blocks: true,
+    build: () =>
+      group(
+        box(1.4, 1.0, 0.4, M.white, 0, 0, 0),
+        box(1.5, 0.06, 0.45, M.woodDark, 0, 1.0, 0),
+        box(0.9, 0.5, 0.02, P.black, 0, 0.2, 0.2),
+        blob(0.12, M.orange, -0.15, 0.32, 0.18),
+        blob(0.15, M.yellow, 0.05, 0.3, 0.18),
+        blob(0.1, M.red, 0.22, 0.3, 0.18),
+        box(0.6, 0.06, 0.1, M.trunk, 0, 0.22, 0.18),
+      ),
+  },
+  p_trophy_cup: {
+    label: "Troféu de vendas",
+    w: 0.4,
+    d: 0.4,
+    blocks: false,
+    build: () => group(box(0.25, 0.1, 0.25, P.black, 0, 0, 0), cyl(0.04, 0.04, 0.15, P.gold, 0, 0.1, 0, 6), cyl(0.14, 0.06, 0.22, P.gold, 0, 0.25, 0, 10), box(0.3, 0.03, 0.03, P.gold, 0, 0.42, 0)),
+  },
+
+  // ---------- plantas
+  p_monstera: {
+    label: "Costela-de-adão",
+    w: 0.8,
+    d: 0.8,
+    blocks: true,
+    build: () => {
+      const g = group(cyl(0.22, 0.18, 0.45, M.potWhite, 0, 0, 0, 10));
+      const r = rng(31);
+      for (let i = 0; i < 7; i++) {
+        const a = (i / 7) * Math.PI * 2;
+        const leaf = box(0.32, 0.02, 0.22, i % 2 ? M.leafDark : M.leaf, Math.cos(a) * 0.22, 0.75 + r() * 0.35, Math.sin(a) * 0.22);
+        leaf.rotation.set(0.4 * Math.sin(a), -a, 0.4 * Math.cos(a));
+        g.add(leaf, box(0.015, 0.4 + r() * 0.3, 0.015, M.leafDark, Math.cos(a) * 0.1, 0.42, Math.sin(a) * 0.1));
+      }
+      return g;
+    },
+  },
+  p_succulents: {
+    label: "Suculentas",
+    w: 0.5,
+    d: 0.3,
+    blocks: false,
+    build: () => group(box(0.46, 0.1, 0.22, M.pot, 0, 0, 0), blob(0.06, M.leafLight, -0.14, 0.13, 0), blob(0.07, P.teal, 0, 0.14, 0), blob(0.05, M.leaf, 0.14, 0.13, 0), blob(0.03, P.pink, 0.01, 0.2, 0)),
+  },
+  p_fern: {
+    label: "Samambaia no suporte",
+    w: 0.6,
+    d: 0.6,
+    blocks: true,
+    build: () => group(box(0.05, 0.8, 0.05, P.black, 0, 0, 0), box(0.35, 0.03, 0.35, P.black, 0, 0.8, 0), cyl(0.18, 0.14, 0.22, M.pot, 0, 0.83, 0, 10), leafy(0.24, 0, 1.1, 0), blob(0.16, M.leafDark, 0.15, 0.95, 0.1), blob(0.16, M.leaf, -0.16, 0.92, -0.08)),
+  },
+  p_planter_long: {
+    label: "Floreira comprida",
+    w: 1.6,
+    d: 0.4,
+    blocks: true,
+    build: () => group(box(1.6, 0.45, 0.4, M.offwhite, 0, 0, 0), box(1.5, 0.04, 0.3, M.trunk, 0, 0.43, 0), leafy(0.18, -0.55, 0.6, 0), leafy(0.2, 0, 0.62, 0), leafy(0.18, 0.55, 0.6, 0), blob(0.05, M.red, -0.3, 0.7, 0.1), blob(0.05, M.yellow, 0.3, 0.72, 0.1)),
+  },
+  p_olive: {
+    label: "Oliveira no vaso",
+    w: 0.8,
+    d: 0.8,
+    blocks: true,
+    build: () => group(cyl(0.26, 0.2, 0.45, P.black, 0, 0, 0, 10), cyl(0.04, 0.05, 1.0, M.trunk, 0, 0.45, 0, 6), blob(0.32, toon("#8fae72"), 0, 1.6, 0), blob(0.22, toon("#a5c287"), 0.2, 1.75, 0.1), blob(0.22, toon("#7a9a5f"), -0.2, 1.5, -0.1)),
+  },
+
+  // ---------- cozinha
+  p_vending: {
+    label: "Máquina de lanches",
+    w: 0.9,
+    d: 0.8,
+    blocks: true,
+    interactive: true,
+    build: () => {
+      const g = group(box(0.9, 1.9, 0.75, M.red, 0, 0, 0), box(0.6, 1.4, 0.02, M.glass, -0.08, 0.35, 0.38), box(0.18, 0.9, 0.03, P.black, 0.32, 0.8, 0.38), box(0.12, 0.08, 0.03, M.neonToon, 0.32, 1.5, 0.39), box(0.55, 0.15, 0.04, P.black, -0.08, 0.12, 0.38));
+      const cols = [M.yellow, M.blue, P.green, M.orange, P.pink];
+      for (let s = 0; s < 4; s++) for (let i = 0; i < 4; i++) g.add(box(0.1, 0.16, 0.1, cols[(s + i) % 5], -0.3 + i * 0.145, 0.45 + s * 0.32, 0.25));
+      return g;
+    },
+  },
+  p_espresso: {
+    label: "Máquina de expresso",
+    w: 0.5,
+    d: 0.4,
+    blocks: false,
+    build: () => group(box(0.45, 0.4, 0.35, P.metal, 0, 0, 0), box(0.45, 0.06, 0.35, P.black, 0, 0.4, 0), box(0.12, 0.08, 0.1, P.black, 0, 0.22, 0.18), cyl(0.04, 0.035, 0.07, P.cream, 0, 0.04, 0.12, 8), cyl(0.05, 0.05, 0.03, P.black, 0.15, 0.46, 0, 8)),
+  },
+  p_fruit_bowl: {
+    label: "Fruteira",
+    w: 0.4,
+    d: 0.4,
+    blocks: false,
+    build: () => group(cyl(0.18, 0.1, 0.08, M.woodDark, 0, 0, 0, 12), blob(0.06, M.red, -0.06, 0.1, 0), blob(0.06, M.yellow, 0.06, 0.1, 0.02), blob(0.055, P.green, 0, 0.12, -0.06), blob(0.05, M.orange, 0.02, 0.17, 0.03)),
+  },
+  p_water_jug: {
+    label: "Garrafão de água",
+    w: 0.4,
+    d: 0.4,
+    blocks: false,
+    build: () => group(cyl(0.16, 0.16, 0.45, toon("#9fd8ef", { transparent: true, opacity: 0.6 }), 0, 0, 0, 12), cyl(0.06, 0.16, 0.1, toon("#9fd8ef", { transparent: true, opacity: 0.6 }), 0, 0.45, 0, 12), cyl(0.05, 0.05, 0.05, M.blue, 0, 0.55, 0, 8)),
+  },
+
+  // ---------- banheiro
+  p_towel: {
+    label: "Toalheiro com toalha",
+    w: 0.6,
+    d: 0.1,
+    blocks: false,
+    build: () => hung(group(box(0.55, 0.03, 0.06, P.metal, 0, -0.1, 0.03), box(0.45, 0.5, 0.03, P.teal, 0, -0.55, 0.05))),
+  },
+  p_hamper: {
+    label: "Cesto de roupa",
+    w: 0.45,
+    d: 0.45,
+    blocks: false,
+    build: () => group(cyl(0.2, 0.17, 0.5, P.cork, 0, 0, 0, 10), cyl(0.21, 0.21, 0.04, M.woodDark, 0, 0.5, 0, 10)),
+  },
+};
+Object.assign(DEFS, NEW_DEFS);
+for (const k of ["p_corkboard", "p_dartboard", "p_neon_ring", "p_clock_wall", "p_mirror", "p_towel"]) WALL_MOUNT.add(k);

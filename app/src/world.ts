@@ -148,7 +148,19 @@ const SEAT_Y = 0.46;
 /** Móveis em que dá para sentar e a distância do clique até eles. */
 export type GraphicStyle = "padrao" | "realista" | "desenho" | "retro";
 
-export const SEATS: Record<string, number> = { chair: 0.55, office_chair: 0.55, wood_chair: 0.55, exec_chair: 0.55, stool: 0.5, armchair: 0.8, armchair_plain: 0.8, chair_c: 0.55, chair_b_wood: 0.55, stool_wood: 0.5, k_chair_a: 0.55, k_chair_b: 0.55 };
+export type ViewMode = "iso" | "aerea" | "2d";
+export interface GfxOptions {
+  /** Sombras dos móveis e das pessoas. */
+  shadows: boolean;
+  /** Contorno (linhas nas bordas). */
+  outline: boolean;
+  /** Limite de quadros por segundo (0 = sem limite). */
+  fps: number;
+  /** Resolução da cena (0 = automática; 0.5 a 1 = parte da nitidez da tela). */
+  scale: number;
+}
+
+export const SEATS: Record<string, number> = { chair: 0.55, office_chair: 0.55, wood_chair: 0.55, exec_chair: 0.55, stool: 0.5, armchair: 0.8, armchair_plain: 0.8, chair_c: 0.55, chair_b_wood: 0.55, stool_wood: 0.5, k_chair_a: 0.55, k_chair_b: 0.55, p_gamer_chair: 0.55, p_bench: 0.8 };
 
 export class Avatar {
   root = new THREE.Group();
@@ -586,6 +598,18 @@ export class World {
   janitor?: Janitor;
   /** Visão do prédio inteiro (zoom out) para escolher a sala. */
   overview = false;
+  /**
+   * Visão: isométrica (3D diagonal), aérea (3D de cima, norte para cima) ou 2D (plano de cima,
+   * cores chapadas sem luz nem sombra, com contorno, como um mapa desenhado).
+   */
+  view: ViewMode = "iso";
+  onViewChange?: (v: ViewMode) => void;
+  /** Visões vistas de cima (aérea e 2D): mesmo jeito de andar, de enquadrar e de ouvir. */
+  get topDown() {
+    return this.view !== "iso";
+  }
+  /** Opções gráficas finas (além da qualidade e do estilo). */
+  gfx: GfxOptions = { shadows: true, outline: true, fps: 0, scale: 0 };
   onOverviewChange?: (on: boolean) => void;
   private savedZoom = 1.3;
   /** Caminho longo pedido pelo mapa: vai correndo. */
@@ -597,11 +621,11 @@ export class World {
   /** Alguém entrou na sala onde eu estou. */
   onEnterMyRoom?: (id: string) => void;
   private wallLinks = new Map<string, WallLinks>();
-  private doors: { pivots: THREE.Object3D[]; sign: number[]; x: number; z: number; zone: string; open: number; sounding?: boolean }[] = [];
+  private doors: { pivots: THREE.Object3D[]; sign: number[]; x: number; z: number; zone: string; open: number; sounding?: boolean; npc?: boolean }[] = [];
   /** Uma porta começou a abrir (distância até mim, para o som). */
-  onDoorOpen?: (dist: number) => void;
+  onDoorOpen?: (dist: number, npc: boolean) => void;
   /** Uma porta terminou de fechar (distância até mim, para o som). */
-  onDoorClose?: (dist: number) => void;
+  onDoorClose?: (dist: number, npc: boolean) => void;
   /** Trechos de parede que estreitam o vão das portas (colisão). */
   private doorBlockers: { x0: number; x1: number; z0: number; z1: number }[] = [];
   private doorGroup = new THREE.Group();
@@ -614,7 +638,7 @@ export class World {
   private ray = new THREE.Raycaster();
   private clock = new THREE.Clock();
 
-  constructor(private host: HTMLElement) {
+  constructor(readonly host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", stencil: false });
     // resolução cheia (HD / retina): a cara de pixel art vem dos modelos e texturas, não de baixar a resolução
     // nitidez boa sem gastar memória de vídeo à toa (2x em tela 4K passa de 100 MB só em buffers)
@@ -1195,21 +1219,25 @@ export class World {
   /** Porta abre quando alguém está a menos de 1,6 m dela; fecha sozinha depois. */
   private updateDoors(dt: number) {
     if (!this.doors.length) return;
-    const people = [this.me, ...[...this.others.values()].filter((a) => this.sameLevel(a)), this.level ? undefined : this.janitor?.avatar].filter(Boolean).map((a) => a!.root.position);
+    const people = [this.me, ...[...this.others.values()].filter((a) => this.sameLevel(a))].filter(Boolean).map((a) => a!.root.position);
+    const ze = !this.level && this.janitor?.avatar.root.visible ? this.janitor.avatar.root.position : null;
     for (const dr of this.doors) {
-      const near = people.some((p) => Math.hypot(p.x - dr.x, p.z - dr.z) < 1.6);
+      const human = people.some((p) => Math.hypot(p.x - dr.x, p.z - dr.z) < 1.6);
+      const near = human || (!!ze && Math.hypot(ze.x - dr.x, ze.z - dr.z) < 1.6);
+      // porta aberta só pelo Seu Zé: som bem baixinho (ele passa o dia abrindo porta)
+      if (near && dr.open < 0.05 && !dr.sounding) dr.npc = !human;
       const target = near ? 1 : 0;
       // começou a abrir: som (mais baixo/longe não toca)
       if (target === 1 && dr.open < 0.05 && !dr.sounding) {
         dr.sounding = true;
         const me = this.me?.root.position;
-        this.onDoorOpen?.(me ? Math.hypot(me.x - dr.x, me.z - dr.z) : 99);
+        this.onDoorOpen?.(me ? Math.hypot(me.x - dr.x, me.z - dr.z) : 99, !!dr.npc);
       }
       // terminou de fechar: batida da porta
       if (target === 0 && dr.sounding && dr.open < 0.12) {
         dr.sounding = false;
         const me = this.me?.root.position;
-        this.onDoorClose?.(me ? Math.hypot(me.x - dr.x, me.z - dr.z) : 99);
+        this.onDoorClose?.(me ? Math.hypot(me.x - dr.x, me.z - dr.z) : 99, !!dr.npc);
       }
       dr.open += (target - dr.open) * Math.min(1, dt * 6);
       const ang = dr.open * 1.75;
@@ -1448,9 +1476,31 @@ export class World {
     if (!this.layout) return 0.5;
     const { w, d } = this.layout.size;
     const aspect = this.host.clientWidth / Math.max(1, this.host.clientHeight);
-    const halfW = (w + d) / (2 * Math.SQRT2) + 1.5;
-    const halfH = ((w + d) / (2 * Math.SQRT2)) * 0.6 + 2.5;
+    const halfW = this.topDown ? w / 2 + 1.5 : (w + d) / (2 * Math.SQRT2) + 1.5;
+    const halfH = this.topDown ? d / 2 + 2 : ((w + d) / (2 * Math.SQRT2)) * 0.6 + 2.5;
     return Math.max(0.2, 9 / Math.max(halfH, halfW / aspect));
+  }
+
+  /** Troca entre a visão isométrica e a aérea. */
+  setView(v: ViewMode) {
+    if (v === this.view) return;
+    const flatChanged = (v === "2d") !== (this.view === "2d");
+    this.view = v;
+    this.camera.up.set(0, v === "aerea" ? 0 : 1, v === "aerea" ? -1 : 0);
+    if (flatChanged) {
+      this.configureRender();
+      this.applyStyle();
+    }
+    if (this.overview) {
+      this.zoom = this.fitZoom();
+      this.updateFrustum();
+    }
+    this.onViewChange?.(v);
+  }
+
+  /** Direção "direita da tela" no chão (para o som vir do lado certo). */
+  get screenRight(): { x: number; z: number } {
+    return this.topDown ? { x: 1, z: 0 } : { x: Math.SQRT1_2, z: -Math.SQRT1_2 };
   }
 
   /** Liga/desliga a visão do prédio inteiro. */
@@ -1784,11 +1834,18 @@ export class World {
   /** Estilo visual: padrão (traço fino), realista (luz e materiais físicos), desenho (traço grosso), retrô (pixelado). */
   style: GraphicStyle = "padrao";
   private realMats = new WeakMap<THREE.Material, THREE.Material>();
+  private flatMats = new WeakMap<THREE.Material, THREE.Material>();
   private envMap: THREE.Texture | null = null;
   private lastStyleScan = 0;
 
   setQuality(q: "leve" | "equilibrada" | "bonita") {
     this.quality = q;
+    this.configureRender();
+  }
+
+  /** Ajusta as opções gráficas finas (sombras, contorno, limite de quadros, resolução). */
+  setGfx(o: Partial<GfxOptions>) {
+    this.gfx = { ...this.gfx, ...o };
     this.configureRender();
   }
 
@@ -1804,12 +1861,17 @@ export class World {
     const st = this.style;
     const coarse = matchMedia("(pointer: coarse)").matches;
     const dpr = window.devicePixelRatio || 1;
-    const ratio = q === "bonita" ? Math.min(dpr, 2) : q === "leve" ? (coarse ? Math.min(dpr, 1.5) : Math.min(1, dpr)) : coarse ? Math.min(dpr, 2) : 1;
+    const g = this.gfx;
+    const flat = this.view === "2d";
+    let ratio = q === "bonita" ? Math.min(dpr, 2) : q === "leve" ? (coarse ? Math.min(dpr, 1.5) : Math.min(1, dpr)) : coarse ? Math.min(dpr, 2) : 1;
+    // resolução escolhida à mão (porcentagem da nitidez da tela)
+    if (g.scale > 0) ratio = Math.max(0.35, Math.min(dpr, 2) * g.scale);
     this.renderer.setPixelRatio(ratio);
-    this.outline = q !== "leve" && st !== "realista";
+    this.outline = (q !== "leve" && st !== "realista" && g.outline) || (flat && g.outline);
     if (st === "retro") this.outline = true; // o retrô precisa do passe (é ele que pixela)
-    this.maxFps = q === "leve" ? 30 : 0;
-    this.sun.castShadow = q !== "leve";
+    const caps = [q === "leve" ? 30 : 0, g.fps].filter((x) => x > 0);
+    this.maxFps = caps.length ? Math.min(...caps) : 0;
+    this.sun.castShadow = q !== "leve" && g.shadows && !flat;
     const size = q === "bonita" || st === "realista" ? 2048 : 1024;
     if (this.sun.shadow.mapSize.x !== size) {
       this.sun.shadow.mapSize.set(size, size);
@@ -1820,10 +1882,10 @@ export class World {
     this.renderer.shadowMap.needsUpdate = true;
     // contorno e pixel
     this.pixelPass.setPixelSize(st === "retro" ? 3 : 1);
-    (this.pixelPass as any).normalEdgeStrength = st === "desenho" ? 0.7 : st === "retro" ? 0.3 : 0.08;
-    (this.pixelPass as any).depthEdgeStrength = st === "desenho" ? 1.0 : st === "retro" ? 0.4 : 0.35;
-    // luz física no realista
-    if (st === "realista") {
+    (this.pixelPass as any).normalEdgeStrength = flat ? 0.45 : st === "desenho" ? 0.7 : st === "retro" ? 0.3 : 0.08;
+    (this.pixelPass as any).depthEdgeStrength = flat ? 0.9 : st === "desenho" ? 1.0 : st === "retro" ? 0.4 : 0.35;
+    // luz física no realista (no 2D não tem luz)
+    if (st === "realista" && !flat) {
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
       this.renderer.toneMappingExposure = 0.78;
       if (!this.envMap) {
@@ -1843,8 +1905,21 @@ export class World {
 
   /** Troca os materiais em tons (toon) por materiais físicos no estilo realista, e volta. */
   applyStyle() {
-    const real = this.style === "realista";
+    const flat = this.view === "2d";
+    const real = this.style === "realista" && !flat;
+    // 2D: material sem luz (cor chapada da paleta, como um desenho plano)
+    const flatConv = (m: THREE.Material): THREE.Material => {
+      if (!(m as any).isMeshToonMaterial && !(m as any).isMeshStandardMaterial && !(m as any).isMeshLambertMaterial) return m;
+      let r = this.flatMats.get(m);
+      if (!r) {
+        const t = m as THREE.MeshToonMaterial;
+        r = new THREE.MeshBasicMaterial({ color: t.color, map: t.map, transparent: t.transparent, opacity: t.opacity, vertexColors: t.vertexColors, side: t.side });
+        this.flatMats.set(m, r);
+      }
+      return r;
+    };
     const conv = (m: THREE.Material): THREE.Material => {
+      if (flat) return flatConv(m);
       if (!(m as any).isMeshToonMaterial) return m;
       let r = this.realMats.get(m);
       if (!r) {
@@ -1870,7 +1945,7 @@ export class World {
     this.scene.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh || !mesh.material) return;
-      if (real) {
+      if (real || flat) {
         if (!mesh.userData.toonMat) mesh.userData.toonMat = mesh.material;
         const src = mesh.userData.toonMat as THREE.Material | THREE.Material[];
         mesh.material = Array.isArray(src) ? src.map(conv) : conv(src);
@@ -1984,7 +2059,7 @@ export class World {
       // qualidade "leve": no máximo 30 quadros por segundo
       const now = performance.now();
       // estilo realista: converte o que apareceu de novo (móveis, pessoas, efeitos)
-      if (this.style === "realista" && now - this.lastStyleScan > 1000) {
+      if ((this.style === "realista" || this.view === "2d") && now - this.lastStyleScan > 1000) {
         this.lastStyleScan = now;
         this.applyStyle();
       }
@@ -2021,8 +2096,14 @@ export class World {
     // joystick de toque (analógico): soma com o teclado
     kUp += this.stick.y;
     kRight += this.stick.x;
-    vx = kRight - kUp;
-    vz = -kRight - kUp;
+    if (this.topDown) {
+      // de cima: W sobe (norte), D vai para a direita
+      vx = kRight;
+      vz = -kUp;
+    } else {
+      vx = kRight - kUp;
+      vz = -kRight - kUp;
+    }
 
     const keyMove = vx !== 0 || vz !== 0;
     if (keyMove) {
@@ -2135,8 +2216,11 @@ export class World {
     // (somado ao deslocamento de quando a pessoa arrasta o mapa)
     const base = this.overview ? new THREE.Vector3(0, 0, 0) : pos.clone();
     this.camTarget.lerp(base.add(this.panOffset), Math.min(1, dt * 4));
-    // vista isométrica (diagonal, de cima), como em jogos de escritório/The Sims
-    this.camera.position.set(this.camTarget.x + 24, 24, this.camTarget.z + 24);
+    // vista isométrica (diagonal, como The Sims) ou aérea (direto de cima)
+    if (this.view === "aerea") this.camera.position.set(this.camTarget.x, 40, this.camTarget.z);
+    // 2D: quase de cima, com uma leve inclinação para ainda ver o rosto das pessoas
+    else if (this.view === "2d") this.camera.position.set(this.camTarget.x, 40, this.camTarget.z + 9);
+    else this.camera.position.set(this.camTarget.x + 24, 24, this.camTarget.z + 24);
     this.camera.lookAt(this.camTarget);
     // encaixa a câmera na grade de pixels para o pixel art não "tremer"
     this.camera.updateMatrixWorld();
