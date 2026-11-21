@@ -6,7 +6,7 @@ import { Editor } from "./editor";
 import { CharacterPreview, openCreator } from "./creator";
 import { Look, lookColor, normalizeLook, randomLook } from "./avatar";
 import { icon } from "./icons";
-import { logoEl } from "./logo";
+import { sealEl } from "./logo";
 import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, isHostedWeb, NowPlaying, openTarget, Shortcut, activeApp, ytm, YtmState, appVersion, checkUpdate, UpdateInfo } from "./integrations";
 import type { Item, Layout, Zone } from "./furniture";
 import { DEFS } from "./furniture";
@@ -15,6 +15,8 @@ import { EnvConfig, WEATHERS, SEASONS, HOLIDAYS, seasonByDate, weatherFromCode, 
 import { DEFAULT_GOAL, DEFAULT_CUSTOM, GoalCfg, CustomCfg, financeData, weatherData, customValue, weatherText, fmtBRL, fmtNum, refreshWidgets } from "./widgets";
 import { loadModels } from "./models";
 import { Recorder } from "./recorder";
+import { isPhone, isTouch, canShareScreen, Joystick, unlockAudioOnTouch, registerPWA, keepScreenOn } from "./mobile";
+import { audio } from "./sound";
 
 // começa a baixar os modelos 3D já na tela de entrada
 const modelsReady = loadModels();
@@ -114,7 +116,7 @@ function showLogin(error = "") {
     <div class="login-bg"></div>
     <div class="login-wrap">
       <form class="panel login">
-        <div class="brand">${logoEl(40)}<div><div class="t-l">Office</div><div class="t-s c2">Escritório virtual da VERKZ</div></div></div>
+        <div class="brand">${sealEl(48)}<div><div class="t-l">Office</div><div class="t-s c2">Escritório virtual da VERKZ</div></div></div>
         <div class="char-row">
           <canvas></canvas>
           <div class="grow"><div class="t-m">Seu personagem</div><div class="t-s c2">Roupa, cabelo e acessórios</div></div>
@@ -174,7 +176,8 @@ const chatLog: any[] = [];
 let rightPanel: "chat" | "apps" | "meetings" | "team" | null = null;
 let recorder: Recorder;
 let recStarting = false;
-let leftOpen = true;
+let leftOpen = !isPhone();
+let joystick: Joystick | null = null;
 let agenda: AgendaItem[] = [];
 let mailUnread: number | null = null;
 let nowPlaying: NowPlaying | null = null;
@@ -231,6 +234,23 @@ function start() {
       renderDock();
     };
     buildHud();
+    if (isTouch) {
+      joystick = new Joystick(hud, world);
+      document.body.classList.add("touch");
+    }
+    // celular: o áudio da chamada só toca depois de um toque na tela
+    unlockAudioOnTouch(async () => {
+      try {
+        await audio().ctx.resume();
+      } catch {
+        /* sem WebAudio */
+      }
+      if (!media.room) return false;
+      await media.room.startAudio().catch(() => {});
+      return media.room.canPlaybackAudio;
+    });
+    if (isTouch) keepScreenOn();
+    window.addEventListener("resize", () => renderDock());
     world.onMove = (x, z, dir, moving, zone) => net.send({ t: "move", x, z, dir, moving, zone: zone?.id ?? null });
     world.onZoneChange = onZoneChange;
     world.start();
@@ -396,7 +416,7 @@ function renderTop() {
   if (!el) return;
   const z = world?.currentZone;
   const online = (world?.others.size ?? 0) + 1;
-  el.innerHTML = `${logoEl(26)}<span class="t-m">Office</span><span class="divider"></span>
+  el.innerHTML = `${sealEl(30)}<span class="t-m">Office</span><span class="divider"></span>
     <span class="chip accent">${z?.private ? icon("lock", 13) : '<span class="dot"></span>'}${esc(z ? z.name : "Área aberta")}</span>
     <span class="chip" title="${connected ? "Conectado" : "Reconectando..."}"><span class="dot ${connected ? "ok" : "bad"}"></span>${online} online</span>
     ${recordingNames().length ? `<span class="chip rec" title="Gravando: ${esc(recordingNames().join(", "))}"><span class="dot"></span>Gravando</span>` : ""}`;
@@ -452,10 +472,25 @@ function renderDock() {
   if (!dock) return;
   const b = (id: string, ic: string, tip: string, cls = "", extra = "") =>
     `<button class="icon-btn ${cls}" data-id="${id}" data-tip="${tip}" aria-label="${tip}">${icon(ic, 20)}${extra}</button>`;
+  if (isPhone()) {
+    // celular: só o essencial no dock; o resto fica no "Mais"
+    const anyOpen = popover === "more" || (leftOpen && !editor?.active) || ["meetings", "apps", "team"].includes(rightPanel ?? "");
+    document.body.classList.toggle("sheet-open", !!popover || (leftOpen && !editor?.active) || !!rightPanel || !!editor?.active);
+    dock.innerHTML = [
+      b("mic", media?.micOn ? "mic" : "mic-off", media?.micOn ? "Desligar microfone" : "Ligar microfone", media?.micOn ? "" : "off"),
+      b("cam", media?.camOn ? "video" : "video-off", media?.camOn ? "Desligar câmera" : "Ligar câmera", media?.camOn ? "active" : "off"),
+      b("emote", "smile", "Emotes", popover === "emote" ? "active" : ""),
+      b("chat", "chat", "Chat", rightPanel === "chat" ? "active" : "", unread ? `<span class="badge">${unread > 9 ? "9+" : unread}</span>` : ""),
+      b("map", "map", "Mapa", world?.overview ? "active" : ""),
+      b("more", "menu", "Mais", anyOpen ? "active" : ""),
+    ].join("");
+    dock.querySelectorAll<HTMLElement>("[data-id]").forEach((el) => el.addEventListener("click", () => dockAction(el.dataset.id!)));
+    return;
+  }
   dock.innerHTML = [
     b("mic", media?.micOn ? "mic" : "mic-off", media?.micOn ? "Desligar microfone (M)" : "Ligar microfone (M)", media?.micOn ? "" : "off"),
     b("cam", media?.camOn ? "video" : "video-off", media?.camOn ? "Desligar câmera" : "Ligar câmera", media?.camOn ? "active" : "off"),
-    b("screen", "screen", media?.screenOn ? "Parar de compartilhar" : "Compartilhar tela", media?.screenOn ? "active" : ""),
+    canShareScreen ? b("screen", "screen", media?.screenOn ? "Parar de compartilhar" : "Compartilhar tela", media?.screenOn ? "active" : "") : "",
     b("rec", "record", recorder?.active ? "Parar gravação" : "Gravar reunião", recorder?.active ? "rec-on" : ""),
     `<span class="divider"></span>`,
     b("emote", "smile", "Emotes (E)", popover === "emote" ? "active" : ""),
@@ -478,7 +513,17 @@ function renderDock() {
 }
 
 async function dockAction(id: string) {
+  // celular: painéis viram folhas de baixo; abrir um fecha o "Mais" e o outro lado
+  if (isPhone() && id !== "more" && popover === "more") togglePopover("more");
+  if (isPhone() && id === "people" && rightPanel) openRight(null);
+  if (isPhone() && ["chat", "meetings", "apps", "team"].includes(id) && leftOpen) {
+    leftOpen = false;
+    renderLeft();
+  }
   switch (id) {
+    case "more":
+      togglePopover("more");
+      return;
     case "mic":
       await media.setMic(!media.micOn);
       break;
@@ -1289,7 +1334,7 @@ function modal(title: string, body: string, actions: [string, string, () => void
 }
 
 // ------------------------------------------------------------ emotes e soundpad
-let popover: "emote" | "pad" | null = null;
+let popover: "emote" | "pad" | "more" | null = null;
 function togglePopover(id: string) {
   document.querySelector(".popover")?.remove();
   popover = popover === id ? null : (id as typeof popover);
@@ -1298,6 +1343,10 @@ function togglePopover(id: string) {
   const el = document.createElement("div");
   el.className = "panel popover";
   hud.appendChild(el);
+  if (popover === "more") {
+    renderMore(el);
+    return;
+  }
   if (popover === "emote") {
     el.innerHTML = `<div class="label">Emotes · teclas 1–0</div><div class="emote-grid">${EMOTES.map(([id, emo, label], i) => `<button data-e="${id}" title="${esc(label)} (${(i + 1) % 10})"><span>${emo}</span><small>${esc(label)}</small></button>`).join("")}</div>`;
     el.querySelectorAll<HTMLElement>("[data-e]").forEach((b) => b.addEventListener("click", () => doEmote(b.dataset.e!)));
@@ -1584,7 +1633,19 @@ async function applyEnv() {
 let lastActivity = "";
 let activitySince = 0;
 function startActivity() {
-  if (!isNative) return;
+  if (!isNative) {
+    // navegador: avisa que a pessoa está no celular (a gestão vê na Atividade da equipe)
+    if (isTouch)
+      setInterval(() => {
+        if (!connected || !world?.me) return;
+        const key = `celular|${prefs.shareActivity}`;
+        if (key === lastActivity) return;
+        lastActivity = key;
+        activitySince = Math.floor(Date.now() / 1000);
+        sendState({ activity: { app: "No celular", title: "", share: prefs.shareActivity, since: activitySince } });
+      }, 5000);
+    return;
+  }
   setInterval(async () => {
     if (!connected || !world?.me) return;
     let a = null;
@@ -1853,3 +1914,30 @@ function goToRoleRoom(spawn: boolean) {
     world.runToTarget();
   }
 }
+
+// ------------------------------------------------------------ celular: menu "Mais"
+function renderMore(el: HTMLElement) {
+  el.classList.add("more-sheet");
+  const item = (id: string, ic: string, label: string, on = false, extra = "") =>
+    `<button class="more-item ${on ? "on" : ""}" data-m="${id}">${icon(ic, 22)}<span>${label}</span>${extra}</button>`;
+  el.innerHTML = `<div class="label">Mais opções</div><div class="more-grid">${[
+    item("people", "users", "Pessoas", leftOpen),
+    item("pad", "volume", "Soundpad"),
+    item("apps", "calendar", "Agenda", rightPanel === "apps", mailUnread ? `<i class="dot-badge"></i>` : ""),
+    item("meetings", "file-text", "Reuniões", rightPanel === "meetings"),
+    item("char", "shirt", "Personagem"),
+    prefs.role ? item("home", "home", "Minha sala") : "",
+    typeof MediaRecorder !== "undefined" ? item("rec", "record", recorder?.active ? "Parar gravação" : "Gravar", !!recorder?.active) : "",
+    isAdmin ? item("team", "activity", "Equipe", rightPanel === "team") : "",
+    item("settings", "settings", "Configurações"),
+    item("exit", "log-out", "Sair"),
+  ].join("")}</div>`;
+  el.querySelectorAll<HTMLElement>("[data-m]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const id = b.dataset.m!;
+      togglePopover("more");
+      dockAction(id);
+    }),
+  );
+}
+registerPWA();

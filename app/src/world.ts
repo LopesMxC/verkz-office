@@ -461,6 +461,8 @@ export class World {
   private doorGroup = new THREE.Group();
   currentZone: Zone | null = null;
   inputEnabled = true;
+  /** Joystick de toque (celular): x = direita da tela, y = para cima da tela, de -1 a 1. */
+  stick = { x: 0, y: 0 };
   private lastSent = 0;
   private lastState = "";
   private ray = new THREE.Raycaster();
@@ -470,7 +472,9 @@ export class World {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", stencil: false });
     // resolução cheia (HD / retina): a cara de pixel art vem dos modelos e texturas, não de baixar a resolução
     // nitidez boa sem gastar memória de vídeo à toa (2x em tela 4K passa de 100 MB só em buffers)
-    this.renderer.setPixelRatio(1);
+    // no celular a tela tem 2-3x de densidade: 1x fica borrado, então usa até 2x (tela pequena, custo baixo)
+    const coarse = matchMedia("(pointer: coarse)").matches;
+    this.renderer.setPixelRatio(coarse ? Math.min(window.devicePixelRatio || 1, 2) : 1);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.NoToneMapping; // cores exatas da paleta (pixel art)
@@ -1220,9 +1224,80 @@ export class World {
         this.walkTo(p.x, p.z);
       }
     });
+    // ---- toque: pinça para zoom e toque longo numa pessoa para abrir o menu
+    const touches = new Map<number, { x: number; y: number }>();
+    let pinch0 = 0;
+    let zoom0 = 1;
+    let longTimer = 0;
+    let longStart: { x: number; y: number } | null = null;
+    let suppressClick = false;
+    const cancelLong = () => {
+      clearTimeout(longTimer);
+      longStart = null;
+    };
+    el.addEventListener("pointerdown", (e) => {
+      if (e.pointerType !== "touch") return;
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touches.size === 2) {
+        cancelLong();
+        const [a, b] = [...touches.values()];
+        pinch0 = Math.hypot(a.x - b.x, a.y - b.y);
+        zoom0 = this.zoom;
+        return;
+      }
+      if (this.editing || (e.target as HTMLElement) !== el) return;
+      longStart = { x: e.clientX, y: e.clientY };
+      const ev = e;
+      longTimer = window.setTimeout(() => {
+        if (!longStart) return;
+        const av = this.pickAvatar(ev);
+        if (av) {
+          suppressClick = true;
+          navigator.vibrate?.(15);
+          this.onAvatarMenu?.(av, ev.clientX, ev.clientY, av === this.me?.info.id);
+        }
+        longStart = null;
+      }, 480);
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (e.pointerType !== "touch" || !touches.has(e.pointerId)) return;
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (longStart && Math.hypot(e.clientX - longStart.x, e.clientY - longStart.y) > 10) cancelLong();
+      if (touches.size === 2 && pinch0 > 0) {
+        const [a, b] = [...touches.values()];
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        this.zoom = THREE.MathUtils.clamp(zoom0 * (d / pinch0), this.fitZoom(), 3.2);
+        if (!this.overview && this.zoom <= this.fitZoom() * 1.02) this.setOverview(true, false);
+        else if (this.overview && this.zoom > this.fitZoom() * 1.3) this.setOverview(false, false);
+        this.updateFrustum();
+        suppressClick = true;
+      }
+    });
+    const up = (e: PointerEvent) => {
+      if (e.pointerType !== "touch") return;
+      touches.delete(e.pointerId);
+      if (touches.size < 2) pinch0 = 0;
+      cancelLong();
+    };
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+    // o clique que vem depois de um toque longo ou de uma pinça não deve mover o personagem
+    el.addEventListener(
+      "click",
+      (e) => {
+        if (suppressClick) {
+          suppressClick = false;
+          e.stopImmediatePropagation();
+        }
+      },
+      true,
+    );
+
     el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       if (this.editing) return;
+      // no celular o menu sai pelo toque longo (acima); o "contextmenu" do Android duplicaria
+      if ((e as PointerEvent).pointerType === "touch" || matchMedia("(pointer: coarse)").matches) return;
       const av = this.pickAvatar(e);
       if (av) this.onAvatarMenu?.(av, e.clientX, e.clientY, av === this.me?.info.id);
     });
@@ -1309,6 +1384,9 @@ export class World {
     if (k.has("s") || k.has("arrowdown")) kUp -= 1;
     if (k.has("a") || k.has("arrowleft")) kRight -= 1;
     if (k.has("d") || k.has("arrowright")) kRight += 1;
+    // joystick de toque (analógico): soma com o teclado
+    kUp += this.stick.y;
+    kRight += this.stick.x;
     vx = kRight - kUp;
     vz = -kRight - kUp;
 
@@ -1324,7 +1402,8 @@ export class World {
       this.me.sitting = false;
       this.onSit?.(false);
     }
-    const run = (this.running && (keyMove || this.path.length > 0)) || (this.runPath && this.path.length > 0);
+    const stickRun = Math.hypot(this.stick.x, this.stick.y) > 0.92; // empurrou até a borda: corre
+    const run = ((this.running || stickRun) && (keyMove || this.path.length > 0)) || (this.runPath && this.path.length > 0);
     const speed = run ? this.runSpeed : this.walkSpeed;
     let moving = false;
     if (keyMove) {

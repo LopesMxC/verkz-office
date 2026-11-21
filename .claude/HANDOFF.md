@@ -125,3 +125,17 @@ Identity no LiveKit = id do peer no servidor.
   navegador com POST /api/endpoints/1/docker/build + header X-CSRF-Token). LiveKit com TURN (turn.verkzsystem.tech,
   TLS terminado no Traefik por router TCP HostSNI -> 5349, udp 3478 host). ADMIN_KEY no stack (inline, como as outras).
   Dockerfile agora usa rust:1-slim-bookworm (o rust:1-slim novo gerava aviso de GLIBC_2.39 no runtime bookworm).
+
+## v0.4 — celular pelo navegador + selo novo (20/11/2026)
+- Produção: imagem verkz-office-server:0.7.0 = 0.6.0 + /web novo. Gerada aplicando um patch sobre a camada em cache
+  do estágio web (imagem 660a69347528 = fonte v0.3 + node_modules + modelos), porque o contexto completo é grande
+  demais para mandar pelo navegador. Se a fonte base mudar, gerar uma imagem nova completa (Dockerfile.web).
+- src/mobile.ts: isTouch/isPhone, Joystick (world.stick, borda = correr), áudio liberado no 1º toque
+  (room.startAudio + AudioContext.resume), wake lock, registro do service worker.
+- world.ts: pinça = zoom, toque longo numa pessoa = menu (o contextmenu nativo é ignorado em tela de toque),
+  pixelRatio até 2 em tela de toque.
+- main.ts: no celular o dock tem mic/câmera/emotes/chat/mapa/"Mais" (popover "more" com o resto);
+  painéis viram folhas acima do dock; atividade "No celular"; sem compartilhar tela em toque.
+- PWA: public/manifest.webmanifest, sw.js (sem cache), icons/ (icon.svg + PNGs). "Adicionar à tela inicial".
+- Logo: selo (opção C) em src/logo.ts `sealEl()` — V oficial numa moldura neon, "OFFICE" em curvas (Montserrat
+  Bold) a partir de 72px. Ícones do desktop regenerados com `npx tauri icon` a partir do selo de 1024px.

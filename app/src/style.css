@@ -452,3 +452,94 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 /* faxineiro (NPC): sem ícone de microfone */
 .nameplate.npc .mic { display: none; }
 .nameplate.npc .name { opacity: 0.85; }
+
+/* ------------------------------------------------------------ celular (navegador)
+   Mesma regra de espaçamento dos painéis: 16-20px de margem interna, blocos a 12-16px. */
+html, body { height: 100%; overscroll-behavior: none; }
+body.touch #stage, body.touch .labels { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+body.touch input, body.touch textarea, body.touch select { font-size: 16px; } /* iPhone não dá zoom ao digitar */
+body.touch .icon-btn[data-tip]:hover::after { display: none; }
+
+.joystick { position: absolute; left: calc(20px + env(safe-area-inset-left)); bottom: calc(104px + env(safe-area-inset-bottom)); width: 128px; height: 128px; border-radius: 50%;
+  background: rgba(13, 13, 13, .38); border: 1.5px solid rgba(255, 255, 255, .14); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  touch-action: none; z-index: 5; display: grid; place-items: center; }
+.joystick.on { background: rgba(13, 13, 13, .5); border-color: rgba(200, 245, 1, .45); }
+.joy-knob { width: 56px; height: 56px; border-radius: 50%; background: rgba(244, 244, 239, .9); box-shadow: 0 4px 14px rgba(0, 0, 0, .45); pointer-events: none; }
+.joystick.on .joy-knob { background: var(--accent); }
+
+.more-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.more-item { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 4px 12px; border: 1px solid var(--border); background: var(--raised); border-radius: var(--r-md); color: var(--text); }
+.more-item span { font-size: 11.5px; font-weight: 600; color: var(--text-2); text-align: center; line-height: 14px; }
+.more-item.on { border-color: var(--accent); background: var(--accent-soft); }
+.more-item.on span, .more-item.on .ico { color: var(--accent); }
+.more-item .dot-badge { position: absolute; top: 8px; right: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+
+@media (max-width: 760px), (max-height: 500px) and (pointer: coarse) {
+  /* topo compacto, respeitando o recorte da câmera do celular */
+  .topbar { top: calc(10px + env(safe-area-inset-top)); left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right)); padding: 6px 8px 6px 12px; gap: 8px; overflow-x: auto; scrollbar-width: none; }
+  .topbar .divider, .topbar .t-m { display: none; }
+  .topbar .chip { white-space: nowrap; flex: none; }
+  .toasts { top: calc(64px + env(safe-area-inset-top)); width: calc(100vw - 24px); }
+  .toast { max-width: 100%; }
+
+  /* dock: barra de baixo de ponta a ponta */
+  .dock { left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right)); bottom: calc(10px + env(safe-area-inset-bottom)); transform: none; justify-content: space-around; padding: 6px; gap: 2px; }
+  .dock .icon-btn { width: 50px; height: 50px; }
+  .dock .divider { display: none; }
+
+  /* painéis laterais viram folhas que sobem de baixo */
+  /* ficam acima do dock (o dock continua acessível para trocar de painel ou fechar) */
+  .side.left, .side.right, .side.right.wide, .editor { left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right)); top: auto;
+    bottom: calc(80px + env(safe-area-inset-bottom)); width: auto; height: auto; max-height: calc(100dvh - 150px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    padding: 20px 16px 16px; z-index: 30; animation: sheet-up .18s ease-out; }
+  .side.right { height: 64vh; height: 64dvh; }
+  .side::before, .editor::before { content: ""; position: absolute; top: 7px; left: 50%; width: 38px; height: 4px; margin-left: -19px; border-radius: 2px; background: var(--border-strong); }
+  @keyframes sheet-up { from { transform: translateY(40px); opacity: 0 } }
+
+  /* popovers (emotes, soundpad, mais) acima do dock */
+  .popover { left: calc(10px + env(safe-area-inset-left)); right: calc(10px + env(safe-area-inset-right)); width: auto; max-width: none; transform: none; bottom: calc(78px + env(safe-area-inset-bottom)); padding: 16px; max-height: 60vh; overflow-y: auto; }
+  .emote-grid, .pad-grid { grid-template-columns: repeat(5, 1fr); gap: 6px; }
+
+  /* modais: folha de baixo com rolagem */
+  .modal-bg { place-items: end center; }
+  .modal, .modal.wide { width: 100%; max-width: 100%; max-height: 88vh; max-height: 88dvh; border-radius: var(--r-lg) var(--r-lg) 0 0; padding: 20px 18px calc(18px + env(safe-area-inset-bottom)); }
+  .modal-body { max-height: none; flex: 1; min-height: 0; }
+  .modal-actions .btn { flex: 1; }
+
+  /* cartão da pessoa e menu de toque: centralizados embaixo, com área de toque maior */
+  .ctx-menu, .person-card { left: 10px !important; right: 10px !important; top: auto !important; bottom: calc(80px + env(safe-area-inset-bottom)) !important; width: auto; }
+  .ctx-menu button { padding: 13px 12px; }
+
+  /* tela compartilhada e câmeras */
+  .screens { bottom: calc(82px + env(safe-area-inset-bottom)); left: 10px; right: 10px; transform: none; overflow-x: auto; justify-content: flex-start; }
+  .bubble { width: 96px; height: 70px; border-radius: 12px; }
+  .update-banner { left: 10px; right: 10px; top: calc(64px + env(safe-area-inset-top)); max-width: none; }
+
+  /* entrada e criador de personagem */
+  .login { width: calc(100vw - 24px); padding: 24px 20px 20px; gap: 16px; }
+  .creator { grid-template-columns: 1fr; grid-template-rows: 200px 1fr; width: 100vw; height: 92vh; height: 92dvh; align-self: end; border-radius: var(--r-lg) var(--r-lg) 0 0; }
+  .creator .pv { padding: 12px; flex-direction: row; justify-content: center; gap: 16px; }
+  .creator .pv .label { display: none; }
+  .creator .pv canvas { width: 120px; height: 176px; }
+  .creator .opts { padding: 16px 16px calc(14px + env(safe-area-inset-bottom)); gap: 14px; }
+  .creator .actions { flex-wrap: wrap; }
+  .creator .actions .btn { flex: 1; }
+  .fin-grid { grid-template-columns: 1fr 1fr; }
+}
+/* celular deitado: joystick menor */
+@media (max-height: 500px) and (pointer: coarse) {
+  .joystick { width: 104px; height: 104px; bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .joy-knob { width: 46px; height: 46px; }
+  .modal { max-height: 86vh; max-height: 86dvh; }
+  .side.right { height: calc(100dvh - 110px); }
+}
+@media (max-width: 760px), (max-height: 500px) and (pointer: coarse) {
+  .modal-bg { grid-template-columns: minmax(0, 1fr); }
+  .modal, .modal.wide { min-width: 0; width: 100%; box-sizing: border-box; }
+  .modal .tabs { max-width: 100%; }
+  .modal .tabs button { padding: 8px 10px; }
+  .settings .input, .modal .input { width: 100%; min-width: 0; }
+  body.sheet-open .joystick { opacity: 0; pointer-events: none; }
+}
+.modal-body > * { flex-shrink: 0; }
+.modal-body { overflow-y: auto; }
