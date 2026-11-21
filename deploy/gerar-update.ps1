@@ -11,9 +11,10 @@ if (Test-Path $saida) { Remove-Item $saida -Recurse -Force }
 New-Item -ItemType Directory $saida | Out-Null
 
 $plataformas = @{}
+$semAssinatura = @()
 function Adicionar($arquivo, $chaves) {
   $sig = "$($arquivo.FullName).sig"
-  if (-not (Test-Path $sig)) { Write-Host "   sem assinatura para $($arquivo.Name), pulei"; return }
+  if (-not (Test-Path $sig)) { Write-Host "[ERRO] $($arquivo.Name) esta sem assinatura (.sig)"; $script:semAssinatura += $arquivo.Name; return }
   $nome = $arquivo.Name -replace ' ', '_'
   Copy-Item $arquivo.FullName (Join-Path $saida $nome)
   $assinatura = (Get-Content $sig -Raw).Trim()
@@ -27,6 +28,7 @@ if ($mac) { Adicionar $mac @("darwin-aarch64", "darwin-x86_64") }
 $appimage = Get-ChildItem $Pasta -Filter "*.AppImage" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($appimage) { Adicionar $appimage @("linux-x86_64") }
 
+if ($semAssinatura.Count -gt 0) { Write-Host "[ERRO] latest.json nao gerado: instalador sem assinatura nao atualiza sozinho."; exit 1 }
 if ($plataformas.Count -eq 0) { Write-Host "[!] Nenhum instalador assinado encontrado; latest.json nao foi gerado."; exit 0 }
 
 $json = [ordered]@{

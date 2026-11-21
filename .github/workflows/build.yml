@@ -51,6 +51,16 @@ jobs:
         with:
           workspaces: app/src-tauri
       - run: npm ci
+      # Sem a chave o Tauri gera instalador sem .sig (sem atualização automática): para aqui
+      - name: Conferir chave de assinatura
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Segredo TAURI_SIGNING_PRIVATE_KEY vazio. Rode o compilador.bat (ele envia a chave de .chaves)."
+            exit 1
+          fi
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,7 +77,21 @@ jobs:
           releaseName: ${{ github.ref_type == 'tag' && 'VERKZ Office v__VERSION__' || '' }}
           releaseBody: "Instaladores para Mac (.dmg), Windows (.exe) e Linux (.deb, .rpm e .AppImage)."
           releaseDraft: true
-          args: ${{ matrix.args }}
+          args: --ci ${{ matrix.args }}
+      - name: Conferir assinaturas (.sig)
+        shell: bash
+        working-directory: app/src-tauri/target
+        run: |
+          case "${{ matrix.nome }}" in
+            mac)     padrao='universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig' ;;
+            windows) padrao='release/bundle/nsis/*.exe.sig' ;;
+            linux)   padrao='release/bundle/appimage/*.AppImage.sig' ;;
+          esac
+          if ! ls $padrao >/dev/null 2>&1; then
+            echo "::error::Build ${{ matrix.nome }} saiu sem assinatura ($padrao)."
+            exit 1
+          fi
+          ls -l $padrao
       # Instaladores ficam em "Artifacts" na página da rodada (o compilador.bat baixa daqui).
       - uses: actions/upload-artifact@v4
         with:
@@ -79,8 +103,11 @@ jobs:
             app/src-tauri/target/release/bundle/nsis/*.exe.sig
             app/src-tauri/target/release/bundle/nsis/*.exe
             app/src-tauri/target/release/bundle/msi/*.msi
+            app/src-tauri/target/release/bundle/msi/*.msi.sig
             app/src-tauri/target/release/bundle/deb/*.deb
+            app/src-tauri/target/release/bundle/deb/*.deb.sig
             app/src-tauri/target/release/bundle/rpm/*.rpm
+            app/src-tauri/target/release/bundle/rpm/*.rpm.sig
             app/src-tauri/target/release/bundle/appimage/*.AppImage
             app/src-tauri/target/release/bundle/appimage/*.AppImage.sig
           if-no-files-found: error

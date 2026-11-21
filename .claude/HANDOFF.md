@@ -202,3 +202,10 @@ Identity no LiveKit = id do peer no servidor.
   mac-linux (ubuntu-22.04 + libwebkit2gtk-4.1-dev). compilador-linux.sh compila direto num PC Linux.
   gerar-update.ps1 inclui linux-x86_64 (AppImage) no latest.json. Instaladores Linux 0.5.0 gerados no sandbox
   (Ubuntu 24.04) e entregues; AppImage assinado com a chave de .chaves.
+- Assinaturas do updater (21/11): todo build agora exige .sig e PARA com erro se faltar (antes saía sem e ninguém via).
+  compilador.bat: `tauri build --ci` (o cmd não guarda variável vazia, então a senha "" sumia e o Tauri tentava
+  perguntar); confere se .chaves/verkz-office.key.pub = pubkey do tauri.conf.json; se o .sig não sair, assina com
+  `tauri signer sign`; copia só o setup.exe da versão atual; exige .app.tar.gz.sig (Mac) e .AppImage.sig (Linux)
+  no download do GitHub; para se gerar-update.ps1 achar instalador sem .sig (agora sai com exit 1).
+  compilador-mac.command: carrega a chave e usa `--bundles app,dmg` (só "dmg" não gerava o .app.tar.gz).
+  compilador-linux.sh: exige a chave. build.yml: confere o segredo antes e os .sig depois de cada build.

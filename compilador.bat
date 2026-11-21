@@ -101,13 +101,17 @@ if defined FAZ_LINUX (
 
 rem Arquivos da atualizacao automatica (sobem para verkzsystem.tech/apps/verkz-office/)
 powershell -NoProfile -ExecutionPolicy Bypass -File "deploy\gerar-update.ps1" -Pasta "%CD%\instaladores"
+if errorlevel 1 (
+  echo [ERRO] A pasta de atualizacao nao foi montada: tem instalador sem assinatura.
+  pause
+  exit /b 1
+)
 
 echo.
 echo  ===============================================
 echo    Pronto! Instaladores em: %CD%\instaladores
 echo    Atualizacao automatica: suba o conteudo de instaladores\update
 echo    para https://verkzsystem.tech/apps/verkz-office/
-echo  ===============================================
 echo  ===============================================
 explorer "instaladores"
 pause
@@ -187,15 +191,40 @@ if errorlevel 1 (popd & exit /b 1)
 
 echo.
 call :chave_assinatura
+if errorlevel 1 (popd & exit /b 1)
 echo [..] Compilando o Windows ^(a primeira vez leva de 5 a 15 minutos^)...
-call npx tauri build --bundles nsis
+rem --ci: usa a senha vazia da chave sem perguntar (o cmd nao consegue guardar variavel vazia)
+call npx tauri build --ci --bundles nsis
 if errorlevel 1 (popd & exit /b 1)
 popd
 
+rem Instalador desta versao + assinatura (sem .sig nao tem atualizacao automatica)
+set "NSIS=app\src-tauri\target\release\bundle\nsis"
+set "EXE="
+for %%f in ("%NSIS%\*_%VERSAO%_*setup.exe") do set "EXE=%%~ff"
+if not defined EXE (
+  echo [ERRO] Nao achei o instalador da versao %VERSAO% em %NSIS%.
+  exit /b 1
+)
+if not exist "%EXE%.sig" (
+  echo [..] O build nao gerou a assinatura. Assinando agora...
+  rem -f le a chave do arquivo; a variavel abaixo conflitaria com o -f
+  set "TAURI_SIGNING_PRIVATE_KEY="
+  pushd app
+  call npx tauri signer sign -f "%CHAVE%" --app-version %VERSAO% "%EXE%" < nul
+  popd
+  set "TAURI_SIGNING_PRIVATE_KEY=%CHAVE%"
+)
+if not exist "%EXE%.sig" (
+  echo [ERRO] O instalador do Windows saiu SEM assinatura ^(.sig^). Nada foi copiado.
+  exit /b 1
+)
+
 if not exist "instaladores" mkdir "instaladores"
-copy /y "app\src-tauri\target\release\bundle\nsis\*.exe" "instaladores\" >nul
-copy /y "app\src-tauri\target\release\bundle\nsis\*.exe.sig" "instaladores\" >nul 2>nul
-echo [ok] Instalador do Windows pronto.
+del /q "instaladores\*.exe" "instaladores\*.exe.sig" 2>nul
+copy /y "%EXE%" "instaladores\" >nul
+copy /y "%EXE%.sig" "instaladores\" >nul
+echo [ok] Instalador do Windows pronto e assinado.
 exit /b 0
 
 rem ---------------------------------------------------------------
@@ -204,17 +233,34 @@ rem Caminhos absolutos: esta rotina e chamada de dentro da pasta app
 rem ---------------------------------------------------------------
 :chave_assinatura
 set "CHAVE=%~dp0.chaves\verkz-office.key"
+set "CONF=%~dp0app\src-tauri\tauri.conf.json"
 if not exist "%CHAVE%" (
   echo [..] Gerando a chave de assinatura das atualizacoes ^(so na primeira vez^)...
   if not exist "%~dp0.chaves" mkdir "%~dp0.chaves"
   pushd "%~dp0app"
   call npx tauri signer generate --ci -w "%CHAVE%" -p ""
   popd
-  echo [!] ATENCAO: chave nova gerada. Copie o conteudo de .chaves\verkz-office.key.pub
-  echo     para "pubkey" em app\src-tauri\tauri.conf.json e compile de novo.
+  if not exist "%CHAVE%" (
+    echo [ERRO] Nao consegui gerar a chave de assinatura.
+    exit /b 1
+  )
+  rem Grava a chave publica nova no tauri.conf.json
+  powershell -NoProfile -Command "$c='%CONF%'; $p=(Get-Content '%CHAVE%.pub' -Raw).Trim(); $t=Get-Content $c -Raw; $o=($t | ConvertFrom-Json).plugins.updater.pubkey; [IO.File]::WriteAllText($c, $t.Replace($o, $p))"
+  echo [!] Chave nova gerada e gravada no tauri.conf.json. GUARDE uma copia da pasta .chaves.
+  echo     Quem tem versao antiga instalada vai precisar instalar esta manualmente uma vez.
 )
+rem A chave privada precisa ser par da pubkey do app, senao a atualizacao e recusada
+set "PUB_OK="
+for /f "usebackq delims=" %%r in (`powershell -NoProfile -Command "$p=(Get-Content '%CHAVE%.pub' -Raw).Trim(); $c=(Get-Content '%CONF%' -Raw | ConvertFrom-Json).plugins.updater.pubkey; if ($p -eq $c) {'sim'}"`) do set "PUB_OK=%%r"
+if not "%PUB_OK%"=="sim" (
+  echo [ERRO] A chave em .chaves\verkz-office.key nao e a mesma do "pubkey" do tauri.conf.json.
+  echo        Copie o conteudo de .chaves\verkz-office.key.pub para o "pubkey" e rode de novo.
+  exit /b 1
+)
+set "VERSAO="
+for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%CONF%' -Raw | ConvertFrom-Json).version"`) do set "VERSAO=%%v"
 set "TAURI_SIGNING_PRIVATE_KEY=%CHAVE%"
-set "TAURI_SIGNING_PRIVATE_KEY_PASSWORD="
+echo [ok] Chave de assinatura conferida ^(versao %VERSAO%^).
 exit /b 0
 
 rem ---------------------------------------------------------------
@@ -294,6 +340,7 @@ if defined VERKZ_GOOGLE_CLIENT_ID gh secret set VERKZ_GOOGLE_CLIENT_ID --body "%
 if defined VERKZ_GOOGLE_CLIENT_SECRET gh secret set VERKZ_GOOGLE_CLIENT_SECRET --body "%VERKZ_GOOGLE_CLIENT_SECRET%" >nul || exit /b 1
 if defined VERKZ_SPOTIFY_CLIENT_ID gh secret set VERKZ_SPOTIFY_CLIENT_ID --body "%VERKZ_SPOTIFY_CLIENT_ID%" >nul || exit /b 1
 call :chave_assinatura
+if errorlevel 1 exit /b 1
 gh secret set TAURI_SIGNING_PRIVATE_KEY < "%~dp0.chaves\verkz-office.key" >nul || exit /b 1
 
 rem Pede o build no GitHub so dos sistemas escolhidos (guarda o ultimo build antes, para achar o novo depois)
@@ -346,7 +393,7 @@ set "PASTA_MAC=%CD%\instaladores\_download_mac"
 if exist "%PASTA_MAC%" rmdir /s /q "%PASTA_MAC%"
 gh run download %RUNID% -n verkz-office-mac -D "%PASTA_MAC%"
 if errorlevel 1 exit /b 1
-del /q "instaladores\*.dmg" 2>nul
+del /q "instaladores\*.dmg" "instaladores\*.app.tar.gz" "instaladores\*.app.tar.gz.sig" 2>nul
 for /r "%PASTA_MAC%" %%f in (*.dmg) do copy /y "%%f" "instaladores\" >nul
 for /r "%PASTA_MAC%" %%f in (*.app.tar.gz *.app.tar.gz.sig) do copy /y "%%f" "instaladores\" >nul
 rmdir /s /q "%PASTA_MAC%"
@@ -354,7 +401,11 @@ if not exist "instaladores\*.dmg" (
   echo [ERRO] O GitHub terminou, mas o .dmg nao veio no download.
   exit /b 1
 )
-echo [ok] Instalador do Mac pronto.
+if not exist "instaladores\*.app.tar.gz.sig" (
+  echo [ERRO] O Mac veio SEM assinatura ^(.app.tar.gz.sig^). Confira o segredo TAURI_SIGNING_PRIVATE_KEY no GitHub.
+  exit /b 1
+)
+echo [ok] Instalador do Mac pronto e assinado.
 exit /b 0
 
 rem ---------------------------------------------------------------
@@ -390,5 +441,9 @@ if not exist "instaladores\*.AppImage" if not exist "instaladores\*.deb" (
   echo [ERRO] O GitHub terminou, mas os instaladores do Linux nao vieram no download.
   exit /b 1
 )
-echo [ok] Instaladores do Linux prontos ^(.deb, .rpm e .AppImage^).
+if not exist "instaladores\*.AppImage.sig" (
+  echo [ERRO] O AppImage veio SEM assinatura ^(.AppImage.sig^). Confira o segredo TAURI_SIGNING_PRIVATE_KEY no GitHub.
+  exit /b 1
+)
+echo [ok] Instaladores do Linux prontos e assinados ^(.deb, .rpm e .AppImage^).
 exit /b 0

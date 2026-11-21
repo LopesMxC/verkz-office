@@ -39,24 +39,36 @@ export VITE_OFFICE_SERVER="${VITE_OFFICE_SERVER:-wss://office.verkzsystem.tech/w
 echo "    Servidor: $VITE_OFFICE_SERVER"
 
 # 4) Chave que assina as atualizações (a mesma do Windows/Mac)
-if [ -f .chaves/verkz-office.key ]; then
-  export TAURI_SIGNING_PRIVATE_KEY="$(cat .chaves/verkz-office.key)"
-  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-else
-  echo "    Aviso: sem .chaves/verkz-office.key, o AppImage sai sem assinatura (sem atualização automática)."
+if [ ! -f .chaves/verkz-office.key ]; then
+  echo "[ERRO] Falta .chaves/verkz-office.key (a mesma chave do Windows/Mac). Sem ela não há atualização automática."
+  exit 1
 fi
+PUB_APP="$(python3 -c "import json;print(json.load(open('app/src-tauri/tauri.conf.json'))['plugins']['updater']['pubkey'])")"
+if [ "$(tr -d '[:space:]' < .chaves/verkz-office.key.pub)" != "$PUB_APP" ]; then
+  echo "[ERRO] A chave de .chaves não é a mesma do \"pubkey\" do tauri.conf.json."
+  exit 1
+fi
+export TAURI_SIGNING_PRIVATE_KEY="$(cat .chaves/verkz-office.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+echo "[ok] Chave de assinatura conferida."
 
 # 5) Compilar
 cd app
 npm ci || npm install
 echo "[..] Compilando (a primeira vez leva de 5 a 15 minutos)..."
-npx tauri build --bundles deb,rpm,appimage
+npx tauri build --ci --bundles deb,rpm,appimage
 cd ..
 
 mkdir -p instaladores
 B=app/src-tauri/target/release/bundle
 cp -f "$B"/deb/*.deb "$B"/rpm/*.rpm "$B"/appimage/*.AppImage instaladores/ 2>/dev/null || true
-cp -f "$B"/appimage/*.AppImage.sig instaladores/ 2>/dev/null || true
+if ! ls "$B"/appimage/*.AppImage.sig >/dev/null 2>&1; then
+  echo "[ERRO] O AppImage saiu SEM assinatura (.AppImage.sig)."
+  exit 1
+fi
+rm -f instaladores/*.AppImage.sig instaladores/*.deb.sig instaladores/*.rpm.sig
+cp -f "$B"/appimage/*.AppImage.sig "$B"/deb/*.deb.sig "$B"/rpm/*.rpm.sig instaladores/ 2>/dev/null || true
+echo "[ok] Assinaturas copiadas."
 echo
 echo "==============================================="
 echo "  Pronto! Instaladores em: $(pwd)/instaladores"
