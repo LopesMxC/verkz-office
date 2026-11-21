@@ -419,6 +419,91 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
     writer.abort();
 }
 
+/// "0.4" / "v3.1" / "0.4.0" → (0, 4, 0). Aceita o que for digitado no painel de versões.
+fn parse_ver(v: &str) -> Option<(u64, u64, u64)> {
+    let v = v.trim().trim_start_matches(['v', 'V']);
+    let core = v.split(['-', '+', ' ']).next()?;
+    let mut it = core.split('.').map(|p| p.trim().parse::<u64>());
+    let a = it.next()?.ok()?;
+    let b = it.next().unwrap_or(Ok(0)).ok()?;
+    let c = it.next().unwrap_or(Ok(0)).ok()?;
+    Some((a, b, c))
+}
+
+/// Versão real do instalador: vem do comentário assinado ("version:0.4.0"), depois do nome do arquivo.
+fn real_version(rel: &serde_json::Value) -> Option<(u64, u64, u64)> {
+    use base64::Engine;
+    if let Some(sig) = rel.get("signature").and_then(|s| s.as_str()) {
+        if let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(sig.trim()) {
+            let txt = String::from_utf8_lossy(&raw);
+            if let Some(i) = txt.find("version:") {
+                let rest: String = txt[i + 8..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+                if let Some(v) = parse_ver(&rest) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    if let Some(url) = rel.get("url").and_then(|s| s.as_str()) {
+        let name = url.rsplit('/').next().unwrap_or("");
+        for part in name.split(['_', '-']) {
+            if part.matches('.').count() == 2 {
+                if let Some(v) = parse_ver(part) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Atualização do app: lê o painel de versões (verkzsystem.tech) e devolve no formato que o
+/// atualizador entende, com a versão tirada do próprio instalador. Assim, o que for digitado no
+/// painel ("3.1", "v2") não quebra a atualização. Sem versão nova: 204.
+async fn update_proxy(axum::extract::Path((target, arch, current)): axum::extract::Path<(String, String, String)>) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    let ok = |s: &str| !s.is_empty() && s.len() < 40 && s.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+    if !ok(&target) || !ok(&arch) || !ok(&current) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let base = env("UPDATE_BASE", "https://verkzsystem.tech/apps/verkz-office");
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap();
+    let url = format!("{base}/{target}/{arch}/{current}");
+    let Ok(r) = client.get(&url).send().await else { return StatusCode::BAD_GATEWAY.into_response() };
+    if r.status() == reqwest::StatusCode::NO_CONTENT {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let Ok(mut rel) = r.json::<serde_json::Value>().await else { return StatusCode::NO_CONTENT.into_response() };
+    // formato latest.json (com "platforms"): pega a plataforma pedida
+    if let Some(p) = rel.get("platforms").and_then(|p| p.get(format!("{target}-{arch}"))).cloned() {
+        let mut flat = p;
+        for k in ["notes", "pub_date"] {
+            if let Some(v) = rel.get(k) {
+                flat[k] = v.clone();
+            }
+        }
+        rel = flat;
+    } else if rel.get("platforms").is_some() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if rel.get("url").and_then(|u| u.as_str()).is_none() || rel.get("signature").and_then(|u| u.as_str()).is_none() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let real = real_version(&rel).or_else(|| rel.get("version").and_then(|v| v.as_str()).and_then(parse_ver));
+    let cur = parse_ver(&current);
+    match (real, cur) {
+        (Some(new), Some(cur)) if new > cur => {
+            rel["version"] = serde_json::Value::String(format!("{}.{}.{}", new.0, new.1, new.2));
+            if rel.get("notes").map(|n| n.as_str().unwrap_or("").is_empty()).unwrap_or(true) {
+                rel["notes"] = serde_json::Value::String(format!("VERKZ Office {}.{}.{}", new.0, new.1, new.2));
+            }
+            axum::Json(rel).into_response()
+        }
+        _ => StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
 /// Proxy de leitura para os painéis da versão de navegador (o navegador bloqueia por CORS).
 /// Só repassa GET para uma lista fechada de sites, para não virar um proxy aberto.
 async fn proxy_fetch(axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>) -> axum::response::Response {
@@ -510,6 +595,7 @@ async fn main() {
         .route("/api/rec/{id}/notes", get(rec::notes))
         .route("/health", get(|| async { "ok" }))
         .route("/api/fetch", get(proxy_fetch))
+        .route("/api/update/{target}/{arch}/{current}", get(update_proxy))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
     // versão de navegador: os arquivos do app ficam em WEB_DIR e qualquer outra rota cai no index.html

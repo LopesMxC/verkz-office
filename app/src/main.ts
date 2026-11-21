@@ -1807,7 +1807,15 @@ async function openSettings() {
       pendingUpdate = u;
       showUpdateBanner();
     } catch (e) {
-      toast(`Não consegui verificar: ${e}`, true);
+      const msg = String(e);
+      toast(
+        /version number|semver/i.test(msg)
+          ? "O servidor de atualização publicou uma versão com número inválido. Avise quem publicou (use o formato 0.4.1)."
+          : /fetch|network|connect|timed? ?out/i.test(msg)
+            ? "Sem conexão com o servidor de atualização agora. Tente de novo em instantes."
+            : `Não consegui verificar a atualização: ${msg}`,
+        true,
+      );
     }
   });
 }
