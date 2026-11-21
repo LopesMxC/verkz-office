@@ -1,3 +1,4 @@
+import { geo, disposeTree } from "./geo";
 import * as THREE from "three";
 import { CSS2DObject, CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
@@ -38,7 +39,7 @@ function holdMesh(kind: string): THREE.Object3D {
   const g = new THREE.Group();
   const m = (c: string) => toon(c);
   const b = (w: number, h: number, d: number, c: string, y = 0) => {
-    const x = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m(c));
+    const x = new THREE.Mesh(geo.box(w, h, d), m(c));
     x.position.y = y;
     g.add(x);
     return x;
@@ -466,10 +467,10 @@ export class World {
   private clock = new THREE.Clock();
 
   constructor(private host: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", stencil: false });
     // resolução cheia (HD / retina): a cara de pixel art vem dos modelos e texturas, não de baixar a resolução
     // nitidez boa sem gastar memória de vídeo à toa (2x em tela 4K passa de 100 MB só em buffers)
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
+    this.renderer.setPixelRatio(1);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.NoToneMapping; // cores exatas da paleta (pixel art)
@@ -491,7 +492,7 @@ export class World {
     this.sun = sun;
     sun.position.set(-10, 26, 14);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.mapSize.set(1024, 1024);
     const s = 34;
     Object.assign(sun.shadow.camera, { left: -s, right: s, top: s, bottom: -s, near: 1, far: 80 });
     sun.shadow.bias = -0.0005;
@@ -508,7 +509,8 @@ export class World {
       () => foliageMaterials,
     );
 
-    this.composer = new EffectComposer(this.renderer);
+    // buffers de 8 bits por canal (o padrão é 16 bits, o dobro de memória de vídeo, sem ganho visual aqui)
+    this.composer = new EffectComposer(this.renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType }));
     // passe de contorno em resolução cheia (pixelSize 1): linhas finas, sem pixelar a imagem
     this.pixelPass = new RenderPixelatedPass(1, this.scene, this.camera, { normalEdgeStrength: 0.08, depthEdgeStrength: 0.35 });
     this.composer.addPass(this.pixelPass);
@@ -545,9 +547,16 @@ export class World {
     this.zoneGroup.traverse((o) => {
       if (o instanceof CSS2DObject) o.element.remove();
     });
+    disposeTree(this.itemGroup);
+    disposeTree(this.zoneGroup);
     this.itemGroup.clear();
     this.zoneGroup.clear();
-    if (this.floor) this.floor.removeFromParent();
+    if (this.floor) {
+      this.floor.removeFromParent();
+      this.floor.geometry.dispose();
+      const fm = this.floor.material as THREE.MeshToonMaterial;
+      fm.map?.dispose();
+    }
 
     const { w, d } = layout.size;
     const floorTex = this.makeFloorTexture(layout);
@@ -852,12 +861,12 @@ export class World {
               if (ln.alongX) pivot.position.set(cx + hinge, 0, cz);
               else pivot.position.set(cx, 0, cz + hinge);
               const leaf = new THREE.Group();
-              const panel = new THREE.Mesh(new THREE.BoxGeometry(leafW, h, 0.07), wood);
+              const panel = new THREE.Mesh(geo.box(leafW, h, 0.07), wood);
               panel.position.set(0, h / 2, 0);
               panel.castShadow = true;
-              const inset = new THREE.Mesh(new THREE.BoxGeometry(leafW * 0.7, h * 0.35, 0.08), woodDark);
+              const inset = new THREE.Mesh(geo.box(leafW * 0.7, h * 0.35, 0.08), woodDark);
               inset.position.set(0, h * 0.68, 0);
-              const handle = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.04, 0.12), metal);
+              const handle = new THREE.Mesh(geo.box(0.12, 0.04, 0.12), metal);
               handle.position.set(-side * (leafW / 2 - 0.12), Math.min(1.0, h * 0.6), 0);
               leaf.add(panel, inset, handle);
               // a folha vai da dobradiça para o meio do vão

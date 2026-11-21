@@ -7,7 +7,7 @@ import { CharacterPreview, openCreator } from "./creator";
 import { Look, lookColor, normalizeLook, randomLook } from "./avatar";
 import { icon } from "./icons";
 import { logoEl } from "./logo";
-import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, NowPlaying, openTarget, Shortcut, activeApp, ytm, YtmState, appVersion, checkUpdate, UpdateInfo } from "./integrations";
+import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, isHostedWeb, NowPlaying, openTarget, Shortcut, activeApp, ytm, YtmState, appVersion, checkUpdate, UpdateInfo } from "./integrations";
 import type { Item, Layout, Zone } from "./furniture";
 import { DEFS } from "./furniture";
 import { soundPrefs, SoundPrefs, notify, approachChime, doorChime, toggleSound, doorSound, footstep, kitchenSound, PAD_SOUNDS, listCustom, addCustom, removeCustom, playPad, PadSound } from "./sound";
@@ -50,7 +50,7 @@ function loadPrefs(): Prefs {
   }
   return {
     name: p.name ?? "",
-    server: p.server ?? (import.meta.env.VITE_OFFICE_SERVER || "wss://office.verkzsystem.tech/ws"),
+    server: isHostedWeb ? `wss://${location.host}/ws` : p.server ?? (import.meta.env.VITE_OFFICE_SERVER || "wss://office.verkzsystem.tech/ws"),
     key: p.key ?? "",
     look: normalizeLook(p.look ?? randomLook()),
     shareMusic: p.shareMusic ?? true,

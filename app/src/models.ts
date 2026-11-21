@@ -54,6 +54,7 @@ function toToon(root: THREE.Object3D) {
   root.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh) return;
+    mesh.geometry.userData.model = true; // compartilhada entre as cópias do modelo
     const conv = (m: THREE.Material) => {
       const std = m as THREE.MeshStandardMaterial;
       const map = std.map ?? undefined;

@@ -64,7 +64,9 @@ export class CharacterPreview {
 
   dispose() {
     cancelAnimationFrame(this.raf);
+    this.composer.dispose();
     this.renderer.dispose();
+    this.renderer.forceContextLoss();
   }
 }
 

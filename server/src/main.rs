@@ -419,6 +419,36 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
     writer.abort();
 }
 
+/// Proxy de leitura para os painéis da versão de navegador (o navegador bloqueia por CORS).
+/// Só repassa GET para uma lista fechada de sites, para não virar um proxy aberto.
+async fn proxy_fetch(axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    let Some(url) = q.get("url") else { return (StatusCode::BAD_REQUEST, "url").into_response() };
+    let Ok(parsed) = reqwest::Url::parse(url) else { return (StatusCode::BAD_REQUEST, "url").into_response() };
+    let host = parsed.host_str().unwrap_or("").to_string();
+    let extra = env("PROXY_HOSTS", "");
+    let allowed = ["economia.awesomeapi.com.br", "api.bcb.gov.br", "api.open-meteo.com", "verkzsystem.tech"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain(extra.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .any(|h| host == h || host.ends_with(&format!(".{h}")));
+    if parsed.scheme() != "https" || !allowed {
+        return (StatusCode::FORBIDDEN, "site não liberado").into_response();
+    }
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap();
+    match client.get(parsed).send().await {
+        Ok(r) => {
+            let status = StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            match r.bytes().await {
+                Ok(b) if b.len() <= 2 * 1024 * 1024 => (status, [(header::CONTENT_TYPE, "application/json")], b).into_response(),
+                _ => (StatusCode::BAD_GATEWAY, "resposta inválida").into_response(),
+            }
+        }
+        Err(_) => (StatusCode::BAD_GATEWAY, "falhou").into_response(),
+    }
+}
+
 fn env(k: &str, default: &str) -> String {
     std::env::var(k).unwrap_or_else(|_| default.to_string())
 }
@@ -479,8 +509,18 @@ async fn main() {
         .route("/api/rec/{id}/file", get(rec::file))
         .route("/api/rec/{id}/notes", get(rec::notes))
         .route("/health", get(|| async { "ok" }))
+        .route("/api/fetch", get(proxy_fetch))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
+    // versão de navegador: os arquivos do app ficam em WEB_DIR e qualquer outra rota cai no index.html
+    let web_dir = PathBuf::from(env("WEB_DIR", "/web"));
+    let app = if web_dir.join("index.html").exists() {
+        info!("versão de navegador servida de {}", web_dir.display());
+        let index = web_dir.join("index.html");
+        app.fallback_service(tower_http::services::ServeDir::new(&web_dir).fallback(tower_http::services::ServeFile::new(index)))
+    } else {
+        app
+    };
 
     let addr: SocketAddr = env("BIND", "0.0.0.0:8080").parse().unwrap();
     info!("VERKZ Office ouvindo em {addr}");

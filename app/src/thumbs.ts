@@ -43,6 +43,8 @@ export function furnitureThumbs(): Record<string, string> {
     cache[type] = canvas.toDataURL("image/png");
     scene.remove(obj);
   }
+  composer.dispose();
   renderer.dispose();
+  renderer.forceContextLoss();
   return cache;
 }

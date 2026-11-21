@@ -22,6 +22,21 @@ pub fn run() {
         .setup(|app| {
             let st = integrations::State::load(app.handle());
             app.manage(st);
+            // Linux (WebKitGTK): câmera, microfone e WebRTC vêm desligados por padrão
+            #[cfg(target_os = "linux")]
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.with_webview(|wv| {
+                    use webkit2gtk::{SettingsExt, WebViewExt};
+                    if let Some(s) = wv.inner().settings() {
+                        s.set_enable_media_stream(true);
+                        s.set_enable_webrtc(true);
+                        s.set_enable_mediasource(true);
+                        s.set_enable_encrypted_media(true);
+                        s.set_media_playback_requires_user_gesture(false);
+                        s.set_hardware_acceleration_policy(webkit2gtk::HardwareAccelerationPolicy::Always);
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

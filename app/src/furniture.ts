@@ -1,3 +1,4 @@
+import { geo } from "./geo";
 import * as THREE from "three";
 import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 import { LOGO_PATH, NEON } from "./logo";
@@ -143,7 +144,7 @@ const M = {
   screenA: toon("#ffffff", { map: screenTex("#5ec8ff", "#C8F501") }),
   screenB: toon("#ffffff", { map: screenTex("#ff7aa8", "#ffd35c") }),
   screenC: toon("#ffffff", { map: screenTex("#C8F501", "#5ec8ff") }),
-  neon: new THREE.MeshBasicMaterial({ color: NEON, toneMapped: false }),
+  neon: Object.assign(new THREE.MeshBasicMaterial({ color: NEON, toneMapped: false }), { userData: { shared: true } }),
   neonToon: toon(NEON),
   red: toon("#d9534f"),
   blue: toon("#3b6fc0"),
@@ -152,7 +153,7 @@ const M = {
 };
 
 function box(w: number, h: number, d: number, mat: THREE.Material | THREE.Material[], x = 0, y = 0, z = 0) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  const m = new THREE.Mesh(geo.box(w, h, d), mat);
   m.position.set(x, y + h / 2, z);
   m.castShadow = true;
   m.receiveShadow = true;
@@ -160,7 +161,7 @@ function box(w: number, h: number, d: number, mat: THREE.Material | THREE.Materi
 }
 
 function cyl(rt: number, rb: number, h: number, mat: THREE.Material, x = 0, y = 0, z = 0, seg = 8) {
-  const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
+  const m = new THREE.Mesh(geo.cyl(rt, rb, h, seg), mat);
   m.position.set(x, y + h / 2, z);
   m.castShadow = true;
   m.receiveShadow = true;
@@ -168,7 +169,7 @@ function cyl(rt: number, rb: number, h: number, mat: THREE.Material, x = 0, y = 
 }
 
 function blob(r: number, mat: THREE.Material, x = 0, y = 0, z = 0) {
-  const m = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), mat);
+  const m = new THREE.Mesh(geo.ico(r, 0), mat);
   m.position.set(x, y, z);
   m.castShadow = true;
   return m;
@@ -599,7 +600,7 @@ export const DEFS: Record<string, Def> = {
         g.fillRect(15, 11, 2, 2);
       });
       const top = toon("#ffffff", { map: tex });
-      const r = new THREE.Mesh(new THREE.BoxGeometry(4, 0.03, 3), [M.white, M.white, top, M.white, M.white, M.white]);
+      const r = new THREE.Mesh(geo.box(4, 0.03, 3), [M.white, M.white, top, M.white, M.white, M.white]);
       r.position.y = 0.015;
       r.receiveShadow = true;
       return r;
@@ -796,7 +797,7 @@ export const DEFS: Record<string, Def> = {
       const g = group(cyl(0.12, 0.14, 0.4, M.trunk), box(0.5, 0.25, 0.5, M.red));
       const cones: [number, number, number][] = [[0.75, 0.7, 0.4], [0.58, 0.6, 0.95], [0.4, 0.5, 1.4]];
       for (const [r, h, y] of cones) {
-        const c = new THREE.Mesh(new THREE.ConeGeometry(r, h, 8), M.leafDark);
+        const c = new THREE.Mesh(geo.cone(r, h, 8), M.leafDark);
         c.position.y = y + h / 2;
         c.castShadow = true;
         g.add(c);
@@ -840,7 +841,7 @@ export const DEFS: Record<string, Def> = {
         const x = (i % 2 ? 0.18 : -0.18) * (i > 1 ? 0.6 : 1);
         const y = 1.5 + (i % 2) * 0.25 + (i > 1 ? 0.4 : 0);
         g.add(box(0.01, y - 0.05, 0.01, M.grey, x * 0.5, 0.05, 0));
-        const b = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), c);
+        const b = new THREE.Mesh(geo.sphere(0.2), c);
         b.scale.y = 1.2;
         b.position.set(x, y + 0.2, 0);
         b.castShadow = true;
@@ -862,7 +863,7 @@ export const DEFS: Record<string, Def> = {
         for (let i = 0; i < 18; i++) {
           const x = -6 + i * 0.7;
           const y = 2.6 - Math.sin((i / 17) * Math.PI) * 0.5;
-          const fl = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.3, 3), cols[(i + line) % cols.length]);
+          const fl = new THREE.Mesh(geo.cone(0.16, 0.3, 3), cols[(i + line) % cols.length]);
           fl.rotation.x = Math.PI;
           fl.position.set(x, y, line * 2.5 - 1.2);
           g.add(fl);
@@ -896,7 +897,7 @@ export const DEFS: Record<string, Def> = {
     blocks: true,
     decor: true,
     build: () => {
-      const p = new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 8), M.orange);
+      const p = new THREE.Mesh(geo.sphere(0.3), M.orange);
       p.scale.y = 0.75;
       p.position.y = 0.22;
       p.castShadow = true;
@@ -911,7 +912,7 @@ export const DEFS: Record<string, Def> = {
     decor: true,
     build: () => {
       const cols = [M.purple, M.yellow, M.blue, M.red, M.neonToon];
-      const e = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), cols[Math.floor(Math.random() * cols.length)]);
+      const e = new THREE.Mesh(geo.sphere(0.16), cols[Math.floor(Math.random() * cols.length)]);
       e.scale.y = 1.3;
       e.position.y = 0.2;
       e.castShadow = true;
@@ -1060,7 +1061,7 @@ export function buildWall(it: Item, nb: WallLinks, tall: boolean): THREE.Object3
     const sx = alongX ? span : T * 0.5;
     const sz = alongX ? T * 0.5 : span;
     // vidro
-    const glass = new THREE.Mesh(new THREE.BoxGeometry(alongX ? span : 0.04, 1.25, alongX ? 0.04 : span), wallMats.glass);
+    const glass = new THREE.Mesh(geo.box(alongX ? span : 0.04, 1.25, alongX ? 0.04 : span), wallMats.glass);
     glass.position.set(0, 0.9 + 0.625, 0);
     g.add(glass);
     // moldura e divisória

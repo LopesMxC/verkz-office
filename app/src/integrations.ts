@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl, openPath } from "@tauri-apps/plugin-opener";
 
 export const isNative = typeof (window as any).__TAURI_INTERNALS__ !== "undefined";
+/** Versão de navegador servida pelo próprio servidor do escritório (https://office...). */
+export const isHostedWeb = !isNative && location.protocol === "https:";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!isNative) throw new Error("Disponível só no app instalado");
@@ -72,9 +74,17 @@ export async function httpJson<T = unknown>(url: string): Promise<T> {
     const text = await invoke<string>("http_get", { url });
     return JSON.parse(text) as T;
   }
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return (await r.json()) as T;
+  // navegador: tenta direto; se o site bloquear (CORS), passa pelo servidor do escritório
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return (await r.json()) as T;
+  } catch (e) {
+    if (!/^https?:$/.test(location.protocol) || /^(localhost|127\.)/.test(location.hostname)) throw e;
+    const r = await fetch(`/api/fetch?url=${encodeURIComponent(url)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return (await r.json()) as T;
+  }
 }
 
 // ------------------------------------------------------------------ atividade (app em primeiro plano)
