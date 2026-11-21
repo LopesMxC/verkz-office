@@ -220,3 +220,16 @@ Identity no LiveKit = id do peer no servidor.
   - App: `editor.limit` virou boolean (`!isAdmin`); fora da gestão só aparece a aba Móveis, sem parede/elevador.
   - Servidor: `check_room_edit` → `check_furniture_edit` (não depende mais do cargo; bloqueia size/zones/spawn/env/
     levels/floorColor e qualquer item wall/window_wall/glass_wall/elevator).
+
+## v0.5.1 — áudio/vídeo caindo (21/11/2026, só app)
+- Sintoma: "Ainda conectando o áudio/vídeo. Tente o(a) microfone em alguns segundos."
+- Logs do LiveKit (stack 4): a sala conecta por UDP direto (porta 7882, par local 172.18.0.14 = docker_gwbridge)
+  e cai sozinha em 20 s a 10 min com `short ice connection` → `PEER_CONNECTION_DISCONNECTED`; a porta pública do
+  cliente muda no meio (srflx 54830 → prflx 65242). A retomada falha e o app faz reconexão completa; quem clica no
+  microfone nesse intervalo via o erro. O relay TURN/TLS (turn.verkzsystem.tech:443 via Traefik) funciona (aparece
+  como "udp relay ... related 10.0.1.14").
+- media.ts: (1) se a conexão cai sem o usuário sair, ou falha 2x, reconecta com `rtcConfig.iceTransportPolicy:
+  "relay"` (só TURN 443) até fechar o app; (2) reconexão começa em 300 ms; (3) clicar no microfone/câmera
+  enquanto reconecta guarda o pedido e liga sozinho quando voltar (antes o clique se perdia); desligar funciona
+  mesmo desconectado.
+- Servidor/stack sem mudança. Se continuar caindo até no relay, próximo passo: LiveKit em rede host no Swarm.

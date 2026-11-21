@@ -1,5 +1,6 @@
 import {
   ConnectionState,
+  DisconnectReason,
   LocalAudioTrack,
   LocalTrackPublication,
   LocalVideoTrack,
@@ -87,6 +88,8 @@ export class Media {
   private token = "";
   private retry?: number;
   private retries = 0;
+  /** A rota UDP direta caiu nesta sessão: conecta só pelo relay TURN (443). */
+  private forceRelay = false;
   private screenTracks: (LocalVideoTrack | LocalAudioTrack)[] = [];
   private padPub?: LocalTrackPublication;
   screens = new Map<string, ScreenTile>();
@@ -184,11 +187,18 @@ export class Media {
       this.connected = true;
       this.onStateChanged?.();
     });
-    r.on(RoomEvent.Disconnected, () => {
+    r.on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
       this.connected = false;
       this.padPub = undefined;
+      // Caiu sem ninguém pedir: a rota UDP direta (porta 7882) se perdeu. Daqui em diante usa só o
+      // relay TURN pela porta 443 (TCP/TLS), que atravessa roteador/VPN/2 links de internet.
+      if (this.url && reason !== DisconnectReason.CLIENT_INITIATED) {
+        if (!this.forceRelay) console.warn("livekit: conexão direta caiu, passando a usar o relay (443)");
+        this.forceRelay = true;
+        this.retries = 0;
+      }
       this.onStateChanged?.();
-      this.scheduleRetry();
+      this.scheduleRetry(true);
     });
     r.on(RoomEvent.ConnectionStateChanged, (s) => {
       this.connected = s === ConnectionState.Connected;
@@ -257,13 +267,19 @@ export class Media {
 
   private async tryConnect(first: boolean) {
     try {
-      await this.room.connect(this.url, this.token, { autoSubscribe: false, peerConnectionTimeout: 20000 });
+      // Duas falhas seguidas pela rota direta também mudam para o relay.
+      if (!first && this.retries >= 2) this.forceRelay = true;
+      await this.room.connect(this.url, this.token, {
+        autoSubscribe: false,
+        peerConnectionTimeout: 20000,
+        ...(this.forceRelay ? { rtcConfig: { iceTransportPolicy: "relay" as RTCIceTransportPolicy } } : {}),
+      });
       this.connected = true;
       this.retries = 0;
       await this.room.startAudio().catch(() => {});
       if (this.prefs.speakerId) await this.room.switchActiveDevice("audiooutput", this.prefs.speakerId).catch(() => {});
-      if (first ? this.prefs.micOnJoin : this.micOn) await this.setMic(true);
-      if (!first && this.camOn) await this.setCam(true);
+      if ((first && this.prefs.micOnJoin) || this.micOn) await this.setMic(true);
+      if (this.camOn) await this.setCam(true);
       this.onStateChanged?.();
     } catch (e: any) {
       this.connected = false;
@@ -273,10 +289,10 @@ export class Media {
     }
   }
 
-  private scheduleRetry() {
+  private scheduleRetry(now = false) {
     if (!this.url || this.retries > 40) return;
     clearTimeout(this.retry);
-    const wait = Math.min(15000, 1500 * 2 ** Math.min(this.retries, 4));
+    const wait = now && this.retries === 0 ? 300 : Math.min(15000, 1500 * 2 ** Math.min(this.retries, 4));
     this.retries++;
     this.retry = window.setTimeout(() => {
       if (this.room.state === ConnectionState.Disconnected) this.tryConnect(false);
@@ -293,13 +309,28 @@ export class Media {
 
   private needConnection(what: "microfone" | "câmera" | "tela") {
     if (this.room.state === ConnectionState.Connected) return true;
-    this.onError?.(`Ainda conectando o áudio/vídeo. Tente o(a) ${what} em alguns segundos.`);
-    this.scheduleRetry();
+    // Guarda o pedido: quando a conexão voltar, tryConnect liga o microfone/câmera sozinho.
+    if (what === "microfone") this.micOn = true;
+    if (what === "câmera") this.camOn = true;
+    this.onError?.(
+      what === "tela"
+        ? "Reconectando o áudio/vídeo. Tente compartilhar a tela em alguns segundos."
+        : `Reconectando o áudio/vídeo. O(a) ${what} liga sozinho(a) assim que voltar.`,
+    );
+    if (this.room.state === ConnectionState.Disconnected) {
+      this.retries = 0;
+      this.scheduleRetry(true);
+    }
     return false;
   }
 
   // ------------------------------------------------------------------ microfone, câmera, dispositivos
   async setMic(on: boolean) {
+    if (!on && this.room.state !== ConnectionState.Connected) {
+      this.micOn = false;
+      this.world.me?.setMuted(true);
+      return this.onStateChanged?.();
+    }
     if (on && !this.needConnection("microfone")) return this.onStateChanged?.();
     try {
       await this.room.localParticipant.setMicrophoneEnabled(on, {
@@ -319,6 +350,11 @@ export class Media {
   }
 
   async setCam(on: boolean) {
+    if (!on && this.room.state !== ConnectionState.Connected) {
+      this.camOn = false;
+      this.hideLocalCam();
+      return this.onStateChanged?.();
+    }
     if (on && !this.needConnection("câmera")) return this.onStateChanged?.();
     try {
       const res = this.prefs.camQuality === "720" ? VideoPresets.h720.resolution : VideoPresets.h360.resolution;
