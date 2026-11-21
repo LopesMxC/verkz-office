@@ -233,3 +233,47 @@ Identity no LiveKit = id do peer no servidor.
   enquanto reconecta guarda o pedido e liga sozinho quando voltar (antes o clique se perdia); desligar funciona
   mesmo desconectado.
 - Servidor/stack sem mudança. Se continuar caindo até no relay, próximo passo: LiveKit em rede host no Swarm.
+
+## v0.6.0 — pedidos de 21/11/2026 14:44 (app + web; servidor Rust sem mudança)
+- **Áudio (media.ts):** Room sem `webAudioMix`; cada voz é um `Voice` com o `<audio>` sempre tocando. Modo 3D
+  (padrão): elemento mudo + cadeia própria MediaStreamSource → lowpass → pan → ganho; modo normal (Configurações >
+  Áudio e vídeo > "Áudio 3D" desligado): o próprio elemento toca com volume pela distância (melhor para eco com
+  caixa de som). `media.setSpatial(on)` troca na hora. Corrigido o "entra e sai da conversa" ao andar:
+  (1) volume em rampa (sobe 0,45/tick, desce 0,18/tick a 20 Hz), nunca pula; (2) curva `falloff()` contínua até
+  o limite; (3) posição usada é a mesma do boneco na tela (antes misturava alvo da rede e posição suavizada);
+  (4) assinatura de áudio com histerese larga (assina a silent+2, larga a silent+6) e 6 s de espera antes de soltar;
+  (5) som de aproximação só se a pessoa ficou 8 s inaudível; (6) antes `track.setVolume` agendava
+  `setTargetAtTime(v, 0, …)` 20x/s (tempo 0 no passado), agora o ganho é nosso.
+- **Fim de fala suave:** `TALK_HANG_MS = 900` (a fala continua 0,9 s depois do último sinal), `Avatar.talkAmt`
+  faz os gestos diminuírem e desacelerarem até parar; borda verde do nome com transição de 0,45 s.
+- **Tela compartilhada (main.ts openScreen):** a tela cheia entra no HUD antes do dock (dock por cima, z 46),
+  chip "N no escritório", coluna de blocos (eu + todos; câmera se ligada, senão iniciais; "longe" se não ouço),
+  borda verde brilhando enquanto fala (`media.isTalking` + `media.canHear`, com a mesma folga de 0,9 s).
+  Esc fecha. Com a tela cheia aberta a cena 3D roda a 12 fps.
+- **Caixas de som/rádio:** só controla de até `RADIO_REACH` (2,6 m); de longe o personagem anda até lá e aí faz.
+  Quem é dono do rádio ignora `radio_stop` de quem não está perto da caixa.
+- **Configurações:** modal de 880 px com abas na lateral (`.settings-wrap`), grade dos apps com minmax(0,1fr).
+- **Sinuca (games.ts, refeita):** bola 8 com 15 bolas, lisas/listradas, faltas (branca na caçapa, não acertou,
+  bola errada primeiro), bola na mão (arrastar a branca; na saída só na cozinha), 8 na saída volta para a mesa,
+  vitória/derrota pela 8. `PoolSim` determinístico (passo 1/240, só + − × ÷ √): os dois lados e quem assiste
+  rodam a mesma tacada a partir do mesmo estado (msg `go` com estado + velocidade); o anfitrião é o juiz e manda
+  `st` no fim. Mira com linha-guia, bola fantasma e direção da bola acertada; força puxando para trás (ou espaço),
+  ← → ajustam. Canvas nítido (devicePixelRatio). Painel fica à direita sem escurecer a cena.
+- **Sinuca na cena 3D:** convite leva o id da mesa (`game_inv.item`). `startPoolScene` (main.ts) anda até a mesa,
+  na sua vez vai para trás da branca do lado da mira e se vira para ela, na vez do outro espera na ponta.
+  `extra.pool {aim,pow,shotAt}` = pose (debruçado, mão de apoio, taco puxa com a força e bate na tacada; esperando,
+  taco em pé). `extra.poolTable {item,balls,shot}` (do anfitrião) = bolas 3D de verdade rolando na mesa para todos
+  (World.updatePool, mesma física). As bolas de enfeite do modelo (grupo "pool-deco") somem durante o jogo.
+- **Antivírus:** ver deploy/ANTIVIRUS.md. Tirado `msSmartScreenProtection` dos argumentos do WebView, WebView2
+  embutido no instalador (embedBootstrapper), publisher/copyright/site no bundle, NSIS currentUser.
+  Solução definitiva = assinatura de código (Azure Trusted Signing ou certificado OV) + envio à Microsoft.
+- **Otimizações:** cena a 20 fps sem foco e 12 fps com tela cheia (`world.backgroundFps`); lista de pessoas só
+  refaz o DOM quando muda e não roda com o painel fechado.
+- Testado no Chrome headless com 2 usuários: configurações (sem rolagem lateral), tela falsa com dock clicável e
+  borda verde apagando depois da folga, sinuca convidado/anfitrião (saída, troca de vez, bolas 3D iguais nos dois).
+  Sem LiveKit no sandbox: áudio 3D/normal não testado com voz real.
+- **Produção (21/11/2026 ~15:20):** imagem verkz-office-server:0.12.0 = 0.11.0 + /web v0.6.0, rodando na stack
+  verkz-office (stack 4). Build no próprio servidor: contexto de 33 KB (Dockerfile + web.patch + media.ts) enviado
+  pelo navegador; estágio web = FROM verkz-office-web:0.10.0 (fonte = v0.5.1 exceto media.ts), aplica o patch,
+  confere md5 e roda vite build. Conferido: /health ok, bundle index-Bp4_GPfh.js com "Áudio 3D", fontes servidas.
+  Instaladores Windows/Mac/Linux 0.6.0 ainda não gerados: rodar compilador.bat e deploy/gerar-update.ps1.

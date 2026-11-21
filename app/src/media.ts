@@ -34,6 +34,8 @@ export interface MediaPrefs {
   mirror: boolean;
   camQuality: "360" | "720";
   range: keyof typeof RANGES;
+  /** Áudio 3D (voz vem do lado de quem fala e abafa de longe). Desligado: volume só pela distância. */
+  spatial: boolean;
 }
 
 export interface ScreenTile {
@@ -56,20 +58,31 @@ export function explainMediaError(e: any, what: "microfone" | "câmera" | "tela"
   return `Não deu para usar o(a) ${what}: ${msg}`;
 }
 
-/** Contexto de áudio compartilhado: toda voz passa por ele para ganhar posição (acústica). */
+/** Contexto de áudio compartilhado: no modo 3D toda voz passa por ele para ganhar posição. */
 const audioCtx = new AudioContext({ latencyHint: "interactive" });
 
-/** Cadeia acústica de uma faixa remota: abafamento pela distância e lado esquerdo/direito. */
-interface Acoustic {
+/**
+ * Uma voz remota. O elemento <audio> sempre existe (o WebRTC só entrega o som com ele tocando).
+ * - modo 3D: o elemento fica mudo e o som passa por filtro (abafamento) + pan (lado) + ganho próprio;
+ * - modo normal: o próprio elemento toca, com o volume pela distância (o cancelamento de eco do
+ *   sistema funciona melhor assim, bom para quem usa caixa de som em vez de fone).
+ * O volume nunca pula: sobe e desce em rampa, então andar perto do limite não "corta" a voz.
+ */
+interface Voice {
   pid: string;
   track: RemoteAudioTrack;
-  filter: BiquadFilterNode;
-  pan: StereoPannerNode;
+  el: HTMLMediaElement;
+  chain?: { src: MediaStreamAudioSourceNode; filter: BiquadFilterNode; pan: StereoPannerNode; gain: GainNode };
+  /** Volume atual (0..1) e último alvo mandado para o ganho do WebAudio. */
+  vol: number;
+  sent: number;
 }
+
+/** Quanto tempo a "fala" continua depois do último sinal de voz (evita a animação parar seca). */
+const TALK_HANG_MS = 900;
 
 export class Media {
   room = new Room({
-    webAudioMix: { audioContext: audioCtx },
     adaptiveStream: true,
     dynacast: true,
     audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -81,7 +94,7 @@ export class Media {
   camOn = false;
   screenOn = false;
   connected = false;
-  prefs: MediaPrefs = { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio" };
+  prefs: MediaPrefs = { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio", spatial: true };
   private audioHost = document.createElement("div");
   private timer?: number;
   private url = "";
@@ -104,8 +117,16 @@ export class Media {
   onLocalState?: (patch: Record<string, unknown>) => void;
   /** Ganho que estou aplicando a cada pessoa (0..1), útil para a lista. */
   levels = new Map<string, number>();
-  private acoustics = new Map<string, Acoustic>();
+  private voices = new Map<string, Voice>();
   private acTimer?: number;
+  /** Quem eu estou ouvindo agora e quando parei de ouvir cada um (som de aproximação sem repetir). */
+  private hearing = new Set<string>();
+  private lostAt = new Map<string, number>();
+  /** Quando mudou a assinatura de cada faixa (não fica assinando e cancelando ao andar no limite). */
+  private subAt = new Map<string, number>();
+  /** Falando agora (pelo servidor) e o último instante em que cada um falou. */
+  private speakingNow = new Set<string>();
+  private lastSpoke = new Map<string, number>();
 
   constructor(private world: World) {
     this.audioHost.style.display = "none";
@@ -116,9 +137,9 @@ export class Media {
       if (track.kind === Track.Kind.Audio) {
         const el = track.attach();
         el.dataset.pid = p.identity;
+        if (this.prefs.speakerId) (el as any).setSinkId?.(this.prefs.speakerId).catch(() => {});
         this.audioHost.appendChild(el);
-        this.setupAcoustic(track as RemoteAudioTrack, pub.trackSid, p.identity);
-        this.applyVolume(p);
+        this.addVoice(track as RemoteAudioTrack, pub.trackSid, p.identity, el);
       } else if (pub.source === Track.Source.Camera) {
         const av = this.world.others.get(p.identity);
         if (av) {
@@ -140,8 +161,8 @@ export class Media {
     });
 
     r.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, pub: RemoteTrackPublication, p: RemoteParticipant) => {
+      this.removeVoice(pub.trackSid);
       track.detach().forEach((el) => el.remove());
-      this.acoustics.delete(pub.trackSid);
       if (pub.source === Track.Source.Camera) this.camPlaceholder(p);
       if (pub.source === Track.Source.ScreenShare && this.screens.delete(pub.trackSid)) this.onScreensChanged?.();
     });
@@ -164,15 +185,12 @@ export class Media {
     });
 
     r.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
-      const ids = new Set(speakers.map((s) => s.identity));
-      for (const [id, av] of this.world.others) {
-        av.talking = ids.has(id);
-        av.setSpeaking(ids.has(id) && (this.levels.get(id) ?? 0) > 0);
-      }
-      if (this.world.me) {
-        this.world.me.talking = ids.has(r.localParticipant.identity);
-        this.world.me.setSpeaking(this.world.me.talking);
-      }
+      const now = performance.now();
+      // quem parou de falar agora: marca o instante (a fala "esfria" devagar em updateTalking)
+      for (const id of this.speakingNow) this.lastSpoke.set(id, now);
+      this.speakingNow = new Set(speakers.map((s) => s.identity));
+      for (const id of this.speakingNow) this.lastSpoke.set(id, now);
+      this.updateTalking();
     });
 
     r.on(RoomEvent.LocalTrackPublished, (pub: LocalTrackPublication) => {
@@ -262,7 +280,10 @@ export class Media {
     clearInterval(this.timer);
     this.timer = window.setInterval(() => this.updateProximity(), 200);
     clearInterval(this.acTimer);
-    this.acTimer = window.setInterval(() => this.updateAcoustics(), 50);
+    this.acTimer = window.setInterval(() => {
+      this.updateAcoustics();
+      this.updateTalking();
+    }, 50);
   }
 
   private async tryConnect(first: boolean) {
@@ -277,7 +298,7 @@ export class Media {
       this.connected = true;
       this.retries = 0;
       await this.room.startAudio().catch(() => {});
-      if (this.prefs.speakerId) await this.room.switchActiveDevice("audiooutput", this.prefs.speakerId).catch(() => {});
+      if (this.prefs.speakerId) await this.setSpeaker(this.prefs.speakerId);
       if ((first && this.prefs.micOnJoin) || this.micOn) await this.setMic(true);
       if (this.camOn) await this.setCam(true);
       this.onStateChanged?.();
@@ -301,6 +322,7 @@ export class Media {
 
   async disconnect() {
     clearInterval(this.timer);
+    clearInterval(this.acTimer);
     clearTimeout(this.retry);
     this.url = "";
     await this.stopScreen();
@@ -390,10 +412,20 @@ export class Media {
     if (this.room.state !== ConnectionState.Connected) return;
     if (this.micOn) await this.room.switchActiveDevice("audioinput", this.prefs.micId ?? "default").catch(() => {});
     if (this.camOn) await this.room.switchActiveDevice("videoinput", this.prefs.camId ?? "default").catch(() => {});
-    if (this.prefs.speakerId) {
-      await this.room.switchActiveDevice("audiooutput", this.prefs.speakerId).catch(() => {});
-      this.audioHost.querySelectorAll("audio").forEach((a: any) => a.setSinkId?.(this.prefs.speakerId).catch(() => {}));
-    }
+    if (this.prefs.speakerId) await this.setSpeaker(this.prefs.speakerId);
+  }
+
+  /** Saída de som: vale para as vozes no modo normal (elementos) e no 3D (contexto de áudio). */
+  private async setSpeaker(id: string) {
+    await this.room.switchActiveDevice("audiooutput", id).catch(() => {});
+    this.audioHost.querySelectorAll("audio").forEach((a: any) => a.setSinkId?.(id).catch(() => {}));
+    await (audioCtx as any).setSinkId?.(id).catch(() => {});
+  }
+
+  /** Liga/desliga o áudio 3D na hora, sem reconectar. */
+  setSpatial(on: boolean) {
+    this.prefs.spatial = on;
+    for (const v of this.voices.values()) this.wireVoice(v);
   }
 
   // ------------------------------------------------------------------ tela
@@ -466,7 +498,10 @@ export class Media {
   }
 
   // ------------------------------------------------------------------ proximidade
-  /** Volume que eu devo ouvir de outra pessoa, considerando salas privadas. */
+  /**
+   * Volume que eu devo ouvir de outra pessoa (0..1), considerando andar e salas privadas.
+   * A curva é contínua até o limite do alcance (sem degrau), para a voz sumir aos poucos.
+   */
   gainFor(id: string): { gain: number; dist: number } {
     const me = this.world.me;
     const av = this.world.others.get(id);
@@ -474,8 +509,8 @@ export class Media {
     // outro andar: não ouve
     if (!this.world.sameLevel(av)) return { gain: 0, dist: Infinity };
     const { full, silent } = RANGES[this.prefs.range] ?? RANGES.medio;
-    // usa a posição-alvo (vinda da rede), que vale mesmo com a janela em segundo plano
-    const dist = Math.hypot(av.target.x - me.root.position.x, av.target.z - me.root.position.z);
+    const rel = this.relative(id)!;
+    const dist = rel.dist;
     const myZone = this.world.currentZone;
     const theirZone = av.info.zone ? this.world.layout.zones.find((z) => z.id === av.info.zone) ?? null : null;
     const myPrivate = myZone?.private ? myZone.id : null;
@@ -484,39 +519,12 @@ export class Media {
       // Dentro de sala privada: todo mundo da sala se ouve com volume cheio, ninguém de fora ouve.
       return { gain: myPrivate && myPrivate === theirPrivate ? 1 : 0, dist };
     }
-    if (dist <= full) return { gain: 1, dist };
-    if (dist >= silent) return { gain: 0, dist };
-    const t = 1 - (dist - full) / (silent - full);
-    return { gain: t * t, dist };
-  }
-
-  private applyVolume(p: RemoteParticipant) {
-    // com a acústica ativa o volume é ajustado continuamente em updateAcoustics
-    for (const pub of p.audioTrackPublications.values()) {
-      if (pub.trackSid && this.acoustics.has(pub.trackSid)) continue;
-      (pub.track as RemoteAudioTrack | undefined)?.setVolume(this.levels.get(p.identity) ?? 0);
-    }
-  }
-
-  // ------------------------------------------------------------------ acústica
-  private setupAcoustic(track: RemoteAudioTrack, sid: string, pid: string) {
-    try {
-      if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
-      const filter = audioCtx.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.value = 18000;
-      filter.Q.value = 0.5;
-      const pan = audioCtx.createStereoPanner();
-      track.setWebAudioPlugins([filter, pan]);
-      this.acoustics.set(sid, { pid, track, filter, pan });
-    } catch (e) {
-      console.warn("acústica indisponível:", e);
-    }
+    return { gain: falloff(dist, full, silent), dist };
   }
 
   /**
-   * Posição de quem fala em relação a mim, usando a posição suavizada do boneco
-   * (quando a janela está visível) para a voz acompanhar o movimento sem degraus.
+   * Posição de quem fala em relação a mim. Usa a posição suavizada do boneco (a mesma que aparece
+   * na tela), para a voz acompanhar o movimento sem saltos; com a janela escondida, a da rede.
    */
   private relative(id: string) {
     const me = this.world.me;
@@ -525,43 +533,126 @@ export class Media {
     const src = document.hidden ? av.target : av.root.position;
     const dx = src.x - me.root.position.x;
     const dz = src.z - me.root.position.z;
-    return { dx, dz, dist: Math.hypot(dx, dz) };
+    return { dx, dz, dist: Math.sqrt(dx * dx + dz * dz) };
   }
 
-  /** Volume, abafamento e lado de cada voz, atualizados 20x por segundo. */
+  // ------------------------------------------------------------------ vozes
+  private addVoice(track: RemoteAudioTrack, sid: string, pid: string, el: HTMLMediaElement) {
+    this.removeVoice(sid);
+    const start = this.levels.get(pid) ?? 0;
+    const v: Voice = { pid, track, el, vol: start, sent: -1 };
+    this.voices.set(sid, v);
+    this.wireVoice(v);
+  }
+
+  private removeVoice(sid: string) {
+    const v = this.voices.get(sid);
+    if (!v) return;
+    this.unwire(v);
+    this.voices.delete(sid);
+  }
+
+  private unwire(v: Voice) {
+    if (!v.chain) return;
+    const { src, filter, pan, gain } = v.chain;
+    for (const n of [src, filter, pan, gain]) {
+      try {
+        n.disconnect();
+      } catch {
+        /* já desligado */
+      }
+    }
+    v.chain = undefined;
+  }
+
+  /** Monta o caminho do som da voz conforme o modo (3D ou normal). */
+  private wireVoice(v: Voice) {
+    this.unwire(v);
+    v.sent = -1;
+    if (this.prefs.spatial) {
+      try {
+        if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+        const src = audioCtx.createMediaStreamSource(new MediaStream([v.track.mediaStreamTrack]));
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.value = 18000;
+        filter.Q.value = 0.5;
+        const pan = audioCtx.createStereoPanner();
+        const gain = audioCtx.createGain();
+        gain.gain.value = v.vol;
+        src.connect(filter).connect(pan).connect(gain).connect(audioCtx.destination);
+        v.chain = { src, filter, pan, gain };
+        v.el.muted = true;
+        v.el.volume = 0;
+        return;
+      } catch (e) {
+        console.warn("áudio 3D indisponível, usando o normal:", e);
+      }
+    }
+    v.el.muted = false;
+    v.el.volume = clamp01(v.vol);
+  }
+
+  /** Volume, abafamento e lado de cada voz, 20x por segundo, sempre em rampa. */
   private updateAcoustics() {
-    if (!this.acoustics.size) return;
-    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+    if (!this.voices.size) return;
+    if (this.prefs.spatial && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
     const { full, silent } = RANGES[this.prefs.range] ?? RANGES.medio;
     const now = audioCtx.currentTime;
-    for (const ac of this.acoustics.values()) {
-      const rel = this.relative(ac.pid);
-      const allowed = this.levels.get(ac.pid) ?? 0; // regra de sala/alcance (0 = não pode ouvir)
-      let gain = 0;
-      let cutoff = 18000;
-      let pan = 0;
-      if (rel && allowed > 0) {
-        const privateRoom = allowed === 1 && rel.dist > full && this.inSamePrivate(ac.pid);
-        if (privateRoom) {
-          gain = 1;
-        } else {
-          // queda natural: forte perto, cai aos poucos e some no limite do alcance
-          const d = Math.max(rel.dist, 0.8);
-          const inv = Math.min(1, Math.pow(full / d, 1.25));
-          const edge = Math.min(1, Math.max(0, (silent - rel.dist) / (silent * 0.35)));
-          gain = inv * edge * edge * (3 - 2 * edge);
+    for (const v of this.voices.values()) {
+      const rel = this.relative(v.pid);
+      const want = this.levels.get(v.pid) ?? 0;
+      // sobe rápido (não perde o começo da frase) e desce devagar (some sem corte)
+      v.vol += (want - v.vol) * (want > v.vol ? 0.45 : 0.18);
+      if (Math.abs(want - v.vol) < 0.002) v.vol = want;
+      if (v.chain) {
+        let cutoff = 18000;
+        let pan = 0;
+        if (rel && want > 0 && !this.inSamePrivate(v.pid)) {
           // de longe a voz perde os agudos, como num ambiente de verdade
-          const far = Math.min(1, Math.max(0, (rel.dist - full) / (silent - full)));
-          cutoff = 18000 * Math.pow(1 - far, 2) + 1800;
+          const far = clamp01((rel.dist - full) / (silent - full));
+          cutoff = 18000 * (1 - far) * (1 - far) + 1800;
+          // lado na tela (câmera isométrica): direita da tela = (+x, -z)
+          const side = (rel.dx - rel.dz) / Math.SQRT2;
+          pan = Math.max(-0.7, Math.min(0.7, side / (rel.dist + 1.5)));
         }
-        // lado na tela (câmera isométrica): direita da tela = (+x, -z)
-        const side = (rel.dx - rel.dz) / Math.SQRT2;
-        pan = Math.max(-0.75, Math.min(0.75, side / (rel.dist + 1.2)));
+        if (Math.abs(v.vol - v.sent) > 0.002) {
+          v.chain.gain.gain.setTargetAtTime(v.vol, now, 0.06);
+          v.sent = v.vol;
+        }
+        v.chain.filter.frequency.setTargetAtTime(cutoff, now, 0.12);
+        v.chain.pan.pan.setTargetAtTime(pan, now, 0.12);
+      } else {
+        const vol = clamp01(v.vol);
+        if (Math.abs(v.el.volume - vol) > 0.004) v.el.volume = vol;
       }
-      ac.track.setVolume(gain);
-      ac.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
-      ac.pan.pan.setTargetAtTime(pan, now, 0.08);
     }
+  }
+
+  /**
+   * Quem está falando: liga na hora e desliga devagar (TALK_HANG_MS depois do último sinal),
+   * para os gestos e o brilho em volta do nome terminarem suaves, sem piscar entre as palavras.
+   */
+  private updateTalking() {
+    const now = performance.now();
+    const talking = (id: string) => this.speakingNow.has(id) || now - (this.lastSpoke.get(id) ?? -1e9) < TALK_HANG_MS;
+    for (const [id, av] of this.world.others) {
+      const t = talking(id);
+      av.talking = t;
+      av.setSpeaking(t && (this.levels.get(id) ?? 0) > 0.01);
+    }
+    const me = this.world.me;
+    if (me) {
+      const t = this.micOn && talking(this.room.localParticipant.identity);
+      me.talking = t;
+      me.setSpeaking(t);
+    }
+  }
+
+  /** Está falando agora (com a folga do fim de fala). Usado nos blocos da tela compartilhada. */
+  isTalking(id: string) {
+    const now = performance.now();
+    return this.speakingNow.has(id) || now - (this.lastSpoke.get(id) ?? -1e9) < TALK_HANG_MS;
   }
 
   private inSamePrivate(id: string) {
@@ -572,29 +663,50 @@ export class Media {
 
   private updateProximity() {
     const { silent } = RANGES[this.prefs.range] ?? RANGES.medio;
+    const now = performance.now();
     for (const p of this.room.remoteParticipants.values()) {
-      const { gain, dist } = this.gainFor(p.identity);
-      const before = this.levels.get(p.identity) ?? 0;
-      this.levels.set(p.identity, gain);
-      if (before === 0 && gain > 0) this.onApproach?.(p.identity);
-      this.applyVolume(p);
-      const audible = gain > 0;
-      const roomOk = this.sameRoomRule(p.identity);
+      const id = p.identity;
+      const { gain, dist } = this.gainFor(id);
+      this.levels.set(id, gain);
+      // som de aproximação: só quando alguém fica audível depois de um tempo longe (não repete no limite)
+      if (gain > 0.04 && !this.hearing.has(id)) {
+        this.hearing.add(id);
+        if (now - (this.lostAt.get(id) ?? -1e9) > 8000) this.onApproach?.(id);
+      } else if (gain === 0 && this.hearing.has(id)) {
+        this.hearing.delete(id);
+        this.lostAt.set(id, now);
+      }
+      const roomOk = this.sameRoomRule(id);
       for (const pub of p.trackPublications.values()) {
         let want: boolean;
         if (pub.kind === Track.Kind.Audio) {
-          // pré-assina o áudio um pouco antes de ficar audível (sem corte ao chegar perto)
-          want = audible || (roomOk && dist < (pub.isSubscribed ? silent + 3 : silent + 1));
+          // assina antes de ficar audível e só larga bem depois (histerese larga): andar perto do
+          // limite não fica ligando e desligando a voz
+          want = gain > 0 || (roomOk && dist < (pub.isSubscribed ? silent + 6 : silent + 2));
         } else if (pub.source === Track.Source.Camera) {
           // a câmera aparece em bloco para quem está por perto (um pouco além do alcance da voz)
-          want = roomOk && dist < silent + 3;
+          want = roomOk && dist < (pub.isSubscribed ? silent + 4 : silent + 2.5);
         } else {
-          want = audible;
+          want = gain > 0 || (pub.isSubscribed && roomOk && dist < silent + 3);
         }
-        if (pub.isSubscribed !== want) pub.setSubscribed(want);
-        if (pub.source === Track.Source.Camera && !want && !pub.isMuted) this.camPlaceholder(p);
+        if (pub.isSubscribed !== want) {
+          // depois de mudar, segura uns segundos antes de desfazer (só vale para soltar)
+          const key = pub.trackSid;
+          const last = this.subAt.get(key) ?? -1e9;
+          if (want || now - last > 6000) {
+            pub.setSubscribed(want);
+            this.subAt.set(key, now);
+          }
+        }
+        if (pub.source === Track.Source.Camera && !pub.isSubscribed && !pub.isMuted) this.camPlaceholder(p);
       }
     }
+  }
+
+  /** A regra de salas permite ouvir esta pessoa (mesmo andar e sem sala privada no meio)? */
+  canHear(id: string) {
+    const av = this.world.others.get(id);
+    return !!av && this.world.sameLevel(av) && this.sameRoomRule(id);
   }
 
   /** Pré-assina só quando a regra de sala permitiria ouvir. */
@@ -605,4 +717,19 @@ export class Media {
     if (my?.private || theirs?.private) return my?.id === theirs?.id;
     return true;
   }
+}
+
+const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+/**
+ * Queda natural da voz: cheia até `full`, cai como num ambiente real e chega a zero
+ * exatamente em `silent`, com a ponta arredondada (sem degrau no limite).
+ */
+export function falloff(dist: number, full: number, silent: number) {
+  if (dist <= full) return 1;
+  if (dist >= silent) return 0;
+  const t = (dist - full) / (silent - full); // 0..1
+  const inv = full / (full + (dist - full) * 1.1); // perde volume com a distância
+  const edge = 1 - t * t * (3 - 2 * t); // suaviza a chegada no zero
+  return Math.min(1, inv * 0.35 + 0.65) * edge;
 }

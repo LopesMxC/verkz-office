@@ -19,6 +19,9 @@ export interface GameOpts {
   onClose: () => void;
   /** sons curtos (batida, caçapa, ponto) */
   sfx?: (k: "hit" | "pocket" | "point" | "win") => void;
+  /** Sinuca: pose do jogador para a cena 3D (taco, mira) e bolas para a mesa 3D. */
+  onPose?: (p: PoolPose) => void;
+  onTable?: (t: PoolTable) => void;
 }
 
 const W = 640;
@@ -40,7 +43,7 @@ export class GameSession {
     // jogador 0 = anfitrião (ou eu, sozinho); jogador 1 = convidado (ou computador)
     this.names = o.role === "guest" ? [o.other, o.me] : [o.me, o.role === "solo" ? (o.kind === "pong" ? "Computador" : "Treino") : o.other];
     this.el = document.createElement("div");
-    this.el.className = "modal-bg game-bg";
+    this.el.className = "modal-bg game-bg" + (o.kind === "pool" ? " pool" : "");
     this.el.innerHTML = `<div class="panel modal game-modal">
       <div class="panel-head"><div class="t-m">${o.kind === "pong" ? "Pingue-pongue" : "Sinuca"}</div><button class="x-btn" data-x aria-label="Sair">✕</button></div>
       <div class="game-score"></div>
@@ -53,10 +56,20 @@ export class GameSession {
     this.el.querySelector("[data-x]")!.addEventListener("click", () => this.quit());
     const mine = o.role === "guest" ? 1 : 0;
     this.game = o.kind === "pong" ? new Pong(o.role, mine) : new Pool(o.role, mine);
+    if (this.game instanceof Pool) {
+      this.game.onTable = (t) => this.o.onTable?.(t);
+      if (o.role === "host") this.o.send(this.game.hello());
+      this.o.onTable?.({ balls: this.game.sim.pack() });
+    }
+    // canvas nítido em telas de alta densidade (a lógica continua em W x H)
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.cv.width = W * dpr;
+    this.cv.height = H * dpr;
+    this.g.setTransform(dpr, 0, 0, dpr, 0, 0);
     (this.el.querySelector(".game-help") as HTMLElement).textContent =
       o.kind === "pong"
         ? "Mexa o mouse (ou ↑ ↓) para mover a sua raquete. Quem fizer 7 pontos primeiro ganha."
-        : "Clique e arraste a partir da bola branca, puxando para trás, e solte para tacar. Encaçapou, joga de novo.";
+        : "Mire com o mouse. Clique, puxe para trás para dar força e solte. ← → ajustam a mira (Shift = fino), espaço também taca. Bola na mão: arraste a branca.";
     this.bindInput();
     document.body.appendChild(this.el);
     this.loop();
@@ -73,11 +86,17 @@ export class GameSession {
       this.game.pointer(pos(e), "down");
     });
     this.cv.addEventListener("pointerup", (e) => {
-      const shot = this.game.pointer(pos(e), "up");
-      if (shot && this.o.role === "guest") this.o.send({ t: "shot", ...shot });
+      this.game.pointer(pos(e), "up");
     });
     this.keys = (e: KeyboardEvent) => {
       if (e.key === "Escape") this.quit();
+      if (this.game instanceof Pool) {
+        if (this.game.keyEx(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         this.game.key(e.key === "ArrowUp" ? -1 : 1, e.type === "keydown");
         e.preventDefault();
@@ -104,21 +123,32 @@ export class GameSession {
 
   private loop = () => {
     const now = performance.now();
-    const dt = Math.min(0.05, (now - this.last) / 1000);
+    // a sinuca segue o relógio de verdade (mesmo com poucos quadros por segundo)
+    const dt = Math.min(this.o.kind === "pool" ? 0.25 : 0.05, (now - this.last) / 1000);
     this.last = now;
     if (!this.over) {
       const ev = this.game.step(dt);
       if (ev) this.o.sfx?.(ev);
-      // anfitrião manda o estado; convidado manda a raquete
+      if (this.game instanceof Pool) {
+        // sinuca: só manda o que acontece (mira, tacada, estado final)
+        for (const m of this.game.drain()) if (this.o.role !== "solo") this.o.send(m);
+        this.o.onPose?.(this.game.pose());
+      }
+      // pingue-pongue: anfitrião manda o estado; convidado manda a raquete
       this.sendAcc += dt;
-      if (this.sendAcc > 0.05 && this.o.role !== "solo") {
+      if (this.sendAcc > 0.05 && this.o.role !== "solo" && !(this.game instanceof Pool)) {
         this.sendAcc = 0;
         const m = this.o.role === "host" ? this.game.snapshot() : this.game.input();
         if (m) this.o.send(m);
       }
       const win = this.game.winner();
       if (win !== null && this.o.role !== "guest") {
-        const text = `${this.names[win]} venceu! ${this.game.scoreText()}`;
+        const text =
+          this.game instanceof Pool
+            ? this.o.role === "solo"
+              ? this.game.scoreText()
+              : `${this.names[win]} venceu: ${this.game.scoreText()}`
+            : `${this.names[win]} venceu! ${this.game.scoreText()}`;
         if (this.o.role === "host") {
           this.o.send(this.game.snapshot());
           this.o.send({ t: "end", text });
@@ -306,284 +336,900 @@ class Pong implements Game {
 }
 
 // ===================================================================== sinuca
-interface Ball {
+/**
+ * Sinuca (bola 8, com lisas e listradas).
+ *
+ * A física é determinística (passo fixo de 1/240 s, só + − × ÷ e raiz): os dois jogadores e quem
+ * está assistindo rodam a MESMA simulação a partir do mesmo estado e da mesma velocidade inicial,
+ * então as bolas andam lisas para todo mundo, sem depender de 20 pacotes por segundo.
+ * O anfitrião é o juiz: depois que tudo para, ele aplica as regras e manda o estado oficial.
+ */
+export const POOL_W = W;
+export const POOL_H = H;
+/** Borda interna das tabelas (canvas). */
+export const PM = 30;
+export const PR = 8.5;
+const CG = 20; // vão das caçapas de canto, medido ao longo da tabela
+const SG = 14; // meio vão da caçapa do meio
+const POCKETS: [number, number, number][] = [
+  [PM - 3, PM - 3, 15],
+  [W / 2, PM - 7, 13],
+  [W - PM + 3, PM - 3, 15],
+  [PM - 3, H - PM + 3, 15],
+  [W / 2, H - PM + 7, 13],
+  [W - PM + 3, H - PM + 3, 15],
+];
+/** Pontas das tabelas junto às caçapas (a bola bate nelas como numa quina). */
+const JAWS: [number, number][] = [
+  [PM, PM + CG], [PM + CG, PM], [W - PM - CG, PM], [W - PM, PM + CG],
+  [PM, H - PM - CG], [PM + CG, H - PM], [W - PM - CG, H - PM], [W - PM, H - PM - CG],
+  [W / 2 - SG, PM], [W / 2 + SG, PM], [W / 2 - SG, H - PM], [W / 2 + SG, H - PM],
+];
+const STEP = 1 / 240;
+const ROLL = 62; // atrito de rolamento (px/s²)
+const DAMP = 0.85; // perda proporcional à velocidade (1/s)
+const RAIL_E = 0.74;
+const BALL_E = 0.95;
+export const MAX_SPEED = 1150;
+const HEAD_X = W * 0.25; // linha de saída (cozinha)
+
+export interface PBall {
   x: number;
   y: number;
   vx: number;
   vy: number;
-  n: number; // 0 = branca
+  n: number; // 0 = branca, 8 = bola 8, 1–7 lisas, 9–15 listradas
   in: boolean;
 }
-const R = 9;
-const M = 26; // borda (tabelas)
-const POCKETS = [
-  [M - 4, M - 4],
-  [W / 2, M - 8],
-  [W - M + 4, M - 4],
-  [M - 4, H - M + 4],
-  [W / 2, H - M + 8],
-  [W - M + 4, H - M + 4],
-];
-const COLORS = ["#f7f5ef", "#f2c14e", "#3b6fc0", "#c0392b", "#8a6cc9", "#e67e22", "#27ae60", "#7b2d26", "#111111", "#f2c14e"];
 
-class Pool implements Game {
-  private balls: Ball[] = [];
-  private turn = 0;
-  private score = [0, 0];
-  private moving = false;
-  private shotBy = 0;
-  private pocketedThisShot = 0;
-  private cueIn = false;
-  private aim: { x: number; y: number } | null = null;
-  private dragging = false;
-  private msg = "";
+export interface ShotResult {
+  firstHit: number | null;
+  pocketed: number[];
+  cueIn: boolean;
+}
 
-  constructor(private role: Role, private mine: number) {
+/** Física pura da mesa (sem desenho). Usada no jogo e nas bolas 3D da mesa. */
+export class PoolSim {
+  balls: PBall[] = [];
+  moving = false;
+  private acc = 0;
+  res: ShotResult = { firstHit: null, pocketed: [], cueIn: false };
+
+  constructor() {
     this.rack();
   }
 
-  private rack() {
-    this.balls = [{ x: W * 0.25, y: H / 2, vx: 0, vy: 0, n: 0, in: false }];
-    let n = 1;
-    for (let col = 0; col < 4; col++)
-      for (let r = 0; r <= col; r++) {
-        if (n > 9) break;
-        this.balls.push({ x: W * 0.68 + col * R * 1.8, y: H / 2 + (r - col / 2) * R * 2.05, vx: 0, vy: 0, n: n++, in: false });
+  rack() {
+    const order = [[1], [9, 2], [10, 8, 3], [11, 7, 14, 4], [5, 13, 15, 6, 12]];
+    this.balls = [{ x: HEAD_X, y: H / 2, vx: 0, vy: 0, n: 0, in: false }];
+    const dx = PR * 2 * 0.8661 + 0.15;
+    const dy = PR * 2 + 0.15;
+    order.forEach((row, c) =>
+      row.forEach((n, r) => this.balls.push({ x: W * 0.7 + c * dx, y: H / 2 + (r - (row.length - 1) / 2) * dy, vx: 0, vy: 0, n, in: false })),
+    );
+    this.balls.sort((a, b) => a.n - b.n);
+    this.moving = false;
+  }
+
+  /** Estado compacto: [x, y] por bola (null = encaçapada), na ordem do número. */
+  pack(): ([number, number] | null)[] {
+    return this.balls.map((b) => (b.in ? null : [b.x, b.y]));
+  }
+  load(p: ([number, number] | null)[]) {
+    p.forEach((v, i) => {
+      const b = this.balls[i];
+      if (!b) return;
+      b.vx = b.vy = 0;
+      if (!v) b.in = true;
+      else (b.in = false), (b.x = v[0]), (b.y = v[1]);
+    });
+    this.moving = false;
+    this.acc = 0;
+  }
+
+  /** Taca a branca (velocidade já em px/s, arredondada por quem tacou). */
+  shoot(vx: number, vy: number) {
+    const cue = this.balls[0];
+    cue.vx = vx;
+    cue.vy = vy;
+    this.moving = true;
+    this.acc = 0;
+    this.res = { firstHit: null, pocketed: [], cueIn: false };
+  }
+
+  /** Avança o tempo; devolve sons do quadro. */
+  step(dt: number): { hit: number; rail: number; pocket: number } {
+    const ev = { hit: 0, rail: 0, pocket: 0 };
+    if (!this.moving) return ev;
+    this.acc += Math.min(dt, 0.25);
+    let n = 0;
+    while (this.acc >= STEP && this.moving && n < 64) {
+      this.acc -= STEP;
+      n++;
+      this.sub(ev);
+    }
+    return ev;
+  }
+
+  /** Roda a tacada inteira de uma vez (para quem acabou de chegar ou para conferir). */
+  finish() {
+    let n = 0;
+    while (this.moving && n++ < 240 * 40) this.sub({ hit: 0, rail: 0, pocket: 0 });
+  }
+
+  private sub(ev: { hit: number; rail: number; pocket: number }) {
+    const h = STEP;
+    const bs = this.balls;
+    for (const b of bs) {
+      if (b.in || (b.vx === 0 && b.vy === 0)) continue;
+      b.x += b.vx * h;
+      b.y += b.vy * h;
+      const sp = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
+      const ns = sp - (ROLL + DAMP * sp) * h;
+      if (ns < 3) b.vx = b.vy = 0;
+      else {
+        b.vx *= ns / sp;
+        b.vy *= ns / sp;
       }
+      // caçapas
+      for (const [px, py, pr] of POCKETS) {
+        const dx = b.x - px;
+        const dy = b.y - py;
+        if (dx * dx + dy * dy < pr * pr) {
+          this.pocket(b);
+          ev.pocket = Math.max(ev.pocket, 1);
+          break;
+        }
+      }
+      if (b.in) continue;
+      // tabelas (com vão nas caçapas)
+      const midGap = b.x > W / 2 - SG && b.x < W / 2 + SG;
+      if (b.x - PR < PM && b.y > PM + CG && b.y < H - PM - CG) {
+        b.x = PM + PR;
+        if (b.vx < 0) (ev.rail = Math.max(ev.rail, -b.vx / MAX_SPEED)), (b.vx = -b.vx * RAIL_E), (b.vy *= 0.97);
+      } else if (b.x + PR > W - PM && b.y > PM + CG && b.y < H - PM - CG) {
+        b.x = W - PM - PR;
+        if (b.vx > 0) (ev.rail = Math.max(ev.rail, b.vx / MAX_SPEED)), (b.vx = -b.vx * RAIL_E), (b.vy *= 0.97);
+      }
+      if (b.y - PR < PM && b.x > PM + CG && b.x < W - PM - CG && !midGap) {
+        b.y = PM + PR;
+        if (b.vy < 0) (ev.rail = Math.max(ev.rail, -b.vy / MAX_SPEED)), (b.vy = -b.vy * RAIL_E), (b.vx *= 0.97);
+      } else if (b.y + PR > H - PM && b.x > PM + CG && b.x < W - PM - CG && !midGap) {
+        b.y = H - PM - PR;
+        if (b.vy > 0) (ev.rail = Math.max(ev.rail, b.vy / MAX_SPEED)), (b.vy = -b.vy * RAIL_E), (b.vx *= 0.97);
+      }
+      // quinas das caçapas
+      for (const [jx, jy] of JAWS) {
+        const dx = b.x - jx;
+        const dy = b.y - jy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < PR * PR && d2 > 1e-9) {
+          const d = Math.sqrt(d2);
+          const nx = dx / d;
+          const ny = dy / d;
+          b.x = jx + nx * PR;
+          b.y = jy + ny * PR;
+          const vn = b.vx * nx + b.vy * ny;
+          if (vn < 0) {
+            b.vx -= (1 + 0.6) * vn * nx;
+            b.vy -= (1 + 0.6) * vn * ny;
+          }
+        }
+      }
+      // escapou pela boca da caçapa: caiu
+      if (b.x < PM - 16 || b.x > W - PM + 16 || b.y < PM - 16 || b.y > H - PM + 16) {
+        this.pocket(b);
+        ev.pocket = 1;
+      }
+    }
+    // choques entre bolas (mesma massa)
+    for (let i = 0; i < bs.length; i++) {
+      const a = bs[i];
+      if (a.in) continue;
+      for (let j = i + 1; j < bs.length; j++) {
+        const b = bs[j];
+        if (b.in) continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= 4 * PR * PR || d2 < 1e-9) continue;
+        const d = Math.sqrt(d2);
+        const nx = dx / d;
+        const ny = dy / d;
+        const ov = (2 * PR - d) / 2;
+        a.x -= nx * ov;
+        a.y -= ny * ov;
+        b.x += nx * ov;
+        b.y += ny * ov;
+        const rel = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
+        if (rel > 0) {
+          const k = ((1 + BALL_E) / 2) * rel;
+          a.vx -= k * nx;
+          a.vy -= k * ny;
+          b.vx += k * nx;
+          b.vy += k * ny;
+          ev.hit = Math.max(ev.hit, rel / MAX_SPEED);
+          if (this.res.firstHit === null) {
+            if (a.n === 0) this.res.firstHit = b.n;
+            else if (b.n === 0) this.res.firstHit = a.n;
+          }
+        }
+      }
+    }
+    if (bs.every((b) => b.in || (b.vx === 0 && b.vy === 0))) this.moving = false;
+  }
+
+  private pocket(b: PBall) {
+    b.in = true;
+    b.vx = b.vy = 0;
+    if (b.n === 0) this.res.cueIn = true;
+    else this.res.pocketed.push(b.n);
+  }
+
+  /** Lugar livre para a branca (não encosta em nenhuma bola). */
+  free(x: number, y: number) {
+    if (x < PM + PR || x > W - PM - PR || y < PM + PR || y > H - PM - PR) return false;
+    return this.balls.every((b) => b.n === 0 || b.in || (b.x - x) * (b.x - x) + (b.y - y) * (b.y - y) > 4 * PR * PR + 1);
+  }
+
+  /** Recoloca uma bola o mais perto possível de (x, y). */
+  spot(n: number, x: number, y: number) {
+    const b = this.balls[n];
+    for (let r = 0; r < 200; r += 2) {
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2;
+        const tx = x + (r ? Math.cos(a) * r : 0);
+        const ty = y + (r ? Math.sin(a) * r : 0);
+        if (this.freeFor(n, tx, ty)) {
+          Object.assign(b, { x: tx, y: ty, vx: 0, vy: 0, in: false });
+          return;
+        }
+      }
+    }
+  }
+  private freeFor(n: number, x: number, y: number) {
+    if (x < PM + PR || x > W - PM - PR || y < PM + PR || y > H - PM - PR) return false;
+    return this.balls.every((b) => b.n === n || b.in || (b.x - x) * (b.x - x) + (b.y - y) * (b.y - y) > 4 * PR * PR + 1);
+  }
+}
+
+const BALL_COLORS = ["#f6f3ea", "#f2c230", "#2f62c4", "#d23a2e", "#7a4fc0", "#ef7d22", "#1f9a52", "#8b2a22", "#121212"];
+const ballColor = (n: number) => BALL_COLORS[n > 8 ? n - 8 : n];
+const isSolid = (n: number) => n >= 1 && n <= 7;
+const isStripe = (n: number) => n >= 9 && n <= 15;
+type Group = "lisas" | "listradas" | null;
+const inGroup = (n: number, g: Group) => (g === "lisas" ? isSolid(n) : g === "listradas" ? isStripe(n) : false);
+
+/** O que o jogo conta para a cena 3D (posição do jogador e o taco). */
+export interface PoolPose {
+  /** É a minha vez e estou mirando. */
+  myTurn: boolean;
+  /** Ângulo da tacada no canvas (rad) e força (0..1). */
+  aim: number;
+  pow: number;
+  /** Momento da última tacada (Date.now) para a animação do taco. */
+  shotAt: number;
+  /** Onde está a branca (canvas). */
+  cue: [number, number];
+}
+
+/** O que os outros precisam para ver as bolas na mesa 3D. */
+export interface PoolTable {
+  balls: ([number, number] | null)[];
+  shot?: { id: number; b: ([number, number] | null)[]; vx: number; vy: number };
+}
+
+class Pool implements Game {
+  sim = new PoolSim();
+  private turn = 0;
+  private groups: [Group, Group] = [null, null];
+  /** 0 = não, 1 = só na cozinha (saída), 2 = em qualquer lugar. */
+  private inHand = 1;
+  private isBreak = true;
+  private msg = "Saída: posicione a branca na faixa da esquerda se quiser e taque.";
+  private win: number | null = null;
+  private winText = "";
+  private shots = 0;
+  private shotId = 0;
+  private waiting = false; // convidado esperando o anfitrião confirmar a tacada
+  // mira
+  private aimA = 0;
+  private pow = 0;
+  private charging = false;
+  private chargeFrom: { x: number; y: number } | null = null;
+  private placing = false;
+  private hover: { x: number; y: number } | null = null;
+  private lastShotAt = 0;
+  /** mira do outro jogador (para ver o taco dele) */
+  private otherAim: { a: number; p: number; at: number } | null = null;
+  private aimSentAt = 0;
+  private aimSent = "";
+  private pend: any[] = [];
+  /** Avisos para a sessão (pose 3D, bolas da mesa). */
+  onTable?: (t: PoolTable) => void;
+  private evSfx: "hit" | "pocket" | null = null;
+
+  constructor(private role: Role, private mine: number) {
+    this.aimA = 0;
   }
 
   private myTurn() {
     return this.role === "solo" || this.turn === this.mine;
   }
-
-  private shoot(a: number, p: number) {
-    const cue = this.balls[0];
-    const sp = Math.max(0, Math.min(1, p)) * 980;
-    cue.vx = Math.cos(a) * sp;
-    cue.vy = Math.sin(a) * sp;
-    this.moving = true;
-    this.shotBy = this.turn;
-    this.pocketedThisShot = 0;
-    this.cueIn = false;
+  private cue() {
+    return this.sim.balls[0];
   }
 
+  pose(): PoolPose {
+    const c = this.cue();
+    return { myTurn: this.myTurn() && !this.sim.moving && this.win === null, aim: this.aimA, pow: this.pow, shotAt: this.lastShotAt, cue: [c.x, c.y] };
+  }
+
+  /** Mensagens que a sessão deve mandar (o jogo junta aqui e a sessão envia). */
+  drain() {
+    const p = this.pend;
+    this.pend = [];
+    return p;
+  }
+
+  // ---------------------------------------------------------------- tacada
+  private fire() {
+    const sp = Math.max(0.04, Math.min(1, this.pow));
+    const v = sp * sp * 0.35 + sp * 0.65; // mais controle nas tacadas fracas
+    const vx = Math.round(Math.cos(this.aimA) * v * MAX_SPEED * 1000) / 1000;
+    const vy = Math.round(Math.sin(this.aimA) * v * MAX_SPEED * 1000) / 1000;
+    const c = this.cue();
+    const cue: [number, number] = [c.x, c.y];
+    this.pow = 0;
+    this.charging = false;
+    if (this.role === "guest") {
+      this.waiting = true;
+      this.pend.push({ t: "shot", vx, vy, cue });
+      return;
+    }
+    this.start(vx, vy, cue);
+  }
+
+  /** Começa a tacada (anfitrião/sozinho na hora; convidado quando chega o "go"). */
+  private start(vx: number, vy: number, cue: [number, number], state?: ([number, number] | null)[]) {
+    if (state) this.sim.load(state);
+    const c = this.cue();
+    c.in = false;
+    c.x = cue[0];
+    c.y = cue[1];
+    const before = this.sim.pack();
+    this.shotId++;
+    if (this.role === "host") this.pend.push({ t: "go", vx, vy, cue, b: before, id: this.shotId });
+    this.sim.shoot(vx, vy);
+    this.lastShotAt = Date.now();
+    this.inHand = 0;
+    this.placing = false;
+    this.msg = "";
+    this.waiting = false;
+    if (this.role !== "guest") this.onTable?.({ balls: before, shot: { id: this.shotId, b: before, vx, vy } });
+  }
+
+  // ---------------------------------------------------------------- regras (anfitrião e treino)
+  private resolve() {
+    const r = this.sim.res;
+    const me = this.turn;
+    const other = 1 - me;
+    const solo = this.role === "solo";
+    const brk = this.isBreak;
+    this.isBreak = false;
+    this.shots++;
+    const g = this.groups[me];
+    const remainingMine = (gg: Group) => this.sim.balls.filter((b) => !b.in && inGroup(b.n, gg)).length;
+    const eight = r.pocketed.includes(8);
+
+    if (solo) {
+      if (r.cueIn) {
+        this.inHand = 2;
+        this.sim.spot(0, HEAD_X, H / 2);
+        this.msg = "Branca na caçapa: coloque onde quiser.";
+      } else this.msg = r.pocketed.length ? `Encaçapou ${r.pocketed.length > 1 ? r.pocketed.length + " bolas" : "a " + r.pocketed[0]}!` : "";
+      if (eight && this.sim.balls.some((b) => b.n !== 0 && b.n !== 8 && !b.in)) {
+        this.sim.spot(8, W * 0.7, H / 2);
+        this.msg = "A 8 é a última: voltou para a mesa.";
+      }
+      if (this.sim.balls.every((b) => b.n === 0 || b.in)) {
+        this.win = 0;
+        this.winText = `Mesa limpa em ${this.shots} tacadas!`;
+      }
+      return;
+    }
+
+    // bola 8
+    if (eight) {
+      if (brk) {
+        this.sim.spot(8, W * 0.7, H / 2);
+      } else {
+        const cleared = g !== null && remainingMine(g) === 0;
+        const legal = cleared && !r.cueIn && r.firstHit === 8;
+        this.win = legal ? me : other;
+        this.winText = legal ? "encaçapou a 8" : r.cueIn ? "a branca caiu junto com a 8" : !cleared ? "a 8 caiu antes da hora" : "não bateu primeiro na 8";
+        return;
+      }
+    }
+
+    // falta?
+    let foul = "";
+    if (r.cueIn) foul = "Branca na caçapa";
+    else if (r.firstHit === null) foul = "Não acertou nenhuma bola";
+    else if (g && !(inGroup(r.firstHit, g) || (r.firstHit === 8 && remainingMine(g) === 0))) foul = `Bateu primeiro na bola errada (${r.firstHit})`;
+    else if (!g && r.firstHit === 8 && !brk) foul = "Bateu primeiro na 8";
+
+    // define lisas/listradas na primeira bola encaçapada sem falta
+    if (!foul && !g) {
+      const first = r.pocketed.find((n) => n !== 8);
+      if (first !== undefined) {
+        const mineG: Group = isSolid(first) ? "lisas" : "listradas";
+        this.groups[me] = mineG;
+        this.groups[other] = mineG === "lisas" ? "listradas" : "lisas";
+      }
+    }
+    const g2 = this.groups[me];
+    const madeOwn = r.pocketed.some((n) => n !== 8 && (g2 ? inGroup(n, g2) : true));
+
+    if (foul) {
+      this.turn = other;
+      this.inHand = 2;
+      if (r.cueIn) this.sim.spot(0, HEAD_X, H / 2);
+      this.msg = `${foul}. Bola na mão para o adversário.`;
+    } else if (madeOwn) {
+      this.msg = g === null && g2 ? `Encaçapou! Você ficou com as ${g2}. Joga de novo.` : "Encaçapou! Joga de novo.";
+    } else {
+      this.turn = other;
+      this.msg = brk ? "Saída feita. Vez do adversário." : "";
+    }
+  }
+
+  // ---------------------------------------------------------------- loop
   step(dt: number) {
-    if (this.role === "guest") return null;
-    if (!this.moving) return null;
-    let ev: "hit" | "pocket" | null = null;
-    // sub-passos para as bolas não atravessarem umas às outras
-    const sub = 4;
-    const h = dt / sub;
-    for (let k = 0; k < sub; k++) {
-      for (const b of this.balls) {
-        if (b.in) continue;
-        b.x += b.vx * h;
-        b.y += b.vy * h;
-        const f = Math.pow(0.55, h); // atrito do pano
-        b.vx *= f;
-        b.vy *= f;
-        if (Math.hypot(b.vx, b.vy) < 6) b.vx = b.vy = 0;
-        // caçapas
-        for (const [px, py] of POCKETS) {
-          if (Math.hypot(b.x - px, b.y - py) < 17) {
-            b.in = true;
-            b.vx = b.vy = 0;
-            if (b.n === 0) this.cueIn = true;
-            else {
-              this.pocketedThisShot++;
-              this.score[this.shotBy]++;
-            }
-            ev = "pocket";
-          }
-        }
-        if (b.in) continue;
-        // tabelas
-        if (b.x < M + R) (b.x = M + R), (b.vx = Math.abs(b.vx) * 0.8);
-        if (b.x > W - M - R) (b.x = W - M - R), (b.vx = -Math.abs(b.vx) * 0.8);
-        if (b.y < M + R) (b.y = M + R), (b.vy = Math.abs(b.vy) * 0.8);
-        if (b.y > H - M - R) (b.y = H - M - R), (b.vy = -Math.abs(b.vy) * 0.8);
-      }
-      // colisões entre bolas (mesma massa, choque elástico)
-      for (let i = 0; i < this.balls.length; i++)
-        for (let j = i + 1; j < this.balls.length; j++) {
-          const a = this.balls[i];
-          const b = this.balls[j];
-          if (a.in || b.in) continue;
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const d = Math.hypot(dx, dy);
-          if (d > 0 && d < R * 2) {
-            const nx = dx / d;
-            const ny = dy / d;
-            const overlap = R * 2 - d;
-            a.x -= (nx * overlap) / 2;
-            a.y -= (ny * overlap) / 2;
-            b.x += (nx * overlap) / 2;
-            b.y += (ny * overlap) / 2;
-            const rel = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
-            if (rel > 0) {
-              a.vx -= rel * nx * 0.96;
-              a.vy -= rel * ny * 0.96;
-              b.vx += rel * nx * 0.96;
-              b.vy += rel * ny * 0.96;
-              if (rel > 60 && !ev) ev = "hit";
-            }
-          }
-        }
-    }
-    if (this.balls.every((b) => b.in || (b.vx === 0 && b.vy === 0))) {
-      this.moving = false;
-      // fim da tacada: encaçapou (sem a branca) joga de novo; senão passa a vez
-      if (this.cueIn) {
-        const cue = this.balls[0];
-        Object.assign(cue, { x: W * 0.25, y: H / 2, vx: 0, vy: 0, in: false });
-        this.msg = "Bola branca na caçapa: passa a vez";
-        if (this.role !== "solo") this.turn = 1 - this.turn;
-      } else if (this.pocketedThisShot > 0) this.msg = "Encaçapou! Joga de novo";
-      else {
-        this.msg = "";
-        if (this.role !== "solo") this.turn = 1 - this.turn;
+    const was = this.sim.moving;
+    const ev = this.sim.step(dt);
+    let sfx: "hit" | "pocket" | null = null;
+    if (ev.pocket) sfx = "pocket";
+    else if (ev.hit > 0.03 || ev.rail > 0.08) sfx = "hit";
+    if (was && !this.sim.moving) {
+      if (this.role !== "guest") {
+        this.resolve();
+        if (this.role === "host") this.pend.push(this.snapshot());
+        this.onTable?.({ balls: this.sim.pack() });
       }
     }
-    return ev;
+    // mira compartilhada (o outro vê o meu taco)
+    if (this.role !== "solo" && this.myTurn() && !this.sim.moving) {
+      const now = performance.now();
+      const key = `${this.aimA.toFixed(3)}|${this.pow.toFixed(2)}`;
+      if (key !== this.aimSent && now - this.aimSentAt > 70) {
+        this.aimSent = key;
+        this.aimSentAt = now;
+        const c = this.cue();
+        this.pend.push({ t: "aim", a: Math.round(this.aimA * 1000) / 1000, p: Math.round(this.pow * 100) / 100, c: [Math.round(c.x * 10) / 10, Math.round(c.y * 10) / 10] });
+      }
+    }
+    return sfx;
   }
 
-  draw(g: CanvasRenderingContext2D) {
-    g.fillStyle = "#5a3820";
-    g.fillRect(0, 0, W, H);
-    g.fillStyle = "#1f7a4a";
-    g.fillRect(M - 8, M - 8, W - 2 * (M - 8), H - 2 * (M - 8));
-    g.fillStyle = "#23894f";
-    g.fillRect(M, M, W - 2 * M, H - 2 * M);
-    g.fillStyle = "#0c0c0c";
-    for (const [px, py] of POCKETS) {
-      g.beginPath();
-      g.arc(px, py, 15, 0, Math.PI * 2);
-      g.fill();
-    }
-    for (const b of this.balls) {
-      if (b.in) continue;
-      g.fillStyle = "rgba(0,0,0,.25)";
-      g.beginPath();
-      g.arc(b.x + 2, b.y + 3, R, 0, Math.PI * 2);
-      g.fill();
-      g.fillStyle = COLORS[b.n] ?? "#ddd";
-      g.beginPath();
-      g.arc(b.x, b.y, R, 0, Math.PI * 2);
-      g.fill();
-      if (b.n === 9) {
-        g.fillStyle = "#f7f5ef";
-        g.fillRect(b.x - R, b.y - 3, R * 2, 6);
-      }
-      if (b.n) {
-        g.fillStyle = "#fff";
-        g.beginPath();
-        g.arc(b.x, b.y, 4, 0, Math.PI * 2);
-        g.fill();
-        g.fillStyle = "#111";
-        g.font = "bold 6px Montserrat, sans-serif";
-        g.textAlign = "center";
-        g.fillText(String(b.n), b.x, b.y + 2);
-      }
-    }
-    // mira (só na minha vez, com as bolas paradas)
-    const cue = this.balls[0];
-    if (this.aim && this.dragging && !this.moving && this.myTurn() && !cue.in) {
-      const dx = cue.x - this.aim.x;
-      const dy = cue.y - this.aim.y;
-      const p = Math.min(1, Math.hypot(dx, dy) / 160);
-      const a = Math.atan2(dy, dx);
-      g.strokeStyle = "rgba(255,255,255,.55)";
-      g.setLineDash([4, 6]);
-      g.beginPath();
-      g.moveTo(cue.x, cue.y);
-      g.lineTo(cue.x + Math.cos(a) * 260, cue.y + Math.sin(a) * 260);
-      g.stroke();
-      g.setLineDash([]);
-      // taco
-      g.strokeStyle = "#d9b27a";
-      g.lineWidth = 5;
-      g.beginPath();
-      g.moveTo(cue.x - Math.cos(a) * (14 + p * 50), cue.y - Math.sin(a) * (14 + p * 50));
-      g.lineTo(cue.x - Math.cos(a) * (200 + p * 50), cue.y - Math.sin(a) * (200 + p * 50));
-      g.stroke();
-      g.lineWidth = 1;
-      // força
-      g.fillStyle = "rgba(0,0,0,.4)";
-      g.fillRect(W / 2 - 60, H - 16, 120, 8);
-      g.fillStyle = "#C8F501";
-      g.fillRect(W / 2 - 60, H - 16, 120 * p, 8);
-    }
-    if (this.msg && !this.moving) {
-      g.fillStyle = "rgba(0,0,0,.45)";
-      g.fillRect(W / 2 - 150, 4, 300, 18);
-      g.fillStyle = "#fff";
-      g.font = "600 11px Montserrat, sans-serif";
-      g.textAlign = "center";
-      g.fillText(this.msg, W / 2, 17);
-    }
-  }
-
+  // ---------------------------------------------------------------- entrada
   pointer(p: { x: number; y: number }, kind: "move" | "down" | "up") {
-    if (this.moving || !this.myTurn()) return null;
-    const cue = this.balls[0];
+    this.hover = p;
+    const can = this.myTurn() && !this.sim.moving && !this.waiting && this.win === null;
+    if (!can) return null;
+    const c = this.cue();
+    const canPlace = this.inHand > 0;
     if (kind === "down") {
-      this.dragging = true;
-      this.aim = p;
-    } else if (kind === "move" && this.dragging) this.aim = p;
-    else if (kind === "up" && this.dragging) {
-      this.dragging = false;
-      const dx = cue.x - p.x;
-      const dy = cue.y - p.y;
-      const pw = Math.min(1, Math.hypot(dx, dy) / 160);
-      this.aim = null;
-      if (pw < 0.05) return null;
-      const a = Math.atan2(dy, dx);
-      if (this.role === "guest") return { a, p: pw };
-      this.shoot(a, pw);
+      const dx = p.x - c.x;
+      const dy = p.y - c.y;
+      // bola na mão: clicar na branca arrasta ela
+      if (canPlace && dx * dx + dy * dy < (PR + 6) * (PR + 6)) {
+        this.placing = true;
+        return null;
+      }
+      this.charging = true;
+      this.chargeFrom = { ...p };
+      this.pow = 0;
+      return null;
+    }
+    if (kind === "move") {
+      if (this.placing) {
+        const x = Math.max(PM + PR, Math.min((this.inHand === 1 ? HEAD_X : W - PM - PR), p.x));
+        const y = Math.max(PM + PR, Math.min(H - PM - PR, p.y));
+        if (this.sim.free(x, y)) (c.x = x), (c.y = y);
+        return null;
+      }
+      if (this.charging && this.chargeFrom) {
+        // puxa para trás (para longe da direção da mira) para dar força
+        const back = -((p.x - this.chargeFrom.x) * Math.cos(this.aimA) + (p.y - this.chargeFrom.y) * Math.sin(this.aimA));
+        this.pow = Math.max(0, Math.min(1, back / 150));
+        return null;
+      }
+      this.aimA = Math.atan2(p.y - c.y, p.x - c.x);
+      return null;
+    }
+    // up
+    if (this.placing) {
+      this.placing = false;
+      return null;
+    }
+    if (this.charging) {
+      this.charging = false;
+      if (this.pow < 0.04) {
+        this.pow = 0;
+        return null;
+      }
+      this.fire();
     }
     return null;
   }
-  key() {}
+
+  key(dir: number, down: boolean) {
+    if (!down || !this.myTurn() || this.sim.moving) return;
+    this.aimA += dir * 0.004;
+  }
+  /** Teclas extras da sinuca: ← → giram a mira, espaço carrega e solta. */
+  keyEx(e: KeyboardEvent): boolean {
+    if (!this.myTurn() || this.sim.moving || this.waiting || this.win !== null) return false;
+    const fine = e.shiftKey ? 0.002 : 0.012;
+    if (e.type === "keydown" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      this.aimA += e.key === "ArrowLeft" ? -fine : fine;
+      return true;
+    }
+    if (e.key === " ") {
+      if (e.type === "keydown") {
+        this.charging = true;
+        this.chargeFrom = null;
+        this.pow = Math.min(1, this.pow + 0.035);
+      } else if (this.charging) {
+        this.charging = false;
+        if (this.pow >= 0.04) this.fire();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------- rede
   snapshot() {
-    return {
-      t: "st",
-      b: this.balls.map((b) => (b.in ? 0 : [Math.round(b.x * 10) / 10, Math.round(b.y * 10) / 10])),
-      turn: this.turn,
-      s: this.score,
-      mv: this.moving,
-      msg: this.msg,
-    };
+    return { t: "st", b: this.sim.pack(), turn: this.turn, g: this.groups, h: this.inHand, msg: this.msg, brk: this.isBreak, win: this.win, wt: this.winText, shots: this.shots };
   }
   input() {
-    return null; // na sinuca o convidado só manda a tacada
+    return null;
   }
   remote(m: any) {
-    if (m.t === "shot" && this.role === "host" && this.turn === 1 && !this.moving) this.shoot(Number(m.a), Number(m.p));
-    if (m.t === "st" && this.role === "guest") {
-      (m.b as any[]).forEach((v, i) => {
-        const b = this.balls[i];
-        if (!b) return;
-        if (v === 0) b.in = true;
-        else (b.in = false), (b.x = v[0]), (b.y = v[1]);
-      });
+    if (m.t === "aim") {
+      this.otherAim = { a: Number(m.a) || 0, p: Number(m.p) || 0, at: performance.now() };
+      if (Array.isArray(m.c) && !this.sim.moving && this.inHand) {
+        const c = this.cue();
+        c.x = Number(m.c[0]) || c.x;
+        c.y = Number(m.c[1]) || c.y;
+      }
+      return;
+    }
+    if (this.role === "host" && m.t === "shot") {
+      if (this.turn !== 1 || this.sim.moving || this.win !== null) return;
+      const cue = Array.isArray(m.cue) ? ([Number(m.cue[0]), Number(m.cue[1])] as [number, number]) : ([this.cue().x, this.cue().y] as [number, number]);
+      // posição da branca só pode mudar com bola na mão
+      const c = this.cue();
+      const ok = this.inHand > 0 && this.sim.free(cue[0], cue[1]) && (this.inHand === 2 || cue[0] <= HEAD_X + 0.01);
+      const vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, Number(m.vx) || 0));
+      const vy = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, Number(m.vy) || 0));
+      this.start(vx, vy, ok ? cue : [c.x, c.y]);
+      this.otherAim = null;
+      this.lastShotAt = Date.now();
+      return;
+    }
+    if (this.role === "guest" && m.t === "go") {
+      this.start(Number(m.vx), Number(m.vy), m.cue, m.b);
+      this.otherAim = null;
+      return;
+    }
+    if (this.role === "guest" && m.t === "st") {
+      // estado oficial depois da tacada (corrige qualquer diferença mínima)
+      if (this.sim.moving) this.sim.finish();
+      this.sim.load(m.b);
       this.turn = m.turn;
-      this.score = m.s;
-      this.moving = m.mv;
+      this.groups = m.g;
+      this.inHand = m.h;
       this.msg = m.msg;
+      this.isBreak = m.brk;
+      this.win = m.win;
+      this.winText = m.wt ?? "";
+      this.shots = m.shots ?? 0;
+      this.waiting = false;
     }
   }
+  /** Estado completo para quem acabou de entrar no jogo (convidado). */
+  hello() {
+    return this.snapshot();
+  }
   winner() {
-    if (!this.balls.slice(1).every((b) => b.in) || this.moving) return null;
-    if (this.role === "solo") return 0;
-    return this.score[0] >= this.score[1] ? 0 : 1;
+    if (this.sim.moving) return null;
+    return this.win;
   }
   scoreText() {
-    return this.role === "solo" ? `${this.score[0]} bolas encaçapadas` : `${this.score[0]} x ${this.score[1]}`;
+    return this.winText;
+  }
+  takeSfx() {
+    const s = this.evSfx;
+    this.evSfx = null;
+    return s;
   }
   header(n: [string, string]) {
-    if (this.role === "solo") return `<span>Treino</span><b>${this.score[0]} bolas</b><span></span>`;
-    const t = (i: number) => (this.turn === i ? ' class="turn"' : "");
-    return `<span${t(0)}>${esc(n[0])}</span><b>${this.score[0]} x ${this.score[1]}</b><span${t(1)}>${esc(n[1])}</span>`;
+    const left = (i: number) => {
+      const g = this.groups[i];
+      if (!g) return "";
+      const rest = this.sim.balls.filter((b) => !b.in && inGroup(b.n, g)).length;
+      return `<small>${g} · ${rest ? rest + " na mesa" : "falta a 8"}</small>`;
+    };
+    if (this.role === "solo") {
+      const inn = this.sim.balls.filter((b) => b.n && b.in).length;
+      return `<span>Treino</span><b>${inn}/15</b><span>${this.shots} tacadas</span>`;
+    }
+    const t = (i: number) => (this.turn === i && this.win === null ? ' class="turn"' : "");
+    return `<span${t(0)}>${esc(n[0])}${left(0)}</span><b>${this.turn === this.mine ? "Sua vez" : "Vez do outro"}</b><span${t(1)}>${esc(n[1])}${left(1)}</span>`;
   }
+
+  // ---------------------------------------------------------------- desenho
+  draw(g: CanvasRenderingContext2D) {
+    drawTable(g);
+    const now = performance.now();
+    const balls = this.sim.balls;
+    // sombra + bolas
+    for (const b of balls) if (!b.in) drawBall(g, b.x, b.y, b.n);
+    const c = this.cue();
+    const mineNow = this.myTurn() && !this.sim.moving && !this.waiting && this.win === null && !c.in;
+    // bola na mão: realce
+    if (mineNow && this.inHand) {
+      g.strokeStyle = "rgba(200,245,1,.9)";
+      g.lineWidth = 2;
+      g.setLineDash([4, 4]);
+      g.beginPath();
+      g.arc(c.x, c.y, PR + 5, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+      if (this.inHand === 1) {
+        g.strokeStyle = "rgba(255,255,255,.25)";
+        g.beginPath();
+        g.moveTo(HEAD_X, PM);
+        g.lineTo(HEAD_X, H - PM);
+        g.stroke();
+      }
+    }
+    if (mineNow && !this.placing) {
+      this.drawGuide(g, c, this.aimA);
+      drawCue(g, c.x, c.y, this.aimA, this.pow, 1);
+      // força
+      if (this.charging || this.pow > 0) drawPower(g, this.pow);
+    } else if (!this.sim.moving && this.otherAim && now - this.otherAim.at < 4000 && !c.in && this.win === null) {
+      drawCue(g, c.x, c.y, this.otherAim.a, this.otherAim.p, 0.55);
+    } else if (this.sim.moving && Date.now() - this.lastShotAt < 260) {
+      // taco voltando depois de bater
+      const k = (Date.now() - this.lastShotAt) / 260;
+      const a = this.aimA;
+      drawCue(g, c.x - Math.cos(a) * 30 * k, c.y - Math.sin(a) * 30 * k, a, 0, 1 - k);
+    }
+    if (this.waiting) msgBar(g, "Tacando...");
+    else if (this.msg && !this.sim.moving) msgBar(g, this.msg);
+    else if (!this.sim.moving && this.win === null && this.role !== "solo") msgBar(g, this.myTurn() ? (this.inHand ? "Sua vez: arraste a branca, mire e puxe para trás" : "Sua vez: mire com o mouse, clique e puxe para trás") : "Vez do adversário");
+  }
+
+  /** Linha de mira até a primeira bola/tabela, com a bola fantasma e para onde a bola vai. */
+  private drawGuide(g: CanvasRenderingContext2D, c: PBall, a: number) {
+    const dx = Math.cos(a);
+    const dy = Math.sin(a);
+    let best = Infinity;
+    let hit: PBall | null = null;
+    for (const b of this.sim.balls) {
+      if (b.in || b.n === 0) continue;
+      // interseção do raio com o círculo de raio 2R em volta da bola
+      const fx = c.x - b.x;
+      const fy = c.y - b.y;
+      const B = fx * dx + fy * dy;
+      const C = fx * fx + fy * fy - 4 * PR * PR;
+      const disc = B * B - C;
+      if (disc < 0) continue;
+      const t = -B - Math.sqrt(disc);
+      if (t > 0 && t < best) (best = t), (hit = b);
+    }
+    // tabela
+    const tx = dx > 0 ? (W - PM - PR - c.x) / dx : dx < 0 ? (PM + PR - c.x) / dx : Infinity;
+    const ty = dy > 0 ? (H - PM - PR - c.y) / dy : dy < 0 ? (PM + PR - c.y) / dy : Infinity;
+    const wall = Math.min(tx, ty);
+    const t = Math.min(best, wall);
+    const ex = c.x + dx * t;
+    const ey = c.y + dy * t;
+    g.strokeStyle = "rgba(255,255,255,.6)";
+    g.lineWidth = 1.2;
+    g.setLineDash([5, 5]);
+    g.beginPath();
+    g.moveTo(c.x, c.y);
+    g.lineTo(ex, ey);
+    g.stroke();
+    g.setLineDash([]);
+    g.strokeStyle = "rgba(255,255,255,.75)";
+    g.beginPath();
+    g.arc(ex, ey, PR, 0, Math.PI * 2);
+    g.stroke();
+    if (hit && best <= wall) {
+      // direção da bola acertada (linha dos centros)
+      const nx = (hit.x - ex) / (2 * PR);
+      const ny = (hit.y - ey) / (2 * PR);
+      g.strokeStyle = "rgba(200,245,1,.85)";
+      g.lineWidth = 1.6;
+      g.beginPath();
+      g.moveTo(hit.x, hit.y);
+      g.lineTo(hit.x + nx * 70, hit.y + ny * 70);
+      g.stroke();
+      // e para onde a branca desvia (perpendicular)
+      const dot = dx * nx + dy * ny;
+      const px = dx - dot * nx;
+      const py = dy - dot * ny;
+      const pl = Math.sqrt(px * px + py * py);
+      if (pl > 0.05) {
+        g.strokeStyle = "rgba(255,255,255,.35)";
+        g.beginPath();
+        g.moveTo(ex, ey);
+        g.lineTo(ex + (px / pl) * 40 * pl, ey + (py / pl) * 40 * pl);
+        g.stroke();
+      }
+    }
+  }
+}
+
+function drawTable(g: CanvasRenderingContext2D) {
+  // madeira
+  const wood = g.createLinearGradient(0, 0, 0, H);
+  wood.addColorStop(0, "#6b4024");
+  wood.addColorStop(1, "#4a2a16");
+  g.fillStyle = wood;
+  roundRect(g, 0, 0, W, H, 18);
+  g.fill();
+  // tabelas (borracha)
+  g.fillStyle = "#1b6b40";
+  g.fillRect(PM - 12, PM - 12, W - 2 * (PM - 12), H - 2 * (PM - 12));
+  // pano
+  const felt = g.createRadialGradient(W / 2, H / 2, 40, W / 2, H / 2, W * 0.6);
+  felt.addColorStop(0, "#2a9a5c");
+  felt.addColorStop(1, "#1d7c47");
+  g.fillStyle = felt;
+  g.fillRect(PM, PM, W - 2 * PM, H - 2 * PM);
+  // diamantes
+  g.fillStyle = "#e8dcc0";
+  for (let i = 1; i < 8; i++) {
+    if (i === 4) continue;
+    const x = PM + ((W - 2 * PM) * i) / 8;
+    g.fillRect(x - 1.5, 10, 3, 3);
+    g.fillRect(x - 1.5, H - 13, 3, 3);
+  }
+  for (let i = 1; i < 4; i++) {
+    const y = PM + ((H - 2 * PM) * i) / 4;
+    g.fillRect(10, y - 1.5, 3, 3);
+    g.fillRect(W - 13, y - 1.5, 3, 3);
+  }
+  // marca da saída e ponto do triângulo
+  g.strokeStyle = "rgba(255,255,255,.12)";
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(HEAD_X, PM);
+  g.lineTo(HEAD_X, H - PM);
+  g.stroke();
+  g.fillStyle = "rgba(255,255,255,.25)";
+  g.beginPath();
+  g.arc(W * 0.7, H / 2, 1.6, 0, Math.PI * 2);
+  g.fill();
+  // caçapas
+  for (const [px, py, pr] of POCKETS) {
+    g.fillStyle = "#0a0a0a";
+    g.beginPath();
+    g.arc(px, py, pr + 1, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = "#2b1a0e";
+    g.lineWidth = 3;
+    g.stroke();
+  }
+}
+
+function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+function drawBall(g: CanvasRenderingContext2D, x: number, y: number, n: number) {
+  g.fillStyle = "rgba(0,0,0,.28)";
+  g.beginPath();
+  g.ellipse(x + 2, y + 3, PR, PR * 0.9, 0, 0, Math.PI * 2);
+  g.fill();
+  g.save();
+  g.beginPath();
+  g.arc(x, y, PR, 0, Math.PI * 2);
+  g.clip();
+  g.fillStyle = isStripe(n) ? "#f6f3ea" : ballColor(n);
+  g.fillRect(x - PR, y - PR, PR * 2, PR * 2);
+  if (isStripe(n)) {
+    g.fillStyle = ballColor(n);
+    g.fillRect(x - PR, y - PR * 0.55, PR * 2, PR * 1.1);
+  }
+  // sombreado
+  const sh = g.createRadialGradient(x - PR * 0.35, y - PR * 0.4, 1, x, y, PR * 1.1);
+  sh.addColorStop(0, "rgba(255,255,255,.55)");
+  sh.addColorStop(0.35, "rgba(255,255,255,0)");
+  sh.addColorStop(1, "rgba(0,0,0,.35)");
+  g.fillStyle = sh;
+  g.fillRect(x - PR, y - PR, PR * 2, PR * 2);
+  g.restore();
+  if (n) {
+    g.fillStyle = "#fff";
+    g.beginPath();
+    g.arc(x, y, PR * 0.46, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = "#111";
+    g.font = "700 6px Montserrat, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(String(n), x, y + 0.3);
+    g.textBaseline = "alphabetic";
+  }
+}
+
+function drawCue(g: CanvasRenderingContext2D, cx: number, cy: number, a: number, pow: number, alpha: number) {
+  const ca = Math.cos(a);
+  const sa = Math.sin(a);
+  const gap = PR + 4 + pow * 46;
+  const len = 250;
+  g.save();
+  g.globalAlpha = alpha;
+  g.lineCap = "round";
+  // sombra
+  g.strokeStyle = "rgba(0,0,0,.3)";
+  g.lineWidth = 6;
+  g.beginPath();
+  g.moveTo(cx - ca * gap + 3, cy - sa * gap + 4);
+  g.lineTo(cx - ca * (gap + len) + 3, cy - sa * (gap + len) + 4);
+  g.stroke();
+  // madeira clara -> escura
+  const grad = g.createLinearGradient(cx - ca * gap, cy - sa * gap, cx - ca * (gap + len), cy - sa * (gap + len));
+  grad.addColorStop(0, "#f1e2c2");
+  grad.addColorStop(0.03, "#2a6fb0");
+  grad.addColorStop(0.05, "#e9cf98");
+  grad.addColorStop(0.62, "#c99556");
+  grad.addColorStop(0.66, "#1a1a1a");
+  grad.addColorStop(1, "#3a2414");
+  g.strokeStyle = grad;
+  g.lineWidth = 4.5;
+  g.beginPath();
+  g.moveTo(cx - ca * gap, cy - sa * gap);
+  g.lineTo(cx - ca * (gap + len), cy - sa * (gap + len));
+  g.stroke();
+  g.restore();
+}
+
+function drawPower(g: CanvasRenderingContext2D, p: number) {
+  const x = W - 16;
+  const y0 = PM + 10;
+  const h = H - 2 * PM - 20;
+  g.fillStyle = "rgba(0,0,0,.45)";
+  roundRect(g, x - 4, y0, 8, h, 4);
+  g.fill();
+  const col = p < 0.5 ? "#C8F501" : p < 0.8 ? "#f2c230" : "#e0502e";
+  g.fillStyle = col;
+  roundRect(g, x - 4, y0 + h * (1 - p), 8, h * p, 4);
+  g.fill();
+}
+
+function msgBar(g: CanvasRenderingContext2D, text: string) {
+  g.font = "600 11px Montserrat, sans-serif";
+  const w = Math.min(W - 40, g.measureText(text).width + 24);
+  g.fillStyle = "rgba(13,13,13,.62)";
+  roundRect(g, W / 2 - w / 2, H - PM + 6, w, 18, 9);
+  g.fill();
+  g.fillStyle = "#fff";
+  g.textAlign = "center";
+  g.fillText(text, W / 2, H - PM + 19);
 }

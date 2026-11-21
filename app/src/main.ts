@@ -11,7 +11,7 @@ import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, isHostedWeb, Now
 import type { Item, Layout, Zone } from "./furniture";
 import { DEFS, PHOTO_TYPES, imageToDataUrl, findItemAnyLevel, levelIds, levelName, levelView } from "./furniture";
 import { soundPrefs, SoundPrefs, notify, approachChime, doorChime, toggleSound, doorSound, preloadDoorSounds, elevatorDing, elevatorMusic, footstep, kitchenSound, PAD_SOUNDS, listCustom, addCustom, removeCustom, playPad, PadSound } from "./sound";
-import { GameSession, GameKind } from "./games";
+import { GameSession, GameKind, PoolPose, PoolTable, POOL_W, POOL_H, PM } from "./games";
 import { RadioPlayer, RadioSource, RadioState, parseYouTube } from "./radio";
 import { EnvConfig, WEATHERS, SEASONS, HOLIDAYS, seasonByDate, weatherFromCode, resolveHoliday, Weather, Season } from "./env";
 import { DEFAULT_GOAL, DEFAULT_CUSTOM, GoalCfg, CustomCfg, financeData, weatherData, customValue, weatherText, fmtBRL, fmtNum, refreshWidgets } from "./widgets";
@@ -71,7 +71,7 @@ function loadPrefs(): Prefs {
     shareActivity: p.shareActivity ?? true,
     shareAgendaTitles: p.shareAgendaTitles ?? false,
     weatherFx: p.weatherFx ?? true,
-    media: { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio", ...(p.media ?? {}) },
+    media: { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio", spatial: true, ...(p.media ?? {}) },
     sound: { ...soundPrefs, ...(p.sound ?? {}) },
     role: p.role ?? "",
     autoUpdate: p.autoUpdate ?? true,
@@ -271,6 +271,11 @@ function start() {
     });
     if (isTouch) keepScreenOn();
     window.addEventListener("resize", () => renderDock());
+    // economia: sem foco a cena roda a 20 quadros; com uma tela compartilhada em tela cheia, a 12
+    const fpsCap = () => (world.backgroundFps = document.body.classList.contains("screen-mode") ? 12 : document.hasFocus() ? 0 : 20);
+    window.addEventListener("focus", fpsCap);
+    window.addEventListener("blur", fpsCap);
+    new MutationObserver(fpsCap).observe(document.body, { attributes: true, attributeFilter: ["class"] });
     world.onMove = (x, z, dir, moving, zone) => net.send({ t: "move", x, z, dir, moving, zone: zone?.id ?? null });
     world.onZoneChange = onZoneChange;
     world.start();
@@ -672,10 +677,13 @@ const closeRight = () => {
 };
 
 // ------------------------------------------------------------ pessoas
+let peopleSig = "";
 function renderPeople() {
   const list = $("#people");
   if (!list || !world?.me) return;
   renderTop();
+  // painel fechado: não refaz a lista à toa (roda a cada segundo)
+  if (!leftOpen || editor?.active) return;
   // salas de todos os andares (a pessoa pode estar em outro andar)
   const full = world.fullLayout;
   const zones = full ? [...full.zones, ...(full.levels ?? []).flatMap((L) => L.zones)] : world.layout?.zones ?? [];
@@ -697,10 +705,14 @@ function renderPeople() {
   const all = [...world.others.values()].sort((a, b) => a.info.name.localeCompare(b.info.name));
   const near = all.filter((a) => level(a.info.id) > 0);
   const rest = all.filter((a) => level(a.info.id) === 0);
-  list.innerHTML = !all.length
+  const html = !all.length
     ? `<div class="empty">Ninguém mais por aqui agora.</div>`
     : (near.length ? `<div class="label">Perto de você</div>${near.map(row).join("")}` : "") +
       (rest.length ? `<div class="label">No escritório</div>${rest.map(row).join("")}` : "");
+  // só mexe no DOM quando algo mudou (não perde o hover nem pisca)
+  if (html === peopleSig) return;
+  peopleSig = html;
+  list.innerHTML = html;
 }
 
 // ------------------------------------------------------------ chat
@@ -753,6 +765,8 @@ function renderChat() {
 function renderScreens() {
   const el = $("#screens");
   if (!el) return;
+  // com uma tela aberta em tela cheia, o vídeo está lá (não tira de lá)
+  if (document.body.classList.contains("screen-mode")) return;
   el.innerHTML = "";
   for (const s of media.screens.values()) {
     const b = document.createElement("button");
@@ -772,21 +786,98 @@ function renderScreens() {
 function openScreen(key: string) {
   const s = media.screens.get(key);
   if (!s) return;
+  document.querySelector(".screen-full")?.remove();
   const full = document.createElement("div");
   full.className = "screen-full";
-  full.innerHTML = `<div class="bar"><span class="t-m"></span><button class="btn secondary sm">${icon("x", 15)} Fechar</button></div>`;
+  full.innerHTML = `<div class="bar"><span class="t-m"></span><span class="chip" data-count></span><button class="btn secondary sm" data-close>${icon("x", 15)} Fechar</button></div>
+    <div class="screen-body"><div class="screen-main"></div><div class="screen-people"></div></div>`;
   $(".t-m", full).textContent = s.local ? "Sua tela" : `Tela de ${s.name}`;
-  full.appendChild(s.el);
-  document.body.appendChild(full);
+  $(".screen-main", full).appendChild(s.el);
+  s.el.play().catch(() => {});
+  // dentro do HUD e antes do dock: o dock (microfone, câmera, chat...) continua por cima
+  hud.insertBefore(full, $("#dock"));
+  document.body.classList.add("screen-mode");
+  const people = $(".screen-people", full);
+  const count = $("[data-count]", full);
+  const tiles = new Map<string, HTMLElement>();
+  /** Bloco de uma pessoa: câmera (se ligada) ou iniciais; borda verde enquanto fala. */
+  const tile = (id: string, name: string, color: string, ini: string) => {
+    let el = tiles.get(id);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "sp-tile";
+      el.dataset.id = id;
+      el.innerHTML = `<div class="av"></div><div class="nm"><i class="off hidden">${icon("mic-off", 13, 2.4)}</i><span></span></div><div class="far hidden">longe</div>`;
+      $(".av", el).textContent = ini;
+      $(".av", el).setAttribute("style", `background:${color}`);
+      $(".nm span", el).textContent = name;
+      tiles.set(id, el);
+    }
+    return el;
+  };
+  const camOf = (bubble: HTMLElement) => (bubble.classList.contains("hidden") ? null : (bubble.querySelector("video") as HTMLVideoElement | null));
+  const update = () => {
+    if (!world?.me) return;
+    const list: { id: string; name: string; ini: string; color: string; talking: boolean; muted: boolean; cam: HTMLVideoElement | null; far: boolean; mirror: boolean }[] = [];
+    const me = world.me;
+    list.push({ id: "me", name: `${prefs.name} (você)`, ini: initials(prefs.name), color: lookColor(prefs.look), talking: media.micOn && media.isTalking(media.room.localParticipant.identity), muted: !media.micOn, cam: camOf(me.bubble), far: false, mirror: prefs.media.mirror });
+    for (const [id, a] of world.others) {
+      const g = media.levels.get(id) ?? 0;
+      // borda verde para quem fala (menos quem está numa sala privada em que eu não estou)
+      list.push({ id, name: a.info.name, ini: initials(a.info.name), color: lookColor(a.look), talking: media.isTalking(id) && media.canHear(id), muted: a.label.classList.contains("muted"), cam: camOf(a.bubble), far: g === 0, mirror: false });
+    }
+    // quem eu ouço primeiro; depois por nome (ordem estável, sem pular de lugar a cada fala)
+    const mine = list.shift()!;
+    list.sort((a, b) => Number(a.far) - Number(b.far) || a.name.localeCompare(b.name));
+    list.unshift(mine);
+    count.innerHTML = `<span class="dot ok"></span>${list.length} no escritório`;
+    const keep = new Set<string>();
+    list.forEach((p, i) => {
+      keep.add(p.id);
+      const el = tile(p.id, p.name, p.color, p.ini);
+      el.classList.toggle("talking", p.talking);
+      $(".off", el).classList.toggle("hidden", !p.muted);
+      $(".far", el).classList.toggle("hidden", !p.far);
+      const v = el.querySelector("video");
+      const src = p.cam?.srcObject ?? null;
+      if (src && (!v || v.srcObject !== src)) {
+        v?.remove();
+        const nv = document.createElement("video");
+        nv.muted = true;
+        nv.playsInline = true;
+        nv.autoplay = true;
+        nv.srcObject = src;
+        if (p.mirror) nv.classList.add("mirror");
+        el.prepend(nv);
+        nv.play().catch(() => {});
+      } else if (!src && v) v.remove();
+      if (people.children[i] !== el) people.insertBefore(el, people.children[i] ?? null);
+    });
+    for (const [id, el] of tiles)
+      if (!keep.has(id)) {
+        el.remove();
+        tiles.delete(id);
+      }
+  };
+  update();
   const close = () => {
     clearInterval(watch);
     full.remove();
+    document.body.classList.remove("screen-mode");
     renderScreens();
   };
-  $("button", full).addEventListener("click", close);
+  $("[data-close]", full).addEventListener("click", close);
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape" && document.body.contains(full)) {
+      close();
+      window.removeEventListener("keydown", onKey);
+    }
+  };
+  window.addEventListener("keydown", onKey);
   const watch = setInterval(() => {
-    if (!media.screens.has(key)) close();
-  }, 500);
+    if (!media.screens.has(key)) return close();
+    update();
+  }, 200);
 }
 
 // ------------------------------------------------------------ gravação de reuniões
@@ -1343,12 +1434,16 @@ function onDirect(from: string, name: string, msg: any) {
     pendingGames.delete(msg.gid);
     if (!p) return;
     if (!msg.ok) toast(`${name} não pode jogar agora`);
-    else openGame(p.kind, "host", from, name, msg.gid);
+    else openGame(p.kind, "host", from, name, msg.gid, p.item);
   } else if (msg.kind === "game") {
     games.get(msg.gid)?.onMsg(msg.m);
   } else if (msg.kind === "radio_stop") {
     const mine = world.me?.extra?.radio as RadioState | undefined;
-    if (mine && mine.item === msg.item) {
+    // só vale se quem pediu está perto da caixa de som (ninguém desliga do outro lado do escritório)
+    const it = world.layout?.items.find((i) => i.id === msg.item);
+    const who = world.others.get(from);
+    const close = !!(it && who && Math.hypot(who.target.x - it.x, who.target.z - it.z) < RADIO_REACH + 1);
+    if (mine && mine.item === msg.item && close) {
       sendState({ radio: null });
       toast(`${name} desligou o rádio`);
     }
@@ -1970,7 +2065,7 @@ function rideElevator(it: Item, target: number) {
 
 // ------------------------------------------------------------ jogos (sinuca e pingue-pongue)
 const games = new Map<string, GameSession>();
-const pendingGames = new Map<string, { kind: GameKind; to: string }>();
+const pendingGames = new Map<string, { kind: GameKind; to: string; item?: string }>();
 const GAME_NAMES: Record<GameKind, string> = { pong: "pingue-pongue", pool: "sinuca" };
 
 function openGameMenu(it: Item, x: number, y: number) {
@@ -1981,15 +2076,15 @@ function openGameMenu(it: Item, x: number, y: number) {
     .map(([id, a]) => ({ id, name: a.info.name, d: Math.hypot(a.root.position.x - me.x, a.root.position.z - me.z) }))
     .sort((a, b) => a.d - b.d)
     .slice(0, 6);
-  const items: [string, string, () => void][] = people.map((p) => ["gamepad", `Desafiar ${p.name}`, () => inviteGame(kind, p.id, p.name)]);
-  items.push(["play", kind === "pong" ? "Treinar contra o computador" : "Treinar sozinho", () => nearItem(it, () => openGame(kind, "solo", "", ""))]);
+  const items: [string, string, () => void][] = people.map((p) => ["gamepad", `Desafiar ${p.name}`, () => inviteGame(kind, p.id, p.name, it.id)]);
+  items.push(["play", kind === "pong" ? "Treinar contra o computador" : "Treinar sozinho", () => (kind === "pool" ? openGame(kind, "solo", "", "", "solo", it.id) : nearItem(it, () => openGame(kind, "solo", "", "")))]);
   menu(x, y, kind === "pong" ? "Pingue-pongue" : "Sinuca", items);
 }
 
-function inviteGame(kind: GameKind, to: string, name: string) {
+function inviteGame(kind: GameKind, to: string, name: string, item?: string) {
   const gid = Math.random().toString(36).slice(2, 10);
-  pendingGames.set(gid, { kind, to });
-  net.send({ t: "to", to, msg: { kind: "game_inv", game: kind, gid } });
+  pendingGames.set(gid, { kind, to, item });
+  net.send({ t: "to", to, msg: { kind: "game_inv", game: kind, gid, item } });
   toast(`Convite de ${GAME_NAMES[kind]} enviado para ${name}`);
   setTimeout(() => {
     if (pendingGames.delete(gid)) toast(`${name} não respondeu o convite`);
@@ -2009,7 +2104,7 @@ function onGameInvite(from: string, name: string, msg: any) {
         "primary",
         () => {
           net.send({ t: "to", to: from, msg: { kind: "game_reply", gid: msg.gid, ok: true } });
-          openGame(kind, "guest", from, name, msg.gid);
+          openGame(kind, "guest", from, name, msg.gid, typeof msg.item === "string" ? msg.item : undefined);
         },
       ],
     ],
@@ -2017,8 +2112,10 @@ function onGameInvite(from: string, name: string, msg: any) {
   setTimeout(() => bg.remove(), 35_000);
 }
 
-function openGame(kind: GameKind, role: "host" | "guest" | "solo", other: string, otherName: string, gid = "solo") {
+function openGame(kind: GameKind, role: "host" | "guest" | "solo", other: string, otherName: string, gid = "solo", itemId?: string) {
   games.get(gid)?.close();
+  const table = kind === "pool" && itemId ? findItemAnyLevel(world.fullLayout ?? world.layout, itemId) ?? world.layout.items.find((i) => i.id === itemId) : undefined;
+  const poolCtl = table ? startPoolScene(table, role) : null;
   const prevStatus = holdStatus;
   holdStatus = role === "solo" ? `Treinando ${GAME_NAMES[kind]}` : `Jogando ${GAME_NAMES[kind]} com ${otherName}`;
   lastStatus = null;
@@ -2034,7 +2131,10 @@ function openGame(kind: GameKind, role: "host" | "guest" | "solo", other: string
       else if (k === "point" || k === "win") notify(k === "win" ? "wave" : "emote");
       else footstep(false, 0.5);
     },
+    onPose: poolCtl ? (p) => poolCtl.pose(p) : undefined,
+    onTable: poolCtl && role !== "guest" ? (t) => poolCtl.table(t) : undefined,
     onClose: () => {
+      poolCtl?.stop();
       games.delete(gid);
       holdStatus = world.me?.holding ? HOLD_ITEMS[world.me.holding]?.status ?? prevStatus : "";
       lastStatus = null;
@@ -2042,6 +2142,99 @@ function openGame(kind: GameKind, role: "host" | "guest" | "solo", other: string
     },
   });
   games.set(gid, s);
+}
+
+/**
+ * Sinuca na cena 3D: cada jogador anda até a mesa, se posiciona atrás da branca quando é a vez
+ * dele (do lado de onde vai tacar) e espera num canto quando é a vez do outro. A pose (debruçado,
+ * taco puxando e batendo) vai para todo mundo em extra.pool; as bolas, em extra.poolTable.
+ */
+function startPoolScene(it: Item, role: "host" | "guest" | "solo") {
+  const th = -(it.rot * Math.PI) / 180;
+  const toWorld = (lx: number, lz: number) => ({ x: it.x + lx * Math.cos(th) + lz * Math.sin(th), z: it.z - lx * Math.sin(th) + lz * Math.cos(th) });
+  // canvas da sinuca -> metros no espaço da mesa (área de jogo de 2 m por ~1 m)
+  const S = 2.0 / (POOL_W - 2 * PM);
+  const local = (cx: number, cy: number) => ({ x: (cx - POOL_W / 2) * S, z: (cy - POOL_H / 2) * S });
+  const HX = 1.2 + 0.45; // meia mesa + folga para o corpo
+  const HZ = 0.7 + 0.45;
+  world.standUp();
+  // vai para o lado dele da mesa já de cara
+  const waitSpot = () => toWorld(role === "guest" ? HX : -HX, role === "guest" ? -0.55 : 0.55);
+  let spot = waitSpot();
+  world.walkTo(spot.x, spot.z);
+  let last: PoolPose | null = null;
+  let lastAim = 0;
+  let aimChangedAt = 0;
+  let placedAim: number | null = null;
+  let wasTurn: boolean | null = null;
+  let sentKey = "";
+  let sentAt = 0;
+  const shooterSpot = (p: PoolPose) => {
+    const c = local(p.cue[0], p.cue[1]);
+    const dx = Math.cos(p.aim);
+    const dz = Math.sin(p.aim);
+    let t = 0.9;
+    let x = c.x - dx * t;
+    let z = c.z - dz * t;
+    while (Math.abs(x) < HX && Math.abs(z) < HZ && t < 4) {
+      t += 0.05;
+      x = c.x - dx * t;
+      z = c.z - dz * t;
+    }
+    return toWorld(x, z);
+  };
+  const iv = setInterval(() => {
+    if (!last || !world.me) return;
+    const p = last;
+    const now = performance.now();
+    if (Math.abs(p.aim - lastAim) > 0.002) {
+      lastAim = p.aim;
+      aimChangedAt = now;
+    }
+    // reposiciona: no começo da vez, e quando a mira mudou bastante e o mouse parou
+    let want: { x: number; z: number } | null = null;
+    if (p.myTurn !== wasTurn) {
+      wasTurn = p.myTurn;
+      want = p.myTurn ? shooterSpot(p) : waitSpot();
+      placedAim = p.myTurn ? p.aim : null;
+    } else if (p.myTurn && p.pow === 0 && now - aimChangedAt > 450 && placedAim !== null) {
+      let d = p.aim - placedAim;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      if (Math.abs(d) > 0.6) {
+        want = shooterSpot(p);
+        placedAim = p.aim;
+      }
+    }
+    if (want && Math.hypot(want.x - spot.x, want.z - spot.z) > 0.3) {
+      spot = want;
+      world.walkTo(spot.x, spot.z);
+    }
+    const walking = world.walking;
+    if (!walking) {
+      const c = local(p.cue[0], p.cue[1]);
+      const look = p.myTurn ? toWorld(c.x, c.z) : { x: it.x, z: it.z };
+      world.faceTo(look.x, look.z);
+    }
+    const aim = p.myTurn && !walking;
+    const key = `${aim}|${aim ? Math.round(p.pow * 10) : 0}|${p.shotAt}`;
+    if (key !== sentKey && now - sentAt > 120) {
+      sentKey = key;
+      sentAt = now;
+      sendState({ pool: { aim, pow: aim ? Math.round(p.pow * 10) / 10 : 0, shotAt: p.shotAt } });
+    }
+  }, 100);
+  return {
+    pose(p: PoolPose) {
+      last = p;
+    },
+    table(t: PoolTable) {
+      sendState({ poolTable: { item: it.id, ...t } });
+    },
+    stop() {
+      clearInterval(iv);
+      sendState({ pool: null, poolTable: null });
+    },
+  };
 }
 
 // ------------------------------------------------------------ rádio (YouTube na sala)
@@ -2102,22 +2295,47 @@ function startRadio() {
   }, 500);
 }
 
+/** Distância máxima (m) para mexer numa caixa de som / rádio. */
+const RADIO_REACH = 2.6;
+
+/** Só controla a caixa de som de perto: longe, o personagem anda até ela e aí faz. */
+function atRadio(it: Item, then: () => void) {
+  const me = world.me.root.position;
+  if (Math.hypot(me.x - it.x, me.z - it.z) <= RADIO_REACH) return then();
+  toast("Indo até a caixa de som...");
+  world.walkTo(it.x + 1.1, it.z + 1.1);
+  const t0 = Date.now();
+  const iv = setInterval(() => {
+    const p = world.me.root.position;
+    if (Math.hypot(p.x - it.x, p.z - it.z) <= RADIO_REACH) {
+      clearInterval(iv);
+      then();
+    } else if (Date.now() - t0 > 12_000 || (!world.walking && Date.now() - t0 > 800)) {
+      clearInterval(iv);
+      toast("Chegue perto da caixa de som para controlar", true);
+    }
+  }, 200);
+}
+
 function openRadioMenu(it: Item, x: number, y: number) {
   const on = radioSources().find((s) => s.item === it.id);
-  const items: [string, string, () => void][] = [["link", on ? "Trocar a música" : "Tocar link do YouTube", () => askRadioLink(it)]];
+  const me = world.me.root.position;
+  const far = Math.hypot(me.x - it.x, me.z - it.z) > RADIO_REACH;
+  const items: [string, string, () => void][] = [["link", on ? "Trocar a música" : "Tocar link do YouTube", () => atRadio(it, () => askRadioLink(it))]];
   if (on) {
     items.push([
       "stop",
       "Desligar o rádio",
-      () => {
-        if (on.owner === myId) sendState({ radio: null });
-        else net.send({ t: "to", to: on.owner, msg: { kind: "radio_stop", item: it.id } });
-        toast("Rádio desligado");
-      },
+      () =>
+        atRadio(it, () => {
+          if (on.owner === myId) sendState({ radio: null });
+          else net.send({ t: "to", to: on.owner, msg: { kind: "radio_stop", item: it.id } });
+          toast("Rádio desligado");
+        }),
     ]);
     if (radio) items.push([radio.muted ? "volume" : "mic-off", radio.muted ? "Ouvir de novo" : "Silenciar só para mim", () => (radio!.muted = !radio!.muted)]);
   }
-  menu(x, y, DEFS[it.type]?.label ?? "Rádio", items);
+  menu(x, y, (DEFS[it.type]?.label ?? "Rádio") + (far ? " · vá até ela para mexer" : ""), items);
 }
 
 function askRadioLink(it: Item) {
@@ -2137,7 +2355,7 @@ function askRadioLink(it: Item) {
             toast("Cole um link do YouTube (youtube.com, youtu.be ou music.youtube.com)", true);
             return false;
           }
-          nearItem(it, () => {
+          atRadio(it, () => {
             const r: RadioState = { item: it.id, url: url.trim().slice(0, 300), ...yt, at: Date.now() };
             sendState({ radio: r });
             toast("📻 Tocando no rádio da sala");
@@ -2257,7 +2475,7 @@ async function openSettings() {
   const tabs = ["Áudio e vídeo", "Sons", "Privacidade", "Aparência", ...(isAdmin ? ["Escritório"] : []), "Apps", "Sobre"];
   const bg = modal(
     "Configurações",
-    `<div class="tabs">${tabs.map((t, i) => `<button type="button" data-tab="${i}" class="${i ? "" : "on"}">${t}</button>`).join("")}</div>
+    `<div class="settings-wrap"><div class="tabs vtabs">${tabs.map((t, i) => `<button type="button" data-tab="${i}" class="${i ? "" : "on"}">${t}</button>`).join("")}</div>
     <form id="settings" class="settings">
       <section data-sec="0">
         <label class="field"><span class="label">Microfone</span><select class="input" name="micId">${opt(dev.mics, mp.micId)}</select></label>
@@ -2265,6 +2483,7 @@ async function openSettings() {
         <label class="field"><span class="label">Saída de som</span><select class="input" name="speakerId">${opt(dev.speakers, mp.speakerId)}</select></label>
         <div class="row2"><label class="field"><span class="label">Qualidade da câmera</span><select class="input" name="camQuality"><option value="360" ${mp.camQuality === "360" ? "selected" : ""}>Leve (360p)</option><option value="720" ${mp.camQuality === "720" ? "selected" : ""}>HD (720p)</option></select></label>
         <label class="field"><span class="label">Alcance da voz</span><select class="input" name="range">${Object.keys(RANGES).map((k) => `<option value="${k}" ${k === mp.range ? "selected" : ""}>${{ curto: "Curto", medio: "Médio", longo: "Longo" }[k as keyof typeof RANGES]}</option>`).join("")}</select></label></div>
+        ${sw("spatial", "Áudio 3D", mp.spatial !== false, "A voz vem do lado de quem fala e abafa de longe. Desligue se ouvir eco usando caixa de som.")}
         ${sw("noiseSuppression", "Redução de ruído", mp.noiseSuppression)}
         ${sw("micOnJoin", "Microfone ligado ao entrar", mp.micOnJoin)}
         ${sw("mirror", "Espelhar minha câmera", mp.mirror)}
@@ -2321,17 +2540,19 @@ async function openSettings() {
         <label class="field"><span class="label">Chave de gestão</span><input class="input" name="adminKey" type="password" value="${esc(prefs.adminKey)}" placeholder="Só para a gestão"></label>
         <div class="note">${isAdmin ? "Você está conectado como gestão." : "Com a chave de gestão você vê a atividade da equipe e configura o escritório. Vale ao entrar de novo."}</div>
       </section>
-    </form>`,
+    </form></div>`,
     [
       ["Cancelar", "ghost", () => {}],
       ["Salvar", "primary", () => saveSettings(bg)],
     ],
     true,
   );
+  bg.querySelector(".modal")?.classList.add("settings-modal");
   bg.querySelectorAll<HTMLElement>("[data-tab]").forEach((t) =>
     t.addEventListener("click", () => {
       bg.querySelectorAll("[data-tab]").forEach((x) => x.classList.toggle("on", x === t));
       bg.querySelectorAll<HTMLElement>("[data-sec]").forEach((s) => (s.hidden = s.dataset.sec !== t.dataset.tab));
+      $("#settings", bg).scrollTop = 0;
     }),
   );
   bg.querySelectorAll<HTMLElement>("[data-build]").forEach((b) =>
@@ -2378,7 +2599,10 @@ function saveSettings(bg: HTMLElement) {
     micOnJoin: c("micOnJoin"),
     mirror: c("mirror"),
   });
+  const spatial = c("spatial");
   media.prefs = mp;
+  if (spatial !== media.prefs.spatial || spatial !== !!mp.spatial) media.setSpatial(spatial);
+  mp.spatial = spatial;
   if (devChanged) media.applyDevices();
   Object.assign(soundPrefs, { master: Number(v("master")), soundpad: Number(v("soundpad")), radio: Number(v("radio")), steps: c("steps"), approach: c("approach"), notify: c("notify") });
   prefs.sound = { ...soundPrefs };

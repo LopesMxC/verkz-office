@@ -15,6 +15,7 @@ import { pixelTexture, rng, toon } from "./toon";
 import { buildCharacter, Character, Look, normalizeLook } from "./avatar";
 import { Environment, Holiday } from "./env";
 import { foliageMaterials } from "./models";
+import { PoolSim, POOL_W, POOL_H, PM, PR } from "./games";
 
 /** Emotes: nome → emoji e animação. */
 export const EMOTES: [string, string, string][] = [
@@ -38,6 +39,49 @@ export const HOLD_ITEMS: Record<string, { label: string; emoji: string; status: 
   refri: { label: "Refrigerante", emoji: "🥫", status: "Pausa" },
   marmita: { label: "Marmita", emoji: "🍱", status: "Almoçando" },
 };
+
+/** Taco de sinuca (no espaço do corpo, que já tem a escala do personagem). */
+function cueMesh(): THREE.Object3D {
+  const g = new THREE.Group();
+  const len = 1.75;
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.024, len, 8), toon("#d7a868"));
+  shaft.rotation.x = Math.PI / 2; // ponta fina para a frente (+z)
+  const butt = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.027, 0.5, 8), toon("#2b1a10"));
+  butt.rotation.x = Math.PI / 2;
+  butt.position.z = -len / 2 + 0.25;
+  const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.03, 8), toon("#2a6fb0"));
+  tip.rotation.x = Math.PI / 2;
+  tip.position.z = len / 2;
+  g.add(shaft, butt, tip);
+  g.traverse((o) => ((o as THREE.Mesh).castShadow = true));
+  return g;
+}
+
+/** Bolas 3D da mesa de sinuca (mesma física do jogo, rodando aqui para quem assiste). */
+interface PoolView {
+  sim: PoolSim;
+  obj: THREE.Object3D;
+  group: THREE.Group;
+  balls: THREE.Object3D[];
+  shot: number;
+}
+const _q = new THREE.Quaternion();
+const _ax = new THREE.Vector3();
+const POOL_COLORS = ["#f6f3ea", "#f2c230", "#2f62c4", "#d23a2e", "#7a4fc0", "#ef7d22", "#1f9a52", "#8b2a22", "#121212"];
+const POOL_SCALE = 2.0 / (POOL_W - 2 * PM); // canvas -> metros (área de jogo de 2 m)
+const POOL_BALL_Y = 0.8 + PR * (2.0 / (POOL_W - 2 * PM));
+
+function poolBall(n: number): THREE.Object3D {
+  const r = PR * POOL_SCALE;
+  const stripe = n >= 9;
+  const col = POOL_COLORS[stripe ? n - 8 : n];
+  const m = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 8), toon(stripe ? "#f6f3ea" : col));
+  m.castShadow = true;
+  if (!stripe) return m;
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(r * 1.02, r * 1.02, r * 1.0, 12, 1, true), toon(col));
+  m.add(band);
+  return m;
+}
 
 function holdMesh(kind: string): THREE.Object3D {
   const g = new THREE.Group();
@@ -131,6 +175,12 @@ export class Avatar {
   activityEl: HTMLDivElement;
   private emote: { name: string; until: number } | null = null;
   private talkPhase = Math.random() * 10;
+  /** Jogando sinuca (extra.pool): mirando ou esperando a vez, força e hora da última tacada. */
+  pool: { aim: boolean; pow: number; shotAt: number } | null = null;
+  private cueObj: THREE.Object3D | null = null;
+  private poolAmt = 0;
+  /** Intensidade dos gestos de conversa (0..1): sobe rápido e desce devagar quando a fala acaba. */
+  private talkAmt = 0;
   private holdObj: THREE.Object3D | null = null;
   holding: string | null = null;
   private holiday: Holiday | null = null;
@@ -205,6 +255,49 @@ export class Avatar {
     if (act?.app) this.activityEl.textContent = act.app;
     this.label.classList.toggle("cam-on", !!this.extra.cam);
     if (!this.isMe) this.sitting = !!this.extra.sit;
+    this.setPool(this.extra.pool ?? null);
+  }
+
+  /** Taco na mão enquanto joga sinuca. */
+  setPool(p: { aim: boolean; pow: number; shotAt: number } | null) {
+    this.pool = p ? { aim: !!p.aim, pow: Number(p.pow) || 0, shotAt: Number(p.shotAt) || 0 } : null;
+    if (this.pool && !this.cueObj) {
+      this.cueObj = cueMesh();
+      this.body.add(this.cueObj);
+    } else if (!this.pool && this.cueObj) {
+      this.cueObj.removeFromParent();
+      this.cueObj = null;
+      this.poolAmt = 0;
+    }
+    if (this.holdObj) this.holdObj.visible = !this.pool;
+  }
+
+  /**
+   * Pose de sinuca: mirando, o personagem se debruça na mesa com a mão de apoio na frente e
+   * o taco puxa para trás conforme a força; na tacada o taco vai à frente e volta.
+   * Esperando a vez, fica em pé com o taco apoiado no chão.
+   */
+  private poolPose(c: Character, _t: number) {
+    const p = this.pool!;
+    const cue = this.cueObj!;
+    this.poolAmt += ((p.aim ? 1 : 0) - this.poolAmt) * 0.12;
+    const k = this.poolAmt;
+    // tacada: vai rápido à frente (0,1 s), segura e volta devagar
+    const since = (Date.now() - p.shotAt) / 1000;
+    let stroke = 0;
+    if (since >= 0 && since < 0.9) stroke = since < 0.1 ? since / 0.1 : Math.max(0, 1 - (since - 0.1) / 0.8);
+    const pull = p.aim ? p.pow : 0;
+    const off = -0.32 * pull + 0.38 * stroke;
+    // em pé (k=0) -> debruçado (k=1)
+    c.root.rotation.set(0.42 * k, 0, 0);
+    c.legL.rotation.set(0.25 * k, 0, 0);
+    c.legR.rotation.set(-0.3 * k, 0, 0);
+    c.armL.rotation.set(-1.45 * k - 0.1, 0, 0.3 * k);
+    c.armR.rotation.set((-0.35 + off * 1.4) * k + -0.6 * (1 - k), 0, -0.12 * k);
+    c.head.rotation.set(-0.25 * k, 0, 0);
+    // taco: deitado e apontando para a frente (k=1) ou em pé ao lado do corpo (k=0)
+    cue.position.set(0.12 * k + 0.32 * (1 - k), 0.98 * k + 0.95 * (1 - k), (0.1 + off) * k + 0.08 * (1 - k));
+    cue.rotation.set(0.1 * k + -1.38 * (1 - k), 0, 0);
   }
 
   setHoliday(h: Holiday | null) {
@@ -351,6 +444,8 @@ export class Avatar {
       c.armR.rotation.set(-0.45, 0, 0);
       c.root.rotation.set(0, 0, 0);
     }
+    // fala: liga em ~0,15 s e apaga em ~0,8 s
+    this.talkAmt += ((this.talking ? 1 : 0) - this.talkAmt) * Math.min(1, dt * (this.talking ? 7 : 2.2));
     const mouth = c.head.getObjectByName("mouth");
     // a boca é um voxel em que o tamanho fica na escala: anima em cima da altura original
     if (mouth && mouth.userData.h === undefined) mouth.userData.h = mouth.scale.y;
@@ -395,14 +490,21 @@ export class Avatar {
       } else if (k === "cafe") {
         c.armR.rotation.set(-1.9, 0, 0.2);
       }
-    } else if (this.talking && !this.moving) {
-      // gestos de conversa: mãos, cabeça e boca em movimento
-      this.talkPhase += dt;
+    } else if (this.pool && this.cueObj && !this.moving) {
+      this.poolPose(c, t);
+    } else if (this.talkAmt > 0.02 && !this.moving) {
+      // gestos de conversa: mãos, cabeça e boca em movimento. Quando a fala acaba, os gestos
+      // diminuem e desaceleram até parar (sem "congelar" no meio do movimento).
+      const k = this.talkAmt;
+      this.talkPhase += dt * (0.45 + 0.55 * k);
       const p = this.talkPhase;
-      c.armR.rotation.set(-0.5 - Math.max(0, Math.sin(p * 3.1)) * 0.7, 0, 0.15 + Math.sin(p * 1.7) * 0.2);
-      c.armL.rotation.set(-0.2 - Math.max(0, Math.sin(p * 2.3 + 1.5)) * 0.5, 0, -0.1 - Math.sin(p * 1.3) * 0.15);
-      c.head.rotation.set(Math.sin(p * 4.2) * 0.08, Math.sin(p * 0.9) * 0.18, Math.sin(p * 1.6) * 0.05);
-      if (mouth) mouth.scale.y = mouthH * (1 + Math.abs(Math.sin(p * 13)) * 2.4);
+      const e = k * k * (3 - 2 * k);
+      const ar = c.armR.rotation;
+      const al = c.armL.rotation;
+      ar.set(ar.x + (-0.5 - Math.max(0, Math.sin(p * 3.1)) * 0.7 - ar.x) * e, 0, (0.15 + Math.sin(p * 1.7) * 0.2) * e);
+      al.set(al.x + (-0.2 - Math.max(0, Math.sin(p * 2.3 + 1.5)) * 0.5 - al.x) * e, 0, (-0.1 - Math.sin(p * 1.3) * 0.15) * e);
+      c.head.rotation.set(Math.sin(p * 4.2) * 0.08 * e, Math.sin(p * 0.9) * 0.18 * e, Math.sin(p * 1.6) * 0.05 * e);
+      if (mouth) mouth.scale.y = mouthH * (1 + Math.abs(Math.sin(p * 13)) * 2.4 * (this.talking ? 1 : e * 0.5));
     } else if (this.holding && !this.moving) {
       this.updateHoldLevel();
       // gole de vez em quando
@@ -1670,6 +1772,8 @@ export class World {
   private readyFrames = 0;
   private outline = true;
   private maxFps = 0;
+  /** Limite extra quando o app está em segundo plano ou coberto (0 = sem limite). */
+  backgroundFps = 0;
   private lastFrame = 0;
 
   /**
@@ -1777,6 +1881,96 @@ export class World {
     });
   }
 
+  // ---------- sinuca: bolas de verdade na mesa 3D
+  private poolViews = new Map<string, PoolView>();
+  private poolClock = performance.now();
+
+  /**
+   * Quem é o anfitrião de um jogo publica em extra.poolTable as bolas paradas e, a cada tacada,
+   * o estado inicial + a velocidade. Cada um roda a mesma física aqui e vê as bolas rolando.
+   */
+  private updatePool(_dt: number) {
+    // relógio próprio: as bolas andam no tempo real mesmo se o quadro demorar
+    const nowMs = performance.now();
+    const dt = Math.min(0.25, (nowMs - this.poolClock) / 1000);
+    this.poolClock = nowMs;
+    const states = new Map<string, any>();
+    const all = this.me ? [this.me, ...this.others.values()] : [...this.others.values()];
+    for (const a of all) {
+      const t = a.extra?.poolTable;
+      if (t?.item && (a === this.me || a.root.visible)) states.set(t.item, t);
+    }
+    for (const [id, v] of this.poolViews) {
+      if (states.has(id) && v.obj.parent) continue;
+      v.group.removeFromParent();
+      disposeTree(v.group);
+      const deco = v.obj.getObjectByName("pool-deco");
+      if (deco) deco.visible = true;
+      this.poolViews.delete(id);
+    }
+    for (const [id, t] of states) {
+      let v = this.poolViews.get(id);
+      if (!v) {
+        const obj = this.itemGroup.children.find((o) => o.userData.itemId === id);
+        if (!obj) continue;
+        const group = new THREE.Group();
+        const balls: THREE.Object3D[] = [];
+        for (let n = 0; n < 16; n++) {
+          const b = poolBall(n);
+          balls.push(b);
+          group.add(b);
+        }
+        obj.add(group);
+        const deco = obj.getObjectByName("pool-deco");
+        if (deco) deco.visible = false;
+        v = { sim: new PoolSim(), obj, group, balls, shot: t.shot?.id ?? -1 };
+        if (Array.isArray(t.balls)) v.sim.load(t.balls);
+        this.poolViews.set(id, v);
+      }
+      if (t.shot && t.shot.id !== v.shot && Array.isArray(t.shot.b)) {
+        v.shot = t.shot.id;
+        v.sim.load(t.shot.b);
+        v.sim.shoot(Number(t.shot.vx) || 0, Number(t.shot.vy) || 0);
+      } else if (!v.sim.moving && Array.isArray(t.balls)) v.sim.load(t.balls);
+      v.sim.step(dt);
+      v.sim.balls.forEach((b, i) => {
+        const m = v!.balls[i];
+        if (!m) return;
+        m.visible = !b.in;
+        if (b.in) return;
+        const nx = (b.x - POOL_W / 2) * POOL_SCALE;
+        const nz = (b.y - POOL_H / 2) * POOL_SCALE;
+        // rola de verdade: gira em volta do eixo perpendicular ao movimento
+        const dx = nx - m.position.x;
+        const dz = nz - m.position.z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d > 1e-5 && d < 0.2) m.quaternion.premultiply(_q.setFromAxisAngle(_ax.set(dz / d, 0, -dx / d), d / (PR * POOL_SCALE)));
+        m.position.set(nx, POOL_BALL_Y, nz);
+      });
+    }
+  }
+
+  /** Centro da mesa e conversão do canvas da sinuca para o mundo (para posicionar os jogadores). */
+  poolToWorld(it: Item, cx: number, cy: number) {
+    const lx = (cx - POOL_W / 2) * POOL_SCALE;
+    const lz = (cy - POOL_H / 2) * POOL_SCALE;
+    const th = -(it.rot * Math.PI) / 180;
+    return { x: it.x + lx * Math.cos(th) + lz * Math.sin(th), z: it.z - lx * Math.sin(th) + lz * Math.cos(th) };
+  }
+
+  /** Vira o meu personagem para um ponto (sem andar). */
+  faceTo(x: number, z: number) {
+    if (!this.me) return;
+    const p = this.me.root.position;
+    if (Math.abs(x - p.x) + Math.abs(z - p.z) < 1e-3) return;
+    this.me.targetDir = Math.atan2(x - p.x, z - p.z);
+  }
+
+  /** Está andando por um caminho (clique ou walkTo)? */
+  get walking() {
+    return this.path.length > 0;
+  }
+
   // ---------- loop
   start() {
     const tick = () => {
@@ -1794,7 +1988,10 @@ export class World {
         this.lastStyleScan = now;
         this.applyStyle();
       }
-      if (this.maxFps && now - this.lastFrame < 1000 / this.maxFps - 2) return;
+      // limite de quadros: qualidade "leve" (30), janela sem foco (20) ou cena coberta pela tela cheia (12)
+      const caps = [this.maxFps, this.backgroundFps].filter((x) => x > 0);
+      const cap = caps.length ? Math.min(...caps) : 0;
+      if (cap && now - this.lastFrame < 1000 / cap - 2) return;
       this.lastFrame = now;
       if (this.outline) this.composer.render();
       else this.renderer.render(this.scene, this.camera);
@@ -1980,6 +2177,7 @@ export class World {
       an.bug.rotation.y = twitch + Math.sin(tt * 0.6) * 0.15;
     }
     this.updateDoors(dt);
+    this.updatePool(dt);
     this.onFrame?.();
   }
 }

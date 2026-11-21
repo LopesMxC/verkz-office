@@ -589,3 +589,61 @@ body.touch .icon-btn[data-tip]:hover::after { display: none; }
 .el-display { display: flex; align-items: center; gap: 14px; padding: 14px 26px; border-radius: 12px; background: #0D0D0D; border: 1px solid #2a2d33; box-shadow: inset 0 0 18px rgba(200,245,1,.12); font-weight: 700; font-size: 26px; color: #C8F501; letter-spacing: .02em; }
 .el-arrow { animation: elArrow 0.9s ease-in-out infinite; display: inline-block; }
 @keyframes elArrow { 0%,100% { transform: translateY(0); opacity: 1; } 50% { transform: translateY(-4px); opacity: .5; } }
+
+/* ---------- v0.6: configurações largas, com abas na lateral (nada de rolar para o lado) */
+.modal.settings-modal { width: min(880px, calc(100vw - 32px)); }
+.settings-modal .modal-body { overflow: hidden; max-height: none; }
+.settings-wrap { display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 22px; height: min(64vh, 600px); min-height: 0; }
+.settings-wrap .tabs.vtabs { flex-direction: column; flex-wrap: nowrap; overflow: visible; border-bottom: 0; border-right: 1px solid var(--border); padding: 0 14px 0 0; margin: 0; gap: 4px; }
+.settings-wrap .tabs.vtabs button { width: 100%; text-align: left; padding: 10px 12px; white-space: normal; }
+.settings-wrap form.settings { overflow-y: auto; min-width: 0; padding: 0 8px 8px 0; }
+.settings-wrap form.settings section { min-width: 0; }
+.linked-apps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.linked-apps .la-row { min-width: 0; }
+@media (max-width: 720px) {
+  .settings-wrap { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .settings-wrap .tabs.vtabs { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 10px; }
+  .settings-wrap .tabs.vtabs button { width: auto; }
+  .settings-modal .modal-body { overflow-y: auto; }
+}
+
+/* ---------- v0.6: fala termina suave (borda verde apaga devagar) */
+.nameplate .bubble, .nameplate .plate { transition: border-color .45s ease, box-shadow .45s ease; }
+
+/* ---------- v0.6: sinuca ao lado da cena (dá para ver os personagens jogando) */
+.game-bg.pool { background: transparent; pointer-events: none; place-items: start end; padding: 76px 20px 0 0; z-index: 35; }
+.game-bg.pool .game-modal { pointer-events: auto; width: min(600px, 48vw); box-shadow: var(--shadow); }
+.game-bg.pool .game-modal canvas { aspect-ratio: 16 / 9; cursor: crosshair; }
+.game-score small { display: block; font-size: 11px; font-weight: 500; color: var(--text-2); text-transform: capitalize; }
+@media (max-width: 900px) { .game-bg.pool { place-items: end center; padding: 0 0 90px; } .game-bg.pool .game-modal { width: min(600px, 96vw); } }
+
+/* ---------- v0.6: tela compartilhada com o dock, contagem e blocos das pessoas */
+body.screen-mode .dock { z-index: 46; }
+body.screen-mode .side.right, body.screen-mode .popover { z-index: 47; }
+body.screen-mode .side.left { display: none; }
+body.screen-mode .screens { display: none; }
+.screen-full { padding-bottom: 92px; }
+.screen-full .bar { gap: 12px; }
+.screen-full .bar .t-m { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.screen-full .bar .chip { flex: none; }
+.screen-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 232px; gap: 12px; padding: 0 16px; }
+.screen-body.no-people { grid-template-columns: minmax(0, 1fr); }
+.screen-main { min-width: 0; min-height: 0; display: flex; border-radius: var(--r-md); overflow: hidden; background: #000; }
+.screen-main video { flex: 1; width: 100%; height: 100%; min-height: 0; object-fit: contain; }
+.screen-people { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; min-height: 0; padding: 4px; }
+.sp-tile { position: relative; flex: none; height: 124px; border-radius: var(--r-md); background: var(--raised); border: 2px solid transparent; overflow: hidden; display: flex; align-items: center; justify-content: center;
+  transition: border-color .45s ease, box-shadow .45s ease; }
+.sp-tile.talking { border-color: #3ddc5f; box-shadow: 0 0 0 2px rgba(61, 220, 95, .35), 0 0 18px rgba(61, 220, 95, .45); }
+.sp-tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.sp-tile video.mirror { transform: scaleX(-1); }
+.sp-tile .av { width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 18px; color: #0D0D0D; }
+.sp-tile .nm { position: absolute; left: 8px; bottom: 8px; right: 8px; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #fff;
+  text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+.sp-tile .nm span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-tile .nm .off { color: #ff6b5b; display: inline-flex; }
+.sp-tile .far { position: absolute; top: 8px; right: 8px; font-size: 10.5px; color: var(--text-2); background: rgba(0,0,0,.45); padding: 2px 6px; border-radius: 6px; }
+@media (max-width: 760px) {
+  .screen-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .screen-people { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+  .sp-tile { width: 120px; height: 84px; }
+}

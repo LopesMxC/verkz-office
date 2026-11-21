@@ -456,11 +456,17 @@ export const DEFS: Record<string, Def> = {
         box(0.14, 0.62, 0.14, M.woodDark, 1.05, 0, 0.55),
         box(2.4, 0.14, 1.4, M.woodDark, 0, 0.62, 0),
         box(2.16, 0.04, 1.16, felt, 0, 0.76, 0),
-        blob(0.05, M.white, 0.5, 0.82, 0),
-        blob(0.05, M.red, -0.4, 0.82, 0.1),
-        blob(0.05, M.yellow, -0.48, 0.82, -0.05),
-        blob(0.05, M.blue, -0.32, 0.82, -0.08),
-        box(1.4, 0.03, 0.03, M.beige, 0.1, 0.84, 0.3),
+        // bolas paradas de enfeite (somem quando tem jogo: aí entram as bolas de verdade)
+        Object.assign(
+          group(
+            blob(0.05, M.white, 0.5, 0.82, 0),
+            blob(0.05, M.red, -0.4, 0.82, 0.1),
+            blob(0.05, M.yellow, -0.48, 0.82, -0.05),
+            blob(0.05, M.blue, -0.32, 0.82, -0.08),
+            box(1.4, 0.03, 0.03, M.beige, 0.1, 0.84, 0.3),
+          ),
+          { name: "pool-deco" },
+        ),
       );
     },
   },
