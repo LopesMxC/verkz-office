@@ -197,3 +197,8 @@ Identity no LiveKit = id do peer no servidor.
   /api/endpoints/1/docker/build com X-CSRF-Token; o Portainer só devolve o log no fim).
 - Instaladores do app (Windows/Mac) da 0.5.0 ainda não gerados: rodar compilador.bat (opção 3) e
   deploy/gerar-update.ps1, depois subir em verkzsystem.tech/apps/verkz-office/.
+- Linux (21/11): compilador.bat ganhou [3] Linux e [4] Todos (Mac e Linux saem num build só do GitHub:
+  plataforma=mac-linux; artifact verkz-office-linux com .deb/.rpm/.AppImage(.sig)). build.yml tem as opções linux e
+  mac-linux (ubuntu-22.04 + libwebkit2gtk-4.1-dev). compilador-linux.sh compila direto num PC Linux.
+  gerar-update.ps1 inclui linux-x86_64 (AppImage) no latest.json. Instaladores Linux 0.5.0 gerados no sandbox
+  (Ubuntu 24.04) e entregues; AppImage assinado com a chave de .chaves.

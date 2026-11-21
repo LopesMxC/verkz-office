@@ -24,6 +24,8 @@ $exe = Get-ChildItem $Pasta -Filter "*_$versao*setup.exe" -ErrorAction SilentlyC
 if ($exe) { Adicionar $exe @("windows-x86_64") }
 $mac = Get-ChildItem $Pasta -Filter "*.app.tar.gz" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($mac) { Adicionar $mac @("darwin-aarch64", "darwin-x86_64") }
+$appimage = Get-ChildItem $Pasta -Filter "*.AppImage" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($appimage) { Adicionar $appimage @("linux-x86_64") }
 
 if ($plataformas.Count -eq 0) { Write-Host "[!] Nenhum instalador assinado encontrado; latest.json nao foi gerado."; exit 0 }
 

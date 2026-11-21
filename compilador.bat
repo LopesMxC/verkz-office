@@ -11,17 +11,31 @@ echo  ===============================================
 echo.
 echo    [1] Windows   ^(compila aqui neste PC^)
 echo    [2] Mac       ^(compila no GitHub, nao precisa de Mac^)
-echo    [3] Os dois   ^(o Mac vai para o GitHub enquanto o Windows compila aqui^)
+echo    [3] Linux     ^(compila no GitHub: .deb, .rpm e .AppImage^)
+echo    [4] Todos     ^(Mac e Linux vao para o GitHub enquanto o Windows compila aqui^)
 echo.
-choice /c 123 /n /m "  Escolha 1, 2 ou 3: "
+choice /c 1234 /n /m "  Escolha 1, 2, 3 ou 4: "
 set "OPCAO=%errorlevel%"
 set "FAZ_WIN="
 set "FAZ_MAC="
+set "FAZ_LINUX="
 if "%OPCAO%"=="1" set "FAZ_WIN=1"
 if "%OPCAO%"=="2" set "FAZ_MAC=1"
-if "%OPCAO%"=="3" set "FAZ_WIN=1"
-if "%OPCAO%"=="3" set "FAZ_MAC=1"
-if not defined FAZ_WIN if not defined FAZ_MAC exit /b 0
+if "%OPCAO%"=="3" set "FAZ_LINUX=1"
+if "%OPCAO%"=="4" (
+  set "FAZ_WIN=1"
+  set "FAZ_MAC=1"
+  set "FAZ_LINUX=1"
+)
+if not defined FAZ_WIN if not defined FAZ_MAC if not defined FAZ_LINUX exit /b 0
+rem O que vai para o GitHub (um build so, com os sistemas pedidos)
+set "FAZ_GH="
+set "PLATAFORMA="
+if defined FAZ_MAC set "FAZ_GH=1"
+if defined FAZ_LINUX set "FAZ_GH=1"
+if defined FAZ_MAC set "PLATAFORMA=mac"
+if defined FAZ_LINUX set "PLATAFORMA=linux"
+if defined FAZ_MAC if defined FAZ_LINUX set "PLATAFORMA=mac-linux"
 echo.
 
 rem ---------------------------------------------------------------
@@ -29,7 +43,7 @@ rem 1) Ferramentas necessarias (instala com winget se faltar)
 rem ---------------------------------------------------------------
 set "FALTOU="
 if defined FAZ_WIN call :ferramentas_windows
-if defined FAZ_MAC call :ferramentas_github
+if defined FAZ_GH call :ferramentas_github
 
 if defined FALTOU (
   echo.
@@ -39,7 +53,7 @@ if defined FALTOU (
   exit /b 0
 )
 if defined FAZ_WIN echo [ok] Node, Rust e ferramentas de C++ prontos.
-if defined FAZ_MAC echo [ok] Git e GitHub CLI prontos.
+if defined FAZ_GH echo [ok] Git e GitHub CLI prontos.
 
 rem ---------------------------------------------------------------
 rem 2) Configuracao (endereco do servidor e chaves opcionais)
@@ -64,10 +78,10 @@ if defined VERKZ_GOOGLE_CLIENT_ID (echo     Google: chave embutida) else (echo  
 if defined VERKZ_SPOTIFY_CLIENT_ID (echo     Spotify: chave embutida) else (echo     Spotify: sem chave ^(pode configurar dentro do app^))
 
 rem ---------------------------------------------------------------
-rem 3) Compilar (o Mac sai primeiro para o GitHub trabalhar em paralelo)
+rem 3) Compilar (Mac e Linux saem primeiro para o GitHub trabalhar em paralelo)
 rem ---------------------------------------------------------------
 set "MAC_FALHOU="
-if defined FAZ_MAC (
+if defined FAZ_GH (
   call :mac_pedir
   if errorlevel 1 set "MAC_FALHOU=1"
 )
@@ -78,6 +92,10 @@ if defined FAZ_WIN (
 if defined MAC_FALHOU goto :erro_mac
 if defined FAZ_MAC (
   call :mac_baixar
+  if errorlevel 1 goto :erro_mac
+)
+if defined FAZ_LINUX (
+  call :linux_baixar
   if errorlevel 1 goto :erro_mac
 )
 
@@ -104,7 +122,7 @@ exit /b 1
 
 :erro_mac
 echo.
-echo  [ERRO] O instalador do Mac nao ficou pronto. Role a janela para cima para ver o motivo.
+echo  [ERRO] O instalador do GitHub ^(Mac/Linux^) nao ficou pronto. Role a janela para cima para ver o motivo.
 if defined RUN_URL echo  Detalhes do build no GitHub: %RUN_URL%
 if exist "instaladores\*.exe" echo  O instalador do Windows esta em: %CD%\instaladores
 echo  Dica: rode de novo; se persistir, mande o texto do erro para o Claude.
@@ -278,18 +296,18 @@ if defined VERKZ_SPOTIFY_CLIENT_ID gh secret set VERKZ_SPOTIFY_CLIENT_ID --body 
 call :chave_assinatura
 gh secret set TAURI_SIGNING_PRIVATE_KEY < "%~dp0.chaves\verkz-office.key" >nul || exit /b 1
 
-rem Pede o build so do Mac (guarda o ultimo build antes, para achar o novo depois)
+rem Pede o build no GitHub so dos sistemas escolhidos (guarda o ultimo build antes, para achar o novo depois)
 set "ANTES="
 for /f "usebackq delims=" %%i in (`gh run list --workflow build.yml --event workflow_dispatch --limit 1 --json databaseId --jq ".[0].databaseId" 2^>nul`) do set "ANTES=%%i"
-echo [..] Pedindo o build do Mac no GitHub...
+echo [..] Pedindo o build no GitHub ^(%PLATAFORMA%^)...
 set /a TENTATIVA=0
 :mac_disparar
 set /a TENTATIVA+=1
-gh workflow run build.yml --ref %RAMO% -f plataforma=mac >nul 2>nul
+gh workflow run build.yml --ref %RAMO% -f plataforma=%PLATAFORMA% >nul 2>nul
 if not errorlevel 1 goto :mac_achar
 if %TENTATIVA% GEQ 6 (
   echo [ERRO] O GitHub nao aceitou o pedido de build. Resposta do GitHub:
-  gh workflow run build.yml --ref %RAMO% -f plataforma=mac
+  gh workflow run build.yml --ref %RAMO% -f plataforma=%PLATAFORMA%
   exit /b 1
 )
 timeout /t 10 /nobreak >nul
@@ -314,18 +332,15 @@ goto :mac_achar_loop
 :mac_achou
 set "RUN_URL="
 for /f "usebackq delims=" %%u in (`gh run view %RUNID% --json url --jq .url`) do set "RUN_URL=%%u"
-echo [ok] Build do Mac rodando no GitHub. Acompanhe em:
+echo [ok] Build rodando no GitHub ^(%PLATAFORMA%^). Acompanhe em:
 echo     %RUN_URL%
 exit /b 0
 
 :mac_baixar
 echo.
-echo [..] Esperando o GitHub terminar o Mac ^(a primeira vez leva uns 15 a 20 minutos^)...
-gh run watch %RUNID% --exit-status --interval 30
-if errorlevel 1 (
-  echo [ERRO] O build do Mac falhou no GitHub.
-  exit /b 1
-)
+echo [..] Esperando o GitHub terminar ^(a primeira vez leva uns 15 a 20 minutos^)...
+call :github_esperar
+if errorlevel 1 exit /b 1
 if not exist "instaladores" mkdir "instaladores"
 set "PASTA_MAC=%CD%\instaladores\_download_mac"
 if exist "%PASTA_MAC%" rmdir /s /q "%PASTA_MAC%"
@@ -340,4 +355,40 @@ if not exist "instaladores\*.dmg" (
   exit /b 1
 )
 echo [ok] Instalador do Mac pronto.
+exit /b 0
+
+rem ---------------------------------------------------------------
+rem Espera o build do GitHub uma vez so (Mac e Linux saem do mesmo build)
+rem ---------------------------------------------------------------
+:github_esperar
+if defined GH_ESPEROU exit /b 0
+gh run watch %RUNID% --exit-status --interval 30
+if errorlevel 1 (
+  echo [ERRO] O build falhou no GitHub.
+  exit /b 1
+)
+set "GH_ESPEROU=1"
+exit /b 0
+
+rem ---------------------------------------------------------------
+rem Linux pelo GitHub: baixa o .deb, o .rpm e o .AppImage
+rem ---------------------------------------------------------------
+:linux_baixar
+echo.
+echo [..] Esperando o GitHub terminar o Linux...
+call :github_esperar
+if errorlevel 1 exit /b 1
+if not exist "instaladores" mkdir "instaladores"
+set "PASTA_LINUX=%CD%\instaladores\_download_linux"
+if exist "%PASTA_LINUX%" rmdir /s /q "%PASTA_LINUX%"
+gh run download %RUNID% -n verkz-office-linux -D "%PASTA_LINUX%"
+if errorlevel 1 exit /b 1
+del /q "instaladores\*.deb" "instaladores\*.rpm" "instaladores\*.AppImage" "instaladores\*.AppImage.sig" 2>nul
+for /r "%PASTA_LINUX%" %%f in (*.deb *.rpm *.AppImage *.AppImage.sig) do copy /y "%%f" "instaladores\" >nul
+rmdir /s /q "%PASTA_LINUX%"
+if not exist "instaladores\*.AppImage" if not exist "instaladores\*.deb" (
+  echo [ERRO] O GitHub terminou, mas os instaladores do Linux nao vieram no download.
+  exit /b 1
+)
+echo [ok] Instaladores do Linux prontos ^(.deb, .rpm e .AppImage^).
 exit /b 0
