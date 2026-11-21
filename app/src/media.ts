@@ -435,6 +435,8 @@ export class Media {
     const me = this.world.me;
     const av = this.world.others.get(id);
     if (!me || !av) return { gain: 0, dist: Infinity };
+    // outro andar: não ouve
+    if (!this.world.sameLevel(av)) return { gain: 0, dist: Infinity };
     const { full, silent } = RANGES[this.prefs.range] ?? RANGES.medio;
     // usa a posição-alvo (vinda da rede), que vale mesmo com a janela em segundo plano
     const dist = Math.hypot(av.target.x - me.root.position.x, av.target.z - me.root.position.z);

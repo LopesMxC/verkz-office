@@ -16,6 +16,8 @@ export interface Item {
   cfg?: any;
   /** Sala dona da parede (paredes geradas automaticamente). */
   room?: string;
+  /** Cor escolhida no editor (#rrggbb). */
+  color?: string;
 }
 
 export interface Zone {
@@ -26,8 +28,10 @@ export interface Zone {
   w: number;
   d: number;
   private: boolean;
-  /** Piso da sala: carpete-azul, carpete-verde, carpete-lilas, carpete-grafite, madeira, ceramica. */
+  /** Piso da sala: carpete-azul, carpete-verde, carpete-lilas, carpete-grafite, madeira, madeira-escura, ceramica, porcelanato, concreto. */
   floor?: string;
+  /** Cor do piso escolhida no editor (#rrggbb), aplicada por cima do desenho do piso. */
+  floorColor?: string;
   /** Cargo dono da sala (quem tem esse cargo nasce aqui). */
   role?: string;
 }
@@ -40,6 +44,71 @@ export interface Layout {
   zones: Zone[];
   /** Clima, estação e datas especiais (configurado pela gestão). */
   env?: import("./env").EnvConfig;
+  /** Cor do piso do salão (fora das salas), #rrggbb. */
+  floorColor?: string;
+  /** Andares de cima (o térreo são `items` e `zones`). Mesmo tamanho de prédio. */
+  levels?: Level[];
+}
+
+export interface Level {
+  /** 1 = 2º andar, 2 = 3º andar... */
+  id: number;
+  name: string;
+  items: Item[];
+  zones: Zone[];
+  floorColor?: string;
+}
+
+/** Nome do andar para a interface. */
+export function levelName(lv: number) {
+  return lv === 0 ? "Térreo" : `${lv + 1}º andar`;
+}
+
+/** Andares existentes, do térreo para cima. */
+export function levelIds(l: Layout): number[] {
+  return [0, ...(l.levels ?? []).map((x) => x.id).sort((a, b) => a - b)];
+}
+
+/**
+ * O que existe num andar, no formato de um Layout (o que o mundo e o editor usam).
+ * No térreo é o próprio layout; nos outros, os itens e salas daquele andar.
+ */
+export function levelView(full: Layout, lv: number): Layout {
+  if (!lv) return full;
+  const L = full.levels?.find((x) => x.id === lv);
+  if (!L) return full;
+  return { ...full, items: L.items, zones: L.zones, floorColor: L.floorColor };
+}
+
+/** Devolve o layout completo com o andar `lv` trocado pelo que está em `view`. */
+export function mergeLevel(full: Layout, lv: number, view: Layout): Layout {
+  if (!lv) return view === full ? full : { ...view, levels: full.levels };
+  return {
+    ...full,
+    levels: (full.levels ?? []).map((L) => (L.id === lv ? { ...L, items: view.items, zones: view.zones, floorColor: view.floorColor } : L)),
+  };
+}
+
+/** Acha um item em qualquer andar do layout completo. */
+export function findItemAnyLevel(full: Layout, id: string): Item | undefined {
+  return full.items.find((i) => i.id === id) ?? full.levels?.flatMap((L) => L.items).find((i) => i.id === id);
+}
+
+/** Paredes de fora do prédio (janelas e, no térreo, a entrada embaixo no meio). */
+export function perimeterWalls(w: number, d: number, entrance: boolean, uid: () => string): Item[] {
+  const W = w / 2;
+  const D = d / 2;
+  const out: Item[] = [];
+  const add = (type: string, x: number, z: number) => out.push({ id: uid(), type, x, z, rot: 0 });
+  for (let x = -W; x <= W; x++) {
+    add(x % 4 === 2 && Math.abs(x) < W - 1 ? "window_wall" : "wall", x, -D);
+    if (!entrance || Math.abs(x) > 2) add(x % 5 === 0 && Math.abs(x) > 4 && Math.abs(x) < W - 1 ? "window_wall" : "wall", x, D);
+  }
+  for (let z = -D + 1; z < D; z++) {
+    add(z % 4 === 0 ? "window_wall" : "wall", -W, z);
+    add(z % 4 === 0 ? "window_wall" : "wall", W, z);
+  }
+  return out;
 }
 
 interface Def {
@@ -377,6 +446,7 @@ export const DEFS: Record<string, Def> = {
     w: 2.4,
     d: 1.4,
     blocks: true,
+    interactive: true,
     build: () => {
       const felt = toon("#2f8a5a");
       return group(
@@ -399,6 +469,7 @@ export const DEFS: Record<string, Def> = {
     w: 2.6,
     d: 1.5,
     blocks: true,
+    interactive: true,
     build: () => {
       const top = toon("#2e5fa8");
       return group(
@@ -695,6 +766,7 @@ export const DEFS: Record<string, Def> = {
     w: 0.6,
     d: 0.6,
     blocks: true,
+    interactive: true,
     build: () => group(box(0.55, 1.1, 0.5, M.dark), cyl(0.18, 0.18, 0.02, M.steel, 0, 0.7, 0.26, 12).rotateX(Math.PI / 2), cyl(0.09, 0.09, 0.02, M.steel, 0, 0.32, 0.26, 10).rotateX(Math.PI / 2)),
   },
   neon_logo: {
@@ -974,6 +1046,233 @@ export const DEFS: Record<string, Def> = {
 };
 
 /** Tipos que aparecem na paleta do editor. */
+
+// ---------------------------------------------------------------------------- mais mobília (modelos CC0)
+/** Móvel simples feito de um modelo (com caixa de reserva se o modelo não carregar). */
+function m(label: string, key: string, w: number, d: number, blocks: boolean, h = 0.8, opts: { height?: number } = {}, fallback?: THREE.Material): Def {
+  return { label, w, d, blocks, build: () => model(key, w, d, opts) ?? (blocks ? box(w, h, d, fallback ?? M.woodDark) : new THREE.Group()) };
+}
+/** Sobe um quadro para a altura de pendurar. */
+function hung(o: THREE.Object3D | null) {
+  const g = new THREE.Group();
+  if (o) {
+    o.position.y += 1.15;
+    g.add(o);
+  } else g.add(box(1, 0.7, 0.05, M.dark, 0, 1.15, 0));
+  return g;
+}
+const EXTRA_DEFS: Record<string, Def> = {
+  // assentos
+  armchair_plain: m("Poltrona simples", "armchair_plain", 1, 1, true, 0.7),
+  sofa_plain: m("Sofá simples", "couch_plain", 2.4, 1.1, true, 0.7),
+  chair_c: m("Cadeira estofada", "chair_c", 0.6, 0.6, false, 0.9, { height: 1 }),
+  chair_b_wood: m("Cadeira de madeira 2", "chair_b_wood", 0.6, 0.6, false, 0.9, { height: 1 }),
+  stool_wood: m("Banqueta de madeira", "stool_wood", 0.5, 0.5, false, 0.5),
+  k_chair_a: m("Cadeira de refeitório", "k_chair_a", 0.55, 0.55, false, 0.9, { height: 0.95 }),
+  k_chair_b: m("Cadeira de refeitório 2", "k_chair_b", 0.55, 0.55, false, 0.9, { height: 0.95 }),
+  pillow_a: m("Almofada", "pillow_a", 0.6, 0.45, false, 0.2),
+  pillow_b: m("Almofada listrada", "pillow_b", 0.6, 0.45, false, 0.2),
+  // mesas
+  k_table: m("Mesa de cozinha", "k_table", 1.2, 1.2, true, 0.75),
+  k_table_dec: m("Mesa posta", "k_table_dec", 1.8, 1.2, true, 0.75),
+  k_round: m("Mesa redonda grande", "k_round", 1.8, 1.8, true, 0.75),
+  k_round_dec: m("Mesa redonda posta", "k_round_dec", 1.8, 1.8, true, 0.75),
+  k_round_small: m("Mesa redonda pequena", "k_round_small", 0.9, 0.9, true, 0.75),
+  // armários e estantes
+  cabinet_plain: m("Gaveteiro liso", "cabinet_plain", 1.2, 0.6, true),
+  cabinet_small: m("Criado-mudo", "cabinet_small", 0.6, 0.6, true, 0.6),
+  cabinet_small_dec: m("Criado-mudo com abajur", "cabinet_small_dec", 0.6, 0.6, true, 0.6),
+  shelf_small: m("Prateleira pequena", "shelf_small", 0.9, 0.45, true, 0.4),
+  shelf_long: m("Prateleira comprida", "shelf_long", 1.8, 0.45, true, 0.4),
+  shelf_small_dec: m("Prateleira com livros", "shelf_small_dec", 0.9, 0.5, true, 0.9),
+  book_single: m("Livro", "book_single", 0.2, 0.3, false, 0.1),
+  // quarto e descanso
+  bed_double: m("Cama de casal", "bed_double_a", 2, 2, true, 0.6, {}, M.beige),
+  bed_double_b: m("Cama de casal 2", "bed_double_b", 2, 2, true, 0.6, {}, M.beige),
+  bed_single: m("Cama de solteiro", "bed_single", 1, 2, true, 0.6, {}, M.beige),
+  // cozinha
+  k_fridge: m("Geladeira duplex", "k_fridge", 1, 1.1, true, 1.8, {}, M.white),
+  k_fridge_dec: m("Geladeira com ímãs", "k_fridge_dec", 1, 1.1, true, 1.8, {}, M.white),
+  k_oven: m("Forno", "k_oven", 1, 1.1, true, 1, {}, M.grey),
+  k_stove: m("Fogão", "k_stove", 1, 1.1, true, 0.9, {}, M.grey),
+  k_counter: m("Bancada", "k_counter", 1, 1, true, 0.9),
+  k_counter_dec: m("Bancada com utensílios", "k_counter_dec", 1, 1.1, true, 0.9),
+  k_sink: m("Pia de cozinha", "k_sink", 1, 1, true, 0.9),
+  k_cabinet: m("Armário de parede", "k_cabinet", 1, 0.5, true, 1),
+  k_shelf_paper: m("Prateleira de cozinha", "k_shelf_paper", 1, 0.35, true, 0.8),
+  k_dishrack: m("Escorredor de pratos", "k_dishrack", 0.6, 0.6, false, 0.5),
+  k_jar: m("Pote", "k_jar", 0.3, 0.3, false, 0.4),
+  k_towelrail: m("Porta-toalhas", "k_towelrail", 0.8, 0.25, false, 0.3),
+  k_crate: m("Caixote", "k_crate", 0.8, 0.8, true, 0.35),
+  k_crate_tomato: m("Caixote de tomates", "k_crate_tomato", 0.8, 0.8, true, 0.4),
+  // decoração
+  frame_wide: { label: "Quadro largo", w: 1.6, d: 0.2, blocks: false, build: () => hung(model("frame_wide", 1.6, 0.2)) },
+  frame_medium: { label: "Quadro médio", w: 0.6, d: 0.2, blocks: false, build: () => hung(model("frame_medium", 0.6, 0.2)) },
+  frame_standing: m("Porta-retrato", "frame_standing", 0.3, 0.2, false, 0.35),
+  cactus_b: m("Cacto 2", "cactus_b", 0.6, 0.6, true, 0.6, {}, M.pot),
+  cactus_small_b: m("Cacto pequeno 2", "cactus_small_b", 0.4, 0.4, false, 0.4, {}, M.pot),
+  k_pillar: m("Pilar", "k_pillar", 0.5, 0.5, true, 2.7, { height: 2.7 }, M.white),
+  // tapetes
+  rug_oval_b: m("Tapete oval 2", "rug_oval_b", 3, 2, false),
+  rug_rect: m("Tapete liso", "rug_rect", 3, 2, false),
+  rug_rect_b: m("Tapete liso 2", "rug_rect_b", 3, 2, false),
+  rug_stripes_b: m("Tapete listrado 2", "rug_stripes_b", 3, 2, false),
+};
+Object.assign(DEFS, EXTRA_DEFS);
+// elevador: liga os andares (clique nele para subir ou descer). As portas abrem quando alguém chega perto.
+DEFS.elevator = {
+  label: "Elevador",
+  w: 2,
+  d: 1.4,
+  blocks: true,
+  interactive: true,
+  build: () => {
+    const steel = toon("#b9bec7");
+    const steelDark = toon("#7d838e");
+    const doorMat = toon("#d5d9e0");
+    const g = new THREE.Group();
+    // caixa (fundo e laterais) e moldura
+    g.add(box(2, 2.6, 0.2, steelDark, 0, 0, -0.6), box(0.2, 2.6, 1.4, steelDark, -0.9, 0, 0), box(0.2, 2.6, 1.4, steelDark, 0.9, 0, 0));
+    g.add(box(2, 0.4, 1.4, steelDark, 0, 2.6, 0));
+    g.add(box(0.12, 2.3, 0.08, steel, -0.68, 0, 0.66), box(0.12, 2.3, 0.08, steel, 0.68, 0, 0.66), box(1.5, 0.14, 0.08, steel, 0, 2.3, 0.66));
+    // piso da cabine e corrimão
+    g.add(box(1.6, 0.04, 1.2, toon("#5d606c"), 0, 0, 0), box(1.3, 0.05, 0.05, steel, 0, 0.95, -0.45));
+    // portas de correr
+    const left = box(0.62, 2.28, 0.05, doorMat, -0.31, 0, 0.62);
+    const right = box(0.62, 2.28, 0.05, doorMat, 0.31, 0, 0.62);
+    // visor do andar (verde neon) e seta
+    const display = box(0.5, 0.16, 0.04, toon("#0D0D0D"), 0, 2.42, 0.71);
+    const lamp = new THREE.Mesh(geo.box(0.36, 0.06, 0.02), new THREE.MeshBasicMaterial({ color: 0xc8f501 }));
+    lamp.position.set(0, 2.5, 0.735);
+    const btn = box(0.08, 0.16, 0.04, steel, 0.83, 1.05, 0.7);
+    g.add(left, right, display, lamp, btn);
+    g.userData.anim = { kind: "elevator", left, right, lamp, open: 0 };
+    return g;
+  },
+};
+// rádio retrô: toca links do YouTube para a sala (clique nele)
+DEFS.radio = {
+  label: "Rádio",
+  w: 0.7,
+  d: 0.4,
+  blocks: true,
+  interactive: true,
+  build: () => {
+    const body = box(0.62, 0.36, 0.3, M.wood, 0, 0.42, 0);
+    const grill = box(0.26, 0.24, 0.02, M.dark, -0.13, 0.48, 0.15);
+    const dial = box(0.18, 0.08, 0.02, M.yellow, 0.16, 0.6, 0.15);
+    const knob1 = cyl(0.035, 0.035, 0.03, M.steel, 0.1, 0.48, 0.16, 8).rotateX(Math.PI / 2);
+    const knob2 = cyl(0.035, 0.035, 0.03, M.steel, 0.22, 0.48, 0.16, 8).rotateX(Math.PI / 2);
+    const ant = box(0.015, 0.4, 0.015, M.steel, 0.24, 0.78, -0.05);
+    ant.rotation.z = -0.35;
+    const stand = box(0.5, 0.42, 0.26, M.woodDark, 0, 0, 0);
+    return group(stand, body, grill, dial, knob1, knob2, ant);
+  },
+};
+
+// ---------------------------------------------------------------------------- quadros com imagem do computador
+const photoCache = new Map<string, THREE.Texture>();
+/** Textura da imagem guardada no item (data URL); placeholder enquanto não há imagem. */
+function photoTexture(src?: string): THREE.Texture {
+  if (src && photoCache.has(src)) return photoCache.get(src)!;
+  if (!src) {
+    return pixelTexture(32, 24, (g) => {
+      g.fillStyle = "#e9e6df";
+      g.fillRect(0, 0, 32, 24);
+      g.fillStyle = "#c9c4ba";
+      g.fillRect(4, 14, 10, 6);
+      g.fillRect(12, 9, 12, 11);
+      g.fillStyle = "#f2c14e";
+      g.fillRect(22, 4, 4, 4);
+    });
+  }
+  const img = new Image();
+  const tex = new THREE.Texture(img);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  img.onload = () => (tex.needsUpdate = true);
+  img.src = src;
+  if (photoCache.size > 60) photoCache.clear();
+  photoCache.set(src, tex);
+  return tex;
+}
+/**
+ * Quadro com foto. `kind`: "wall" (pendurado, encoste numa parede do fundo), "easel" (cavalete) ou "desk" (porta-retrato).
+ * O tamanho segue a proporção da imagem, dentro do espaço do item.
+ */
+function photoFrame(it: Item | undefined, kind: "wall" | "easel" | "desk", maxW: number, maxH: number) {
+  const cfg = it?.cfg ?? {};
+  const aspect = Number(cfg.aspect) > 0 ? Number(cfg.aspect) : 4 / 3;
+  let w = maxW;
+  let h = w / aspect;
+  if (h > maxH) {
+    h = maxH;
+    w = h * aspect;
+  }
+  const g = new THREE.Group();
+  const y = kind === "wall" ? 1.15 : kind === "easel" ? 0.75 : 0.05;
+  const border = kind === "desk" ? 0.03 : 0.06;
+  const frameMat = cfg.frame === "branco" ? M.white : cfg.frame === "madeira" ? M.wood : M.dark;
+  const back = box(w + border * 2, h + border * 2, 0.05, frameMat, 0, y, 0);
+  const pic = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: photoTexture(cfg.img), toneMapped: false }));
+  pic.position.set(0, y + border + h / 2, 0.03);
+  g.add(back, pic);
+  if (kind === "easel") {
+    const legs = [box(0.05, 1.5, 0.05, M.wood, -w / 3, 0, 0.12), box(0.05, 1.5, 0.05, M.wood, w / 3, 0, 0.12), box(0.05, 1.6, 0.05, M.wood, 0, 0, -0.25)];
+    legs[0].rotation.x = legs[1].rotation.x = -0.12;
+    legs[2].rotation.x = 0.2;
+    g.add(...legs, box(w + 0.1, 0.05, 0.1, M.wood, 0, y - 0.05, 0.05));
+  }
+  if (kind === "desk") {
+    const leg = box(0.03, h * 0.8, 0.03, frameMat, 0, 0, -0.08);
+    leg.rotation.x = 0.35;
+    g.add(leg);
+    g.rotation.x = -0.12;
+  }
+  return g;
+}
+Object.assign(DEFS, {
+  photo_wall: { label: "Quadro com foto (parede)", w: 1.4, d: 0.2, blocks: false, interactive: true, build: (it?: Item) => photoFrame(it, "wall", 1.3, 1.1) },
+  photo_big: { label: "Quadro grande com foto", w: 2.2, d: 0.2, blocks: false, interactive: true, build: (it?: Item) => photoFrame(it, "wall", 2.1, 1.3) },
+  photo_easel: { label: "Quadro no cavalete", w: 1.1, d: 0.6, blocks: true, interactive: true, build: (it?: Item) => photoFrame(it, "easel", 1, 0.9) },
+  photo_desk: { label: "Porta-retrato com foto", w: 0.35, d: 0.2, blocks: false, interactive: true, build: (it?: Item) => photoFrame(it, "desk", 0.3, 0.25) },
+} as Record<string, Def>);
+export const PHOTO_TYPES = new Set(["photo_wall", "photo_big", "photo_easel", "photo_desk"]);
+/** Itens de pendurar: encostam sozinhos nas paredes inteiras (fundo); longe delas ganham um pedestal. */
+export const WALL_MOUNT = new Set(["photo_wall", "photo_big", "frame_wide", "frame_medium"]);
+/** Altura da base dos itens de pendurar (m). */
+export const MOUNT_Y = 1.15;
+
+/** Reduz a imagem escolhida para guardar no escritório (lado maior até `max` px, JPEG). */
+export async function imageToDataUrl(file: File, max = 480): Promise<{ img: string; aspect: number }> {
+  if (!file.type.startsWith("image/")) throw new Error("Escolha um arquivo de imagem (JPG, PNG, WebP)");
+  const url = URL.createObjectURL(file);
+  try {
+    const im = new Image();
+    await new Promise((res, rej) => {
+      im.onload = res;
+      im.onerror = () => rej(new Error("Não consegui abrir essa imagem"));
+      im.src = url;
+    });
+    const s = Math.min(1, max / Math.max(im.naturalWidth, im.naturalHeight));
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(im.naturalWidth * s));
+    c.height = Math.max(1, Math.round(im.naturalHeight * s));
+    const g = c.getContext("2d")!;
+    g.fillStyle = "#ffffff";
+    g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(im, 0, 0, c.width, c.height);
+    let q = 0.82;
+    let out = c.toDataURL("image/jpeg", q);
+    // mantém cada imagem pequena (o escritório inteiro vai numa mensagem só)
+    while (out.length > 70_000 && q > 0.4) out = c.toDataURL("image/jpeg", (q -= 0.12));
+    return { img: out, aspect: im.naturalWidth / im.naturalHeight };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export const PALETTE = Object.keys(DEFS).filter((k) => !DEFS[k].decor);
 
 export function footprint(it: Item) {
@@ -983,9 +1282,82 @@ export function footprint(it: Item) {
   return r === 90 || r === 270 ? { w: d.d, d: d.w } : { w: d.w, d: d.d };
 }
 
+const grayCache = new WeakMap<THREE.Texture, THREE.Texture>();
+/** Cópia em tons de cinza (clareados) de uma textura, para tingir com qualquer cor. */
+function grayTexture(t: THREE.Texture): THREE.Texture {
+  const hit = grayCache.get(t);
+  if (hit) return hit;
+  const img = t.image as HTMLImageElement | ImageBitmap | HTMLCanvasElement | undefined;
+  if (!img || !(img as any).width) return t;
+  const c = document.createElement("canvas");
+  c.width = (img as any).width;
+  c.height = (img as any).height;
+  const g = c.getContext("2d", { willReadFrequently: true })!;
+  g.drawImage(img as CanvasImageSource, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height);
+  for (let i = 0; i < d.data.length; i += 4) {
+    const l = 0.299 * d.data[i] + 0.587 * d.data[i + 1] + 0.114 * d.data[i + 2];
+    const v = Math.min(255, 70 + l * 0.85);
+    d.data[i] = d.data[i + 1] = d.data[i + 2] = v;
+  }
+  g.putImageData(d, 0, 0);
+  const out = new THREE.CanvasTexture(c);
+  out.flipY = t.flipY;
+  out.colorSpace = t.colorSpace;
+  out.magFilter = t.magFilter;
+  out.minFilter = t.minFilter;
+  out.generateMipmaps = t.generateMipmaps;
+  out.wrapS = t.wrapS;
+  out.wrapT = t.wrapT;
+  grayCache.set(t, out);
+  return out;
+}
+
+/**
+ * Pinta um móvel com a cor escolhida. Cada material ganha o tom e a saturação da cor, mantendo
+ * a sua própria claridade (os detalhes e sombras do modelo continuam aparecendo).
+ * Materiais com textura (modelos KayKit) são multiplicados pela cor clareada.
+ */
+export function tintObject(obj: THREE.Object3D, hex: string) {
+  const tint = new THREE.Color(hex);
+  const th = { h: 0, s: 0, l: 0 };
+  tint.getHSL(th);
+  const done = new Map<THREE.Material, THREE.Material>();
+  const recolor = (mat: THREE.Material) => {
+    const hit = done.get(mat);
+    if (hit) return hit;
+    const src = mat as THREE.MeshToonMaterial;
+    // pula telas, neon (emissivo) e vidro
+    const emissive = (src as any).emissive as THREE.Color | undefined;
+    if (!src.color || (src as any).isMeshBasicMaterial || (emissive && emissive.getHex() !== 0) || (src.transparent && src.opacity < 0.9)) {
+      done.set(mat, mat);
+      return mat;
+    }
+    const c = src.clone();
+    if (src.map) {
+      // textura em tons de cinza x cor escolhida: o tom fica certo (sem misturar com a cor original)
+      c.map = grayTexture(src.map);
+      c.color.copy(tint).lerp(new THREE.Color(1, 1, 1), 0.12);
+    } else {
+      const o = { h: 0, s: 0, l: 0 };
+      src.color.getHSL(o);
+      // claridade: metade do original, metade da cor escolhida (dá para escurecer e clarear)
+      c.color.setHSL(th.h, th.s, THREE.MathUtils.clamp(o.l * 0.5 + th.l * 0.5, 0.04, 0.96));
+    }
+    done.set(mat, c);
+    return c;
+  };
+  obj.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+    mesh.material = Array.isArray(mesh.material) ? mesh.material.map(recolor) : recolor(mesh.material);
+  });
+}
+
 export function buildItem(it: Item): THREE.Object3D {
   const def = DEFS[it.type];
   const obj = def ? def.build(it) : box(1, 1, 1, M.grey);
+  if (it.color && /^#[0-9a-f]{6}$/i.test(it.color) && !WALL_TYPES.has(it.type)) tintObject(obj, it.color);
   obj.position.set(it.x, 0, it.z);
   obj.rotation.y = -(it.rot * Math.PI) / 180;
   obj.userData.itemId = it.id;
@@ -1074,6 +1446,23 @@ export function buildWall(it: Item, nb: WallLinks, tall: boolean): THREE.Object3
   g.position.set(it.x, 0, it.z);
   g.userData.itemId = it.id;
   return g;
+}
+
+/**
+ * Trecho de parede solto (mesmo acabamento das paredes), usado para estreitar o vão das portas.
+ * Comprimento `len` no eixo X (gire o grupo para o eixo Z), base em y = `y0`.
+ */
+export function wallSegment(len: number, h: number, y0 = 0, baseboard = true): THREE.Group {
+  const g = new THREE.Group();
+  const mats = [wallMats.side, wallMats.side, wallMats.cap, wallMats.base, wallMats.face, wallMats.face];
+  g.add(box(len, h, WALL_T, mats, 0, y0, 0));
+  if (baseboard && y0 === 0) g.add(box(len, 0.1, WALL_T + 0.02, wallMats.base, 0, 0, 0));
+  return g;
+}
+
+/** Batente da porta (moldura clara em volta do vão). */
+export function doorJamb(h: number): THREE.Mesh {
+  return box(0.06, h, WALL_T + 0.04, wallMats.frame, 0, 0, 0);
 }
 
 /** Retângulos de colisão de uma parede fina (pilar + braços), em coordenadas do mundo. */

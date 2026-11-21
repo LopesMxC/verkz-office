@@ -623,6 +623,10 @@ fn check_room_edit(old: &Value, new: &Value, role: &str) -> Result<(), String> {
     if old["size"] != new["size"] || old["zones"] != new["zones"] || old["spawn"] != new["spawn"] || old["env"] != new["env"] {
         return Err("Só a gestão pode mudar salas, prédio e clima.".into());
     }
+    // andares de cima e cor do piso do salão: só a gestão
+    if old["levels"] != new["levels"] || old["floorColor"] != new["floorColor"] {
+        return Err("Só a gestão pode mudar os andares e o piso do salão.".into());
+    }
     let rooms: Vec<(f64, f64, f64, f64)> = old["zones"]
         .as_array()
         .map(|zs| {

@@ -139,3 +139,61 @@ Identity no LiveKit = id do peer no servidor.
 - PWA: public/manifest.webmanifest, sw.js (sem cache), icons/ (icon.svg + PNGs). "Adicionar à tela inicial".
 - Logo: selo (opção C) em src/logo.ts `sealEl()` — V oficial numa moldura neon, "OFFICE" em curvas (Montserrat
   Bold) a partir de 72px. Ícones do desktop regenerados com `npx tauri icon` a partir do selo de 1024px.
+
+## v0.4.2 — pedidos de 21/11/2026 (só app; servidor sem mudança, não precisa refazer a imagem do server)
+- Portas: sons gravados reais (public/sounds, Kenney RPG Audio, CC0; abrir e fechar, volume pela distância).
+  Pixabay é bloqueado no sandbox e a licença dele não é CC0; para trocar, substitua os .mp3 mantendo os nomes.
+- Portas duplas com vão fixo de 1,3 m (DOOR_W em world.ts); o resto do vão vira parede (wallSegment) com colisão
+  própria (doorBlockers). buildDoors agora acha o vão tanto na borda de fora quanto na de dentro da sala
+  (salas criadas no editor não ganhavam porta) e não duplica porta entre duas salas.
+- Mouse: arrastar com o botão esquerdo move o mapa (world.panOffset/panBy, vale no editor quando não está
+  desenhando); dois cliques levam o personagem (no toque continua um toque). Teclado ou andar zera o deslocamento.
+- Editor: aba Salas com "Adicionar sala pronta" (acha espaço livre; sem espaço, amplia o prédio para a direita);
+  aba Prédio com "Ampliar só um lado" (growSide desloca tudo meio passo) e cor do piso do salão/áreas abertas
+  (layout.floorColor). Salas: mais pisos (madeira escura, porcelanato, concreto) e zone.floorColor.
+  Móveis: item.color (tintObject; modelos com textura usam cópia em cinza da textura), categorias na paleta,
+  ~50 móveis novos (KayKit Furniture Bits + Restaurant Bits, CC0, em public/models/kaykit e kaykit-restaurant).
+  Ao abrir o editor o personagem levanta (world.standUp); se a cadeira some/muda, levanta sozinho; unstick() tira o
+  personagem de dentro de parede/móvel quando o layout muda.
+- Quadros com foto (photo_wall/photo_big/photo_easel/photo_desk): imagem do computador reduzida para JPEG
+  (até ~70 KB) em item.cfg.img; WALL_MOUNT encosta sozinho nas paredes inteiras do fundo e, longe delas, ganha
+  pedestal. Limite: o layout inteiro precisa ficar abaixo de 2 MB (ws.max_message_size do servidor).
+- Rádio (item "radio" e a caixa de som): link do YouTube (vídeo ou playlist) em extra.radio {item,url,vid,list,at}
+  de quem ligou; radio.ts usa a IFrame API escondida; ouve quem está na mesma sala (corredor: pela distância).
+  Volume do rádio em Configurações > Sons. Não testado com áudio real (YouTube bloqueado no sandbox).
+- Jogos (games.ts): mesa de sinuca e de pingue-pongue clicáveis; convite por {t:"to"} (game_inv/game_reply/game);
+  quem convida roda a física e manda o estado a ~20/s. Treino sozinho (pingue-pongue contra o computador).
+- Bebidas/lanches acabam: HOLD_MINUTES por item, holdEnd/holdDur no extra (o nível do copo desce para todos),
+  verificação a cada 5 s e ao reconectar.
+- Configurações: aba "Apps" (Google, Spotify, YouTube Music + atalhos de Outlook, Teams, WhatsApp, Slack, Notion,
+  Trello, ClickUp, Monday, Pipedrive, Kommo, Canva, Figma, Planilhas, Meta Business, Instagram e app próprio);
+  qualidade gráfica Leve/Equilibrada/Bonita (world.setQuality); atualização automática (ao abrir, a cada 30 min,
+  ao voltar o foco/internet; "Depois" volta em 2 h). Gestão: botões "Aumentar o prédio" e "Adicionar salas".
+- Tela verde ao entrar: era o fundo do cenário enquanto modelos e layout carregavam. Agora fundo escuro + tela de
+  entrada com progresso (models.ts modelProgress), espera de modelos limitada a 15 s, botão de recarregar após 25 s.
+- Testado no Chrome headless com 2 usuários (entrada, arrastar, dois cliques, editor, sala pronta, cores, quadro,
+  sinuca entre dois, pingue-pongue treino, rádio salvando o estado). Em dev, window.__verkz expõe world/editor.
+
+## v0.5.0 — andares, elevador e estilos visuais (21/11/2026)
+- Layout ganhou `levels: [{id, name, items, zones, floorColor}]` (o térreo continua em `items`/`zones`). Mesmo tamanho
+  de prédio em todos os andares. furniture.ts: levelView, mergeLevel, levelIds, levelName, findItemAnyLevel,
+  perimeterWalls. world.layout = o andar que estou vendo; world.fullLayout = tudo (é o que vai para o servidor).
+- Só o meu andar é desenhado; quem está em outro andar fica invisível e mudo (media.gainFor). Andar de cada pessoa
+  em extra.level. Andar de cima: sem gramado (céu), sem faxineiro.
+- Elevador (item "elevator", interativo): portas de correr abrem com alguém perto; clique = menu de andares;
+  viagem com portas fechando, tela do visor contando andares, musiquinha própria (sound.ts elevatorMusic) e "plim".
+- Editor > Prédio > Andares (só gestão = ADMIN_KEY, a chave do CEO): adicionar andar (paredes + elevadores no mesmo
+  lugar do térreo; cria um elevador perto da entrada se não houver), apagar o último andar. Elevador colocado num andar
+  aparece em todos. Tamanho do prédio só muda no térreo (os andares de cima acompanham).
+- Servidor: check_room_edit recusa mudança em `levels`/`floorColor` de quem não é gestão (precisa da imagem nova).
+- Estilo visual (Configurações > Aparência): Padrão, Realista (MeshStandardMaterial + ACES + RoomEnvironment, sem
+  contorno), Desenho (contorno forte), Retrô (pixelSize 3). world.setStyle / applyStyle (converte materiais toon).
+- Produção (21/11/2026): imagem verkz-office-server:0.9.0 (servidor + web 0.5.0) rodando na stack verkz-office
+  (stack 4 no Portainer portainer.clientesalifer.online; arquivo da stack atualizado de 0.8.0 para 0.9.0).
+  Build feito com deploy/Dockerfile.build-leve: contexto pequeno (~165 KB, só código) e os modelos KayKit são
+  clonados do GitHub no build, Kenney do npm, ícones copiados da versão publicada e sons de porta baixados e
+  convertidos com ffmpeg. Contexto: Dockerfile + Cargo.toml/lock + src/ (server) + web/ (app sem public/models,
+  icons e sounds) + kaykit-files.txt (grep dos .gltf de models.ts). Enviado pelo navegador (POST
+  /api/endpoints/1/docker/build com X-CSRF-Token; o Portainer só devolve o log no fim).
+- Instaladores do app (Windows/Mac) da 0.5.0 ainda não gerados: rodar compilador.bat (opção 3) e
+  deploy/gerar-update.ps1, depois subir em verkzsystem.tech/apps/verkz-office/.

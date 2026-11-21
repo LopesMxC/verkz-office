@@ -5,7 +5,7 @@ import { toon } from "./toon";
 
 /**
  * Modelos 3D prontos (CC0):
- *  - KayKit Furniture Bits — Kay Lousberg (kaylousberg.com)
+ *  - KayKit Furniture Bits e Restaurant Bits — Kay Lousberg (kaylousberg.com)
  *  - Kenney Nature Kit — kenney.nl (cópias otimizadas do pacote @netforge/asset-library-files)
  * Licenças em public/models/*.
  */
@@ -32,6 +32,55 @@ export const MODEL_FILES: Record<string, string> = {
   cabinet: "kaykit/cabinet_medium_decorated.gltf",
   books: "kaykit/book_set.gltf",
   frame: "kaykit/pictureframe_large_A.gltf",
+  // ---- mais mobília (KayKit Furniture Bits)
+  armchair_plain: "kaykit/armchair.gltf",
+  couch_plain: "kaykit/couch.gltf",
+  bed_double_a: "kaykit/bed_double_A.gltf",
+  bed_double_b: "kaykit/bed_double_B.gltf",
+  bed_single: "kaykit/bed_single_A.gltf",
+  cabinet_plain: "kaykit/cabinet_medium.gltf",
+  cabinet_small: "kaykit/cabinet_small.gltf",
+  cabinet_small_dec: "kaykit/cabinet_small_decorated.gltf",
+  cactus_b: "kaykit/cactus_medium_B.gltf",
+  cactus_small_b: "kaykit/cactus_small_B.gltf",
+  chair_b_wood: "kaykit/chair_B_wood.gltf",
+  chair_c: "kaykit/chair_C.gltf",
+  stool_wood: "kaykit/chair_stool_wood.gltf",
+  frame_wide: "kaykit/pictureframe_large_B.gltf",
+  frame_medium: "kaykit/pictureframe_medium.gltf",
+  frame_standing: "kaykit/pictureframe_standing_A.gltf",
+  pillow_a: "kaykit/pillow_A.gltf",
+  pillow_b: "kaykit/pillow_B.gltf",
+  rug_oval_b: "kaykit/rug_oval_B.gltf",
+  rug_rect_b: "kaykit/rug_rectangle_B.gltf",
+  rug_stripes_b: "kaykit/rug_rectangle_stripes_B.gltf",
+  shelf_small: "kaykit/shelf_A_small.gltf",
+  shelf_long: "kaykit/shelf_B_large.gltf",
+  shelf_small_dec: "kaykit/shelf_B_small_decorated.gltf",
+  book_single: "kaykit/book_single.gltf",
+  // ---- cozinha e refeitório (KayKit Restaurant Bits)
+  k_fridge: "kaykit-restaurant/fridge_A.gltf",
+  k_fridge_dec: "kaykit-restaurant/fridge_A_decorated.gltf",
+  k_oven: "kaykit-restaurant/oven.gltf",
+  k_stove: "kaykit-restaurant/stove_multi.gltf",
+  k_counter: "kaykit-restaurant/kitchencounter_straight_A.gltf",
+  k_counter_dec: "kaykit-restaurant/kitchencounter_straight_A_decorated.gltf",
+  k_sink: "kaykit-restaurant/kitchencounter_sink.gltf",
+  k_cabinet: "kaykit-restaurant/kitchencabinet.gltf",
+  k_table: "kaykit-restaurant/kitchentable_A.gltf",
+  k_table_dec: "kaykit-restaurant/kitchentable_A_large_decorated.gltf",
+  k_round: "kaykit-restaurant/table_round_A.gltf",
+  k_round_dec: "kaykit-restaurant/table_round_A_decorated.gltf",
+  k_round_small: "kaykit-restaurant/table_round_A_small.gltf",
+  k_chair_a: "kaykit-restaurant/chair_A.gltf",
+  k_chair_b: "kaykit-restaurant/chair_B.gltf",
+  k_crate_tomato: "kaykit-restaurant/crate_tomatoes.gltf",
+  k_crate: "kaykit-restaurant/crate.gltf",
+  k_shelf_paper: "kaykit-restaurant/shelf_papertowel_decorated.gltf",
+  k_pillar: "kaykit-restaurant/pillar_A.gltf",
+  k_towelrail: "kaykit-restaurant/towelrail.gltf",
+  k_jar: "kaykit-restaurant/jar_A_large.gltf",
+  k_dishrack: "kaykit-restaurant/dishrack_plates.gltf",
   tree_oak: "kenney/tree_oak.glb",
   tree_fat: "kenney/tree_fat.glb",
   tree_pine: "kenney/tree_pine.glb",
@@ -48,6 +97,8 @@ const cache = new Map<string, THREE.Object3D>();
 /** Materiais das árvores e arbustos (o clima e a estação mudam a cor deles). */
 export const foliageMaterials: THREE.Material[] = [];
 let loading: Promise<void> | null = null;
+/** Progresso do carregamento (para a tela de entrada). */
+export const modelProgress = { done: 0, total: Object.keys(MODEL_FILES).length };
 
 /** Troca os materiais PBR dos modelos pelo sombreamento em tons do mundo (mesma luz para tudo). */
 function toToon(root: THREE.Object3D) {
@@ -109,6 +160,8 @@ export function loadModels(base = "./models/"): Promise<void> {
         cache.set(key, root);
       } catch (e) {
         console.warn("modelo não carregou:", file, e);
+      } finally {
+        modelProgress.done++;
       }
     }),
   ).then(() => undefined);

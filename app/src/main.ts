@@ -1,5 +1,5 @@
 import "./style.css";
-import { World, PeerInfo, EMOTES, HOLD_ITEMS, SEATS } from "./world";
+import { World, PeerInfo, EMOTES, HOLD_ITEMS, SEATS, GraphicStyle } from "./world";
 import { Net } from "./net";
 import { Media, MediaPrefs, RANGES } from "./media";
 import { Editor } from "./editor";
@@ -9,11 +9,13 @@ import { icon } from "./icons";
 import { sealEl } from "./logo";
 import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, isHostedWeb, NowPlaying, openTarget, Shortcut, activeApp, ytm, YtmState, appVersion, checkUpdate, UpdateInfo } from "./integrations";
 import type { Item, Layout, Zone } from "./furniture";
-import { DEFS } from "./furniture";
-import { soundPrefs, SoundPrefs, notify, approachChime, doorChime, toggleSound, doorSound, footstep, kitchenSound, PAD_SOUNDS, listCustom, addCustom, removeCustom, playPad, PadSound } from "./sound";
+import { DEFS, PHOTO_TYPES, imageToDataUrl, findItemAnyLevel, levelIds, levelName, levelView } from "./furniture";
+import { soundPrefs, SoundPrefs, notify, approachChime, doorChime, toggleSound, doorSound, preloadDoorSounds, elevatorDing, elevatorMusic, footstep, kitchenSound, PAD_SOUNDS, listCustom, addCustom, removeCustom, playPad, PadSound } from "./sound";
+import { GameSession, GameKind } from "./games";
+import { RadioPlayer, RadioSource, RadioState, parseYouTube } from "./radio";
 import { EnvConfig, WEATHERS, SEASONS, HOLIDAYS, seasonByDate, weatherFromCode, resolveHoliday, Weather, Season } from "./env";
 import { DEFAULT_GOAL, DEFAULT_CUSTOM, GoalCfg, CustomCfg, financeData, weatherData, customValue, weatherText, fmtBRL, fmtNum, refreshWidgets } from "./widgets";
-import { loadModels } from "./models";
+import { loadModels, modelProgress } from "./models";
 import { Recorder } from "./recorder";
 import { isPhone, isTouch, canShareScreen, Joystick, unlockAudioOnTouch, registerPWA, keepScreenOn } from "./mobile";
 import { audio } from "./sound";
@@ -38,6 +40,12 @@ interface Prefs {
   media: MediaPrefs;
   sound: SoundPrefs;
   role: string;
+  /** Procura atualização sozinho ao longo do dia (app instalado). */
+  autoUpdate: boolean;
+  /** Qualidade gráfica do mundo 3D. */
+  quality: "leve" | "equilibrada" | "bonita";
+  /** Estilo visual do mundo. */
+  style: GraphicStyle;
 }
 
 /** Cargos da equipe: cada um tem a sua sala no mapa (zona com `role`). */
@@ -66,6 +74,9 @@ function loadPrefs(): Prefs {
     media: { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio", ...(p.media ?? {}) },
     sound: { ...soundPrefs, ...(p.sound ?? {}) },
     role: p.role ?? "",
+    autoUpdate: p.autoUpdate ?? true,
+    quality: p.quality === "leve" || p.quality === "bonita" ? p.quality : "equilibrada",
+    style: (["padrao", "realista", "desenho", "retro"] as const).includes(p.style as any) ? (p.style as GraphicStyle) : "padrao",
   };
 }
 const prefs = loadPrefs();
@@ -167,6 +178,7 @@ function showLogin(error = "") {
 let world: World;
 let net: Net;
 let media: Media;
+let radio: RadioPlayer | null = null;
 let editor: Editor;
 let myId = "";
 let connected = false;
@@ -198,6 +210,11 @@ function start() {
   if (!started) {
     started = true;
     world = new World($("#stage"));
+    world.setQuality(prefs.quality);
+    world.setStyle(prefs.style);
+    if (import.meta.env.DEV) (window as any).__verkz = { world, prefs, get editor() { return editor; } };
+    showEnterCover();
+    world.onReady = () => hideEnterCover();
     media = new Media(world);
     media.prefs = prefs.media;
     media.onApproach = () => {
@@ -206,9 +223,12 @@ function start() {
     media.onLocalState = (patch) => sendState(patch);
     world.onSit = (on) => sendState({ sit: on || null });
     media.onToggle = (_w, on) => toggleSound(on);
-    world.onDoorOpen = (dist) => {
-      if (dist < 9) doorSound();
-    };
+    // som real de porta, mais baixo conforme a distância
+    const doorVol = (dist: number) => Math.max(0, 1 - dist / 9);
+    world.onDoorOpen = (dist) => doorSound("open", doorVol(dist));
+    world.onDoorClose = (dist) => doorSound("close", doorVol(dist));
+    preloadDoorSounds();
+    startRadio();
     world.onOverviewChange = () => renderDock();
     world.onEnterMyRoom = () => doorChime();
     world.onStep = (run, vol) => {
@@ -278,7 +298,8 @@ function start() {
     if (m.layout) world.setLayout(m.layout as Layout);
   });
   net.on("welcome", async (m) => {
-    await modelsReady;
+    // não deixa a entrada travada se algum modelo 3D demorar (ele aparece em caixa simples)
+    await Promise.race([modelsReady, new Promise((r) => setTimeout(r, 15_000))]);
     myId = m.id;
     isAdmin = !!m.admin;
     for (const id of [...world.others.keys()]) world.removePeer(id);
@@ -290,10 +311,13 @@ function start() {
     // nasce sentado numa cadeira livre da sala do seu cargo
     for (const p of m.peers) world.addPeer(p);
     goToRoleRoom(true);
-    sendState({ role: prefs.role || null });
+    sendState({ role: prefs.role || null, level: world.level || null });
+    world.refreshLevelVisibility();
     applyEnv();
     lastActivity = "";
-    if (world.me.holding) sendState({ hold: world.me.holding });
+    // voltou a conexão: o que ainda não acabou continua na mão; o que acabou some
+    if (world.me.holding && holdEnd > Date.now()) sendState({ hold: world.me.holding, holdEnd, holdDur: (HOLD_MINUTES[world.me.holding] ?? 3) * 60_000 });
+    else if (world.me.holding) setHolding(null);
     for (const p of m.peers) {
       if (p.recording) world.others.get(p.id)?.setRecording(true);
     }
@@ -322,6 +346,7 @@ function start() {
   net.on("state", (m) => {
     if (m.id === myId) return;
     world.others.get(m.id)?.applyExtra(m.patch);
+    if (m.patch && "level" in m.patch) world.refreshLevelVisibility();
     if (rightPanel === "team") renderTeam();
   });
   net.on("fx", (m) => {
@@ -418,6 +443,7 @@ function renderTop() {
   const online = (world?.others.size ?? 0) + 1;
   el.innerHTML = `${sealEl(30)}<span class="t-m">Office</span><span class="divider"></span>
     <span class="chip accent">${z?.private ? icon("lock", 13) : '<span class="dot"></span>'}${esc(z ? z.name : "Área aberta")}</span>
+    ${world?.fullLayout?.levels?.length ? `<span class="chip">${esc(levelName(world.level))}</span>` : ""}
     <span class="chip" title="${connected ? "Conectado" : "Reconectando..."}"><span class="dot ${connected ? "ok" : "bad"}"></span>${online} online</span>
     ${recordingNames().length ? `<span class="chip rec" title="Gravando: ${esc(recordingNames().join(", "))}"><span class="dot"></span>Gravando</span>` : ""}`;
 }
@@ -564,6 +590,10 @@ async function dockAction(id: string) {
       world.setOverview(!world.overview);
       break;
     case "home":
+      if (world.level && !roleSeat()) {
+        toast("A sala do seu cargo fica no térreo. Desça pelo elevador.");
+        break;
+      }
       goToRoleRoom(false);
       break;
     case "edit":
@@ -651,7 +681,9 @@ function renderPeople() {
   const list = $("#people");
   if (!list || !world?.me) return;
   renderTop();
-  const zones = world.layout?.zones ?? [];
+  // salas de todos os andares (a pessoa pode estar em outro andar)
+  const full = world.fullLayout;
+  const zones = full ? [...full.zones, ...(full.levels ?? []).flatMap((L) => L.zones)] : world.layout?.zones ?? [];
   const zname = (id: string | null) => zones.find((z) => z.id === id)?.name ?? "Área aberta";
   const level = (id: string) => {
     const g = media.levels.get(id) ?? 0;
@@ -662,7 +694,7 @@ function renderPeople() {
     const col = lookColor(a.look);
     return `<div class="person ${a.speaking && l ? "talking" : ""}" data-id="${a.info.id}">
       <span class="avatar" style="background:${col}">${esc(initials(a.info.name))}</span>
-      <div class="meta"><div class="nm">${esc(a.info.name)}</div><div class="st">${esc(a.speaking && l ? "Falando" : a.info.status || zname(a.info.zone))}</div></div>
+      <div class="meta"><div class="nm">${esc(a.info.name)}</div><div class="st">${esc(a.speaking && l ? "Falando" : a.info.status || zname(a.info.zone) + (full?.levels?.length && (Number(a.extra?.level) || 0) !== world.level ? ` · ${levelName(Number(a.extra?.level) || 0)}` : ""))}</div></div>
       ${l ? `<span class="bars" data-l="${l}" title="Você ouve esta pessoa"><i></i><i></i><i></i></span>` : ""}
       <button class="wave" data-wave="${a.info.id}" title="Acenar">${icon("hand", 18)}</button>
     </div>`;
@@ -1181,7 +1213,12 @@ function menu(x: number, y: number, title: string, items: [string, string, () =>
 // ------------------------------------------------------------ pessoas: menu e cartão
 function goTo(id: string) {
   const a = world.others.get(id);
-  if (a) world.walkTo(a.root.position.x + 0.8, a.root.position.z + 0.8);
+  if (!a) return;
+  if (!world.sameLevel(a)) {
+    toast(`${a.info.name} está no ${levelName(Number(a.extra?.level) || 0)}. Vá pelo elevador.`);
+    return;
+  }
+  world.walkTo(a.root.position.x + 0.8, a.root.position.z + 0.8);
 }
 
 function callPerson(id: string) {
@@ -1258,8 +1295,10 @@ function openPersonCard(id: string, x: number, y: number) {
   const a = id === myId ? world.me : world.others.get(id);
   if (!a) return;
   const act = a.extra.activity;
-  const zones = world.layout?.zones ?? [];
-  const zn = zones.find((z) => z.id === a.info.zone)?.name ?? "Área aberta";
+  const full = world.fullLayout;
+  const zones = full ? [...full.zones, ...(full.levels ?? []).flatMap((L) => L.zones)] : world.layout?.zones ?? [];
+  const lvA = Number(a.extra?.level) || 0;
+  const zn = (zones.find((z) => z.id === a.info.zone)?.name ?? "Área aberta") + (full?.levels?.length ? ` · ${levelName(lvA)}` : "");
   const hold = a.extra.hold && HOLD_ITEMS[a.extra.hold];
   const el = document.createElement("div");
   el.className = "panel person-card";
@@ -1302,6 +1341,22 @@ function onDirect(from: string, name: string, msg: any) {
       ],
     );
     setTimeout(() => bg.remove(), 45_000);
+  } else if (msg.kind === "game_inv") {
+    onGameInvite(from, name, msg);
+  } else if (msg.kind === "game_reply") {
+    const p = pendingGames.get(msg.gid);
+    pendingGames.delete(msg.gid);
+    if (!p) return;
+    if (!msg.ok) toast(`${name} não pode jogar agora`);
+    else openGame(p.kind, "host", from, name, msg.gid);
+  } else if (msg.kind === "game") {
+    games.get(msg.gid)?.onMsg(msg.m);
+  } else if (msg.kind === "radio_stop") {
+    const mine = world.me?.extra?.radio as RadioState | undefined;
+    if (mine && mine.item === msg.item) {
+      sendState({ radio: null });
+      toast(`${name} desligou o rádio`);
+    }
   } else if (msg.kind === "call_reply") {
     toast(msg.ok ? `${name} está vindo` : `${name} não pode agora`);
   } else if (msg.kind === "agenda_req") {
@@ -1397,6 +1452,7 @@ async function renderPad(el: HTMLElement) {
   el.querySelector<HTMLInputElement>('input[type="range"]')?.addEventListener("input", (e) => {
     soundPrefs.soundpad = Number((e.target as HTMLInputElement).value);
     prefs.sound = { ...soundPrefs };
+  if (radio) radio.master = soundPrefs.radio;
     savePrefs();
   });
 }
@@ -1404,14 +1460,28 @@ async function renderPad(el: HTMLElement) {
 // ------------------------------------------------------------ cozinha e itens interativos
 let holdStatus = "";
 let holdTimer = 0;
-function setHolding(kind: string | null, minutes = 4) {
+/** Quanto tempo cada coisa dura na mão até acabar (minutos). */
+const HOLD_MINUTES: Record<string, number> = { cafe: 3, agua: 2, refri: 3, lanche: 4, marmita: 12 };
+let holdEnd = 0;
+function setHolding(kind: string | null, minutes?: number) {
   clearTimeout(holdTimer);
   holdStatus = kind ? HOLD_ITEMS[kind]?.status ?? "" : "";
-  sendState({ hold: kind });
+  const dur = (minutes ?? HOLD_MINUTES[kind ?? ""] ?? 3) * 60_000;
+  holdEnd = kind ? Date.now() + dur : 0;
+  sendState(kind ? { hold: kind, holdEnd, holdDur: dur } : { hold: null, holdEnd: null, holdDur: null });
   lastStatus = null;
   pushStatus();
-  if (kind) holdTimer = window.setTimeout(() => setHolding(null), minutes * 60_000);
+  if (kind) holdTimer = window.setTimeout(checkHoldEnd, dur + 200);
 }
+/** Acabou o que estava na mão? (também roda de tempos em tempos: o timer atrasa com a janela em segundo plano) */
+function checkHoldEnd() {
+  const kind = world?.me?.holding;
+  if (!kind || !holdEnd || Date.now() < holdEnd) return;
+  const it = HOLD_ITEMS[kind];
+  setHolding(null);
+  if (it) toast(`${it.emoji} ${kind === "lanche" || kind === "marmita" ? `${it.label} acabou` : `Acabou ${kind === "agua" ? "a água" : kind === "cafe" ? "o café" : "o refrigerante"}`}`);
+}
+setInterval(checkHoldEnd, 5000);
 
 /** Anda até o item e só então executa a ação. */
 function nearItem(it: Item, then: () => void) {
@@ -1476,11 +1546,34 @@ function onItemClick(it: Item, x: number, y: number): boolean {
               kitchenSound("beep");
               setTimeout(() => {
                 kitchenSound("beep");
-                setHolding("marmita", 20);
+                setHolding("marmita");
                 toast("🍱 Marmita pronta. Bom almoço!");
               }, 5000);
             }),
         ],
+      ]);
+      return true;
+    case "elevator":
+      openElevatorMenu(it, x, y);
+      return true;
+    case "pool_table":
+    case "ping_pong":
+      openGameMenu(it, x, y);
+      return true;
+    case "speaker":
+    case "radio":
+      openRadioMenu(it, x, y);
+      return true;
+    case "photo_wall":
+    case "photo_big":
+    case "photo_easel":
+    case "photo_desk":
+      menu(x, y, DEFS[it.type].label, [
+        ["image", "Trocar a imagem", () => pickPhoto(it)],
+        ...(it.cfg?.img ? ([["eye", "Ver a imagem", () => viewPhoto(it)]] as [string, string, () => void][]) : []),
+        ["square", "Moldura preta", () => saveItemCfg(it, { ...(it.cfg ?? {}), frame: "preto" }, "Moldura trocada")],
+        ["square", "Moldura branca", () => saveItemCfg(it, { ...(it.cfg ?? {}), frame: "branco" }, "Moldura trocada")],
+        ["square", "Moldura de madeira", () => saveItemCfg(it, { ...(it.cfg ?? {}), frame: "madeira" }, "Moldura trocada")],
       ]);
       return true;
     case "fin_panel":
@@ -1500,13 +1593,44 @@ function onItemClick(it: Item, x: number, y: number): boolean {
 }
 
 /** Salva a configuração de um item no layout do escritório (vale para todos). */
-function saveItemCfg(it: Item, cfg: any) {
-  const layout: Layout = JSON.parse(JSON.stringify(world.layout));
-  const found = layout.items.find((i) => i.id === it.id);
+function saveItemCfg(it: Item, cfg: any, okMsg = "Painel atualizado") {
+  const layout: Layout = JSON.parse(JSON.stringify(world.fullLayout));
+  const found = findItemAnyLevel(layout, it.id);
   if (!found) return;
   found.cfg = cfg;
+  if (JSON.stringify(layout).length > 1_900_000) {
+    toast("O escritório já tem imagens demais. Troque ou apague algum quadro antes.", true);
+    return;
+  }
   net.send({ t: "layout_save", layout });
-  toast("Painel atualizado");
+  toast(okMsg);
+}
+
+/** Escolhe uma imagem do computador para o quadro (fica salva no escritório, todos veem). */
+function pickPhoto(it: Item) {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = "image/*";
+  inp.onchange = async () => {
+    const f = inp.files?.[0];
+    if (!f) return;
+    try {
+      const { img, aspect } = await imageToDataUrl(f, it.type === "photo_desk" ? 320 : 560);
+      saveItemCfg(it, { ...(it.cfg ?? {}), img, aspect }, "Imagem do quadro trocada");
+    } catch (e) {
+      toast(String((e as Error).message ?? e), true);
+    }
+  };
+  inp.click();
+}
+
+function viewPhoto(it: Item) {
+  const full = document.createElement("div");
+  full.className = "modal-bg";
+  full.innerHTML = `<img class="photo-full" alt="">`;
+  ($("img", full) as HTMLImageElement).src = it.cfg.img;
+  full.addEventListener("click", () => full.remove());
+  document.body.appendChild(full);
 }
 
 async function openFinance() {
@@ -1687,21 +1811,35 @@ function renderTeam() {
 setInterval(() => rightPanel === "team" && renderTeam(), 15_000);
 
 // ------------------------------------------------------------ atualizações automáticas
+/** Procura atualização ao abrir, a cada 30 min e quando o computador volta (foco, internet, acordou). */
+let lastUpdateCheck = 0;
+let bannerDismissedAt = 0;
 function startUpdates() {
   if (!isNative) return;
-  const run = async () => {
+  const run = async (force = false) => {
+    if (!prefs.autoUpdate && !force) return;
+    // no máximo uma verificação a cada 10 min (foco e rede disparam muitas vezes)
+    if (!force && Date.now() - lastUpdateCheck < 10 * 60_000) return;
+    lastUpdateCheck = Date.now();
     try {
       const u = await checkUpdate();
-      if (u && !pendingUpdate) {
-        pendingUpdate = u;
+      if (!u) return;
+      const newer = !pendingUpdate || u.version !== pendingUpdate.version;
+      pendingUpdate = u;
+      // versão nova aparece na hora; a mesma que a pessoa adiou volta depois de 2 h
+      if (newer || Date.now() - bannerDismissedAt > 2 * 3600_000) {
+        document.querySelector(".update-banner")?.remove();
         showUpdateBanner();
       }
     } catch (e) {
       console.warn("update:", e);
     }
   };
-  setTimeout(run, 8000);
-  setInterval(run, 6 * 3600_000);
+  setTimeout(() => run(true), 8000);
+  setInterval(() => run(), 30 * 60_000 + 1000);
+  window.addEventListener("focus", () => run());
+  window.addEventListener("online", () => run());
+  document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && run());
 }
 
 function showUpdateBanner() {
@@ -1710,7 +1848,10 @@ function showUpdateBanner() {
   el.className = "panel update-banner";
   el.innerHTML = `${icon("download", 18)}<div class="meta"><div class="t-m">Nova versão ${esc(pendingUpdate.version)}</div><div class="t-s c2">${esc(pendingUpdate.notes ?? "Melhorias e correções")}</div></div>
     <button class="btn ghost sm" data-later>Depois</button><button class="btn primary sm" data-now>Atualizar</button>`;
-  $("[data-later]", el).addEventListener("click", () => el.remove());
+  $("[data-later]", el).addEventListener("click", () => {
+    bannerDismissedAt = Date.now();
+    el.remove();
+  });
   $("[data-now]", el).addEventListener("click", async () => {
     const b = $<HTMLButtonElement>("[data-now]", el);
     b.disabled = true;
@@ -1726,6 +1867,388 @@ function showUpdateBanner() {
   hud.appendChild(el);
 }
 
+// ------------------------------------------------------------ tela de entrada (carregando)
+let coverTimer = 0;
+function showEnterCover() {
+  if (document.querySelector(".enter-cover")) return;
+  const el = document.createElement("div");
+  el.className = "enter-cover";
+  el.innerHTML = `<div class="enter-box"><div class="enter-logo"></div><div class="t-m">Entrando no escritório</div><div class="enter-bar"><span></span></div><div class="t-s c3" data-step>Carregando os móveis...</div></div>`;
+  $(".enter-logo", el).innerHTML = sealEl(44);
+  document.body.appendChild(el);
+  const t0 = Date.now();
+  coverTimer = window.setInterval(() => {
+    const pct = Math.round((modelProgress.done / Math.max(1, modelProgress.total)) * 85) + (world?.layout ? 10 : 0);
+    ($(".enter-bar span", el) as HTMLElement).style.width = `${Math.min(100, pct)}%`;
+    $("[data-step]", el).textContent = modelProgress.done < modelProgress.total ? "Carregando os móveis..." : world?.layout ? "Arrumando as salas..." : "Conectando ao servidor...";
+    if (Date.now() - t0 > 25_000 && !el.querySelector("[data-retry]")) {
+      const b = document.createElement("button");
+      b.className = "btn secondary sm";
+      b.dataset.retry = "1";
+      b.textContent = "Está demorando. Recarregar";
+      b.addEventListener("click", () => location.reload());
+      $(".enter-box", el).appendChild(b);
+    }
+  }, 200);
+}
+function hideEnterCover() {
+  clearInterval(coverTimer);
+  const el = document.querySelector<HTMLElement>(".enter-cover");
+  if (!el) return;
+  el.classList.add("out");
+  setTimeout(() => el.remove(), 400);
+}
+
+// ------------------------------------------------------------ elevador (andares)
+let riding = false;
+
+function openElevatorMenu(it: Item, x: number, y: number) {
+  const ids = levelIds(world.fullLayout);
+  const items: [string, string, () => void][] = ids
+    .filter((l) => l !== world.level)
+    .map((l) => [l > world.level ? "chevron-up" : "chevron-down", `Ir para o ${levelName(l)}`, () => rideElevator(it, l)]);
+  if (!items.length) {
+    if (isAdmin) items.push(["plus", "Criar o 2º andar", () => {
+      if (!editor.active) dockAction("edit");
+      editor.showTab("predio");
+    }]);
+    else items.push(["x", "Ainda não há outros andares", () => {}]);
+  }
+  menu(x, y, `Elevador · você está no ${levelName(world.level)}`, items);
+}
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function rideElevator(it: Item, target: number) {
+  if (riding) return;
+  nearItem(it, async () => {
+    if (riding) return;
+    riding = true;
+    world.inputEnabled = false;
+    world.standUp();
+    const music = soundPrefs.notify ? elevatorMusic() : null;
+    try {
+      elevatorDing();
+      world.elevatorForce = 1;
+      await wait(700);
+      world.elevatorForce = 0; // portas fechando
+      await wait(900);
+      // dentro do elevador: tela com o visor contando os andares
+      const from = world.level;
+      const cab = document.createElement("div");
+      cab.className = "elevator-ride";
+      cab.innerHTML = `<div class="el-box"><div class="el-display"><span class="el-arrow">${target > from ? "▲" : "▼"}</span><span class="el-floor">${levelName(from)}</span></div><div class="t-s c3">Subindo...</div></div>`;
+      if (target < from) $(".t-s", cab).textContent = "Descendo...";
+      document.body.appendChild(cab);
+      requestAnimationFrame(() => cab.classList.add("in"));
+      const step = target > from ? 1 : -1;
+      for (let l = from; l !== target; l += step) {
+        await wait(1100);
+        $(".el-floor", cab).textContent = levelName(l + step);
+      }
+      await wait(500);
+      // chega: muda o andar e sai na frente do elevador do andar de destino
+      const there = levelView(world.fullLayout, target).items.filter((i) => i.type === "elevator");
+      const twin = there.sort((a, b) => Math.hypot(a.x - it.x, a.z - it.z) - Math.hypot(b.x - it.x, b.z - it.z))[0] ?? it;
+      const ang = -(twin.rot * Math.PI) / 180;
+      world.setLevel(target, twin.x + Math.sin(ang) * 1.3, twin.z + Math.cos(ang) * 1.3);
+      world.me.targetDir = ang;
+      world.me.body.rotation.y = ang;
+      sendState({ level: target || null });
+      world.elevatorForce = 0;
+      cab.classList.remove("in");
+      await wait(350);
+      cab.remove();
+      elevatorDing();
+      world.elevatorForce = 1;
+      toast(`Você está no ${levelName(target)}`);
+      renderTop();
+      await wait(1200);
+    } finally {
+      world.elevatorForce = null;
+      music?.stop();
+      world.inputEnabled = true;
+      riding = false;
+    }
+  });
+}
+
+// ------------------------------------------------------------ jogos (sinuca e pingue-pongue)
+const games = new Map<string, GameSession>();
+const pendingGames = new Map<string, { kind: GameKind; to: string }>();
+const GAME_NAMES: Record<GameKind, string> = { pong: "pingue-pongue", pool: "sinuca" };
+
+function openGameMenu(it: Item, x: number, y: number) {
+  const kind: GameKind = it.type === "ping_pong" ? "pong" : "pool";
+  const me = world.me.root.position;
+  // quem está mais perto aparece primeiro
+  const people = [...world.others.entries()]
+    .map(([id, a]) => ({ id, name: a.info.name, d: Math.hypot(a.root.position.x - me.x, a.root.position.z - me.z) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 6);
+  const items: [string, string, () => void][] = people.map((p) => ["gamepad", `Desafiar ${p.name}`, () => inviteGame(kind, p.id, p.name)]);
+  items.push(["play", kind === "pong" ? "Treinar contra o computador" : "Treinar sozinho", () => nearItem(it, () => openGame(kind, "solo", "", ""))]);
+  menu(x, y, kind === "pong" ? "Pingue-pongue" : "Sinuca", items);
+}
+
+function inviteGame(kind: GameKind, to: string, name: string) {
+  const gid = Math.random().toString(36).slice(2, 10);
+  pendingGames.set(gid, { kind, to });
+  net.send({ t: "to", to, msg: { kind: "game_inv", game: kind, gid } });
+  toast(`Convite de ${GAME_NAMES[kind]} enviado para ${name}`);
+  setTimeout(() => {
+    if (pendingGames.delete(gid)) toast(`${name} não respondeu o convite`);
+  }, 40_000);
+}
+
+function onGameInvite(from: string, name: string, msg: any) {
+  const kind: GameKind = msg.game === "pong" ? "pong" : "pool";
+  notify("call");
+  const bg = modal(
+    "Convite para jogar",
+    `<div class="call-box"><div class="t-m">${esc(name)} chamou você para ${GAME_NAMES[kind]}</div></div>`,
+    [
+      ["Agora não", "ghost", () => net.send({ t: "to", to: from, msg: { kind: "game_reply", gid: msg.gid, ok: false } })],
+      [
+        "Jogar",
+        "primary",
+        () => {
+          net.send({ t: "to", to: from, msg: { kind: "game_reply", gid: msg.gid, ok: true } });
+          openGame(kind, "guest", from, name, msg.gid);
+        },
+      ],
+    ],
+  );
+  setTimeout(() => bg.remove(), 35_000);
+}
+
+function openGame(kind: GameKind, role: "host" | "guest" | "solo", other: string, otherName: string, gid = "solo") {
+  games.get(gid)?.close();
+  const prevStatus = holdStatus;
+  holdStatus = role === "solo" ? `Treinando ${GAME_NAMES[kind]}` : `Jogando ${GAME_NAMES[kind]} com ${otherName}`;
+  lastStatus = null;
+  pushStatus();
+  const s = new GameSession({
+    kind,
+    role,
+    me: prefs.name,
+    other: otherName,
+    send: (m) => net.send({ t: "to", to: other, msg: { kind: "game", gid, m } }),
+    sfx: (k) => {
+      if (k === "pocket") kitchenSound("open");
+      else if (k === "point" || k === "win") notify(k === "win" ? "wave" : "emote");
+      else footstep(false, 0.5);
+    },
+    onClose: () => {
+      games.delete(gid);
+      holdStatus = world.me?.holding ? HOLD_ITEMS[world.me.holding]?.status ?? prevStatus : "";
+      lastStatus = null;
+      pushStatus();
+    },
+  });
+  games.set(gid, s);
+}
+
+// ------------------------------------------------------------ rádio (YouTube na sala)
+/** Todos os rádios ligados agora (o mais novo vale, se dois ligaram a mesma caixa). */
+function radioSources(): RadioSource[] {
+  const byItem = new Map<string, RadioSource>();
+  const add = (owner: string, ownerName: string, r: RadioState | undefined) => {
+    if (!r?.item || (!r.vid && !r.list)) return;
+    const cur = byItem.get(r.item);
+    if (!cur || r.at > cur.at) byItem.set(r.item, { ...r, owner, ownerName });
+  };
+  if (world.me) add(myId, prefs.name, world.me.extra?.radio);
+  for (const [id, a] of world.others) add(id, a.info.name, a.extra?.radio);
+  return [...byItem.values()];
+}
+
+/** Quanto do rádio eu ouço: mesma sala = tudo; corredor aberto = cai com a distância; outra sala fechada = nada. */
+function radioAudible(s: RadioSource): number {
+  const it = world.layout?.items.find((i) => i.id === s.item);
+  if (!it || !world.me) return 0;
+  const me = world.me.root.position;
+  const d = Math.hypot(me.x - it.x, me.z - it.z);
+  const rz = world.zoneAt(it.x, it.z);
+  const mz = world.currentZone;
+  if (rz && mz && rz.id === mz.id) return Math.max(0.75, 1 - d / 40);
+  if (rz?.private || mz?.private) return 0;
+  return d < 9 ? 1 - d / 9 : 0;
+}
+
+let radioPill: HTMLDivElement | null = null;
+function startRadio() {
+  if (radio) return;
+  radio = new RadioPlayer();
+  radio.master = soundPrefs.radio ?? 0.6;
+  radio.onError = (msg) => toast(msg, true);
+  radio.onNow = (now) => {
+    radioPill?.remove();
+    radioPill = null;
+    if (!now) return;
+    radioPill = document.createElement("div");
+    radioPill.className = "panel radio-pill";
+    radioPill.innerHTML = `${icon("radio", 16)}<div class="meta"><div class="t-s c3">Rádio · ligado por ${esc(now.owner)}</div><div class="t-m"></div></div><button class="round" data-mute title="Silenciar para mim">${icon(radio!.muted ? "mic-off" : "volume", 15)}</button>`;
+    $(".t-m", radioPill).textContent = now.title;
+    $("[data-mute]", radioPill).addEventListener("click", () => {
+      radio!.muted = !radio!.muted;
+      $("[data-mute]", radioPill!).innerHTML = icon(radio!.muted ? "mic-off" : "volume", 15);
+      toast(radio!.muted ? "Rádio silenciado para você" : "Rádio com som de novo");
+    });
+    hud.appendChild(radioPill);
+  };
+  setInterval(() => {
+    if (!world?.me || !radio) return;
+    const srcs = radioSources();
+    // alguém ligou outra música na mesma caixa que eu: a minha sai
+    const mine = world.me.extra?.radio as RadioState | undefined;
+    if (mine && srcs.some((s) => s.item === mine.item && s.owner !== myId)) sendState({ radio: null });
+    radio.update(srcs, radioAudible);
+  }, 500);
+}
+
+function openRadioMenu(it: Item, x: number, y: number) {
+  const on = radioSources().find((s) => s.item === it.id);
+  const items: [string, string, () => void][] = [["link", on ? "Trocar a música" : "Tocar link do YouTube", () => askRadioLink(it)]];
+  if (on) {
+    items.push([
+      "stop",
+      "Desligar o rádio",
+      () => {
+        if (on.owner === myId) sendState({ radio: null });
+        else net.send({ t: "to", to: on.owner, msg: { kind: "radio_stop", item: it.id } });
+        toast("Rádio desligado");
+      },
+    ]);
+    if (radio) items.push([radio.muted ? "volume" : "mic-off", radio.muted ? "Ouvir de novo" : "Silenciar só para mim", () => (radio!.muted = !radio!.muted)]);
+  }
+  menu(x, y, DEFS[it.type]?.label ?? "Rádio", items);
+}
+
+function askRadioLink(it: Item) {
+  const bg = modal(
+    "Tocar no rádio",
+    `<label class="field"><span class="label">Link do YouTube</span><input class="input" name="yt" placeholder="https://www.youtube.com/watch?v=... ou link de playlist" autocomplete="off"></label>
+     <div class="note">Quem estiver nesta sala ouve junto. Vale música, clipe ou playlist (o link com “list=”). Para parar, clique no rádio de novo.</div>`,
+    [
+      ["Cancelar", "ghost", () => {}],
+      [
+        "Tocar",
+        "primary",
+        () => {
+          const url = $<HTMLInputElement>('input[name="yt"]', bg).value;
+          const yt = parseYouTube(url);
+          if (!yt) {
+            toast("Cole um link do YouTube (youtube.com, youtu.be ou music.youtube.com)", true);
+            return false;
+          }
+          nearItem(it, () => {
+            const r: RadioState = { item: it.id, url: url.trim().slice(0, 300), ...yt, at: Date.now() };
+            sendState({ radio: r });
+            toast("📻 Tocando no rádio da sala");
+          });
+        },
+      ],
+    ],
+  );
+  setTimeout(() => $<HTMLInputElement>('input[name="yt"]', bg).focus(), 50);
+}
+
+// ------------------------------------------------------------ apps vinculados (configurações)
+/** Apps que entram como atalho no painel "Agenda e apps" (abrem no navegador ou no app instalado). */
+const LINKABLE_APPS: { name: string; target: string; desc: string }[] = [
+  { name: "Outlook", target: "https://outlook.office.com/mail/", desc: "E-mail e agenda da Microsoft" },
+  { name: "Teams", target: "https://teams.microsoft.com", desc: "Chamadas e chat da Microsoft" },
+  { name: "WhatsApp", target: "https://web.whatsapp.com", desc: "WhatsApp Web" },
+  { name: "Slack", target: "https://app.slack.com", desc: "Mensagens da equipe" },
+  { name: "Notion", target: "https://www.notion.so", desc: "Documentos e wikis" },
+  { name: "Trello", target: "https://trello.com", desc: "Quadros de tarefas" },
+  { name: "ClickUp", target: "https://app.clickup.com", desc: "Tarefas e projetos" },
+  { name: "Monday", target: "https://monday.com", desc: "Gestão de projetos" },
+  { name: "Pipedrive", target: "https://app.pipedrive.com", desc: "CRM de vendas" },
+  { name: "Kommo", target: "https://www.kommo.com", desc: "CRM e atendimento" },
+  { name: "Canva", target: "https://www.canva.com", desc: "Artes e criativos" },
+  { name: "Figma", target: "https://www.figma.com/files", desc: "Design e protótipos" },
+  { name: "Planilhas", target: "https://docs.google.com/spreadsheets", desc: "Google Planilhas" },
+  { name: "Meta Business", target: "https://business.facebook.com", desc: "Anúncios e páginas" },
+  { name: "Instagram", target: "https://www.instagram.com", desc: "Direct e publicações" },
+];
+
+function renderLinkedApps(sec: HTMLElement) {
+  const linked = (target: string) => prefs.shortcuts.some((s) => s.target === target);
+  const status = (on: boolean) => `<span class="chip ${on ? "accent" : ""}">${on ? '<span class="dot"></span>Conectado' : "Desconectado"}</span>`;
+  const native = isNative;
+  const row = (ico: string, name: string, desc: string, right: string) =>
+    `<div class="connect">${icon(ico, 20)}<div class="meta"><div class="t-m">${name}</div><div class="note">${desc}</div></div>${right}</div>`;
+  sec.innerHTML = `
+    <div class="label">Contas</div>
+    ${!native ? `<div class="note">Google e Spotify conectam no app instalado. No navegador, use os atalhos abaixo.</div>` : ""}
+    ${row("calendar", "Google (Agenda, Gmail e Meet)", "Reuniões do dia, entrar no Meet com um clique e e-mails não lidos.",
+      native ? `${status(integ.google)}<button type="button" class="btn ${integ.google ? "ghost" : "primary"} sm" data-link="${integ.google ? "google-off" : "google"}">${integ.google ? "Desconectar" : "Conectar"}</button>` : "")}
+    ${row("music", "Spotify", "Mostra o que está tocando e controla o player.",
+      native ? `${status(integ.spotify)}<button type="button" class="btn ${integ.spotify ? "ghost" : "secondary"} sm" data-link="${integ.spotify ? "spotify-off" : "spotify"}">${integ.spotify ? "Desconectar" : "Conectar"}</button>` : "")}
+    ${native ? row("music", "YouTube Music", "Toca dentro do app (entre com a conta Google na primeira vez).", `<button type="button" class="btn secondary sm" data-link="ytm">Abrir</button>`) : ""}
+    <div class="label" style="margin-top:6px">Atalhos de apps</div>
+    <div class="note">Vinculado, o app aparece em “Agenda e apps” e abre com um clique.</div>
+    <div class="linked-apps">
+      ${LINKABLE_APPS.map((a) => `<label class="toggle-row la-row"><span class="la">${icon(shortcutIcon(a.name), 16)}<span><span class="t-m">${esc(a.name)}</span><span class="t-s c3">${esc(a.desc)}</span></span></span><span class="switch"><input type="checkbox" data-app="${esc(a.target)}" ${linked(a.target) ? "checked" : ""}><span></span></span></label>`).join("")}
+    </div>
+    <form class="inline-form" data-own>
+      <div class="label">Outro app</div>
+      <div class="row2"><input class="input" name="n" placeholder="Nome (ex.: Hostinger)" required><input class="input" name="t" placeholder="Link ou caminho do programa" required></div>
+      <button class="btn secondary sm">Vincular</button>
+    </form>`;
+  const again = () => {
+    refreshIntegrations().finally(() => renderLinkedApps(sec));
+  };
+  const run = async (f: () => Promise<unknown>, okMsg?: string) => {
+    try {
+      await f();
+      if (okMsg) toast(okMsg);
+    } catch (err) {
+      toast(String(err), true);
+    }
+    again();
+  };
+  sec.querySelectorAll<HTMLElement>("[data-link]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const k = b.dataset.link;
+      if (k === "google") {
+        toast("Abrindo o navegador para autorizar o Google...");
+        run(integrations.googleConnect, "Google conectado");
+      } else if (k === "google-off") run(() => integrations.disconnect("google"), "Google desconectado");
+      else if (k === "spotify") {
+        toast("Abrindo o navegador para autorizar o Spotify...");
+        run(integrations.spotifyConnect, "Spotify conectado");
+      } else if (k === "spotify-off") run(() => integrations.disconnect("spotify"), "Spotify desconectado");
+      else if (k === "ytm") ytm.open(true).catch((err) => toast(String(err), true));
+    }),
+  );
+  sec.querySelectorAll<HTMLInputElement>("[data-app]").forEach((c) =>
+    c.addEventListener("change", () => {
+      const app = LINKABLE_APPS.find((a) => a.target === c.dataset.app)!;
+      if (c.checked) {
+        if (!linked(app.target)) prefs.shortcuts.push({ name: app.name, target: app.target });
+      } else prefs.shortcuts = prefs.shortcuts.filter((s) => s.target !== app.target);
+      savePrefs();
+      if (rightPanel === "apps") renderApps();
+      toast(c.checked ? `${app.name} vinculado` : `${app.name} removido`);
+    }),
+  );
+  sec.querySelector<HTMLFormElement>("[data-own]")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target as HTMLFormElement);
+    const n = String(f.get("n")).trim();
+    const t = String(f.get("t")).trim();
+    if (!n || !t) return;
+    prefs.shortcuts.push({ name: n.slice(0, 24), target: t });
+    savePrefs();
+    if (rightPanel === "apps") renderApps();
+    toast(`${n} vinculado`);
+    (e.target as HTMLFormElement).reset();
+  });
+}
+
 // ------------------------------------------------------------ configurações
 async function openSettings() {
   const dev = await media.listDevices();
@@ -1736,7 +2259,7 @@ async function openSettings() {
   const sw = (name: string, label: string, on: boolean, note = "") =>
     `<label class="toggle-row"><span>${label}${note ? `<br><span class="t-s c3">${note}</span>` : ""}</span><span class="switch"><input type="checkbox" name="${name}" ${on ? "checked" : ""}><span></span></span></label>`;
   const env: EnvConfig = world.layout?.env ?? {};
-  const tabs = ["Áudio e vídeo", "Sons", "Privacidade", "Aparência", ...(isAdmin ? ["Escritório"] : []), "Sobre"];
+  const tabs = ["Áudio e vídeo", "Sons", "Privacidade", "Aparência", ...(isAdmin ? ["Escritório"] : []), "Apps", "Sobre"];
   const bg = modal(
     "Configurações",
     `<div class="tabs">${tabs.map((t, i) => `<button type="button" data-tab="${i}" class="${i ? "" : "on"}">${t}</button>`).join("")}</div>
@@ -1754,6 +2277,7 @@ async function openSettings() {
       <section data-sec="1" hidden>
         <label class="slider-row"><span>Volume geral</span><input type="range" name="master" min="0" max="1" step="0.05" value="${soundPrefs.master}"></label>
         <label class="slider-row"><span>Volume do soundpad</span><input type="range" name="soundpad" min="0" max="1" step="0.05" value="${soundPrefs.soundpad}"></label>
+        <label class="slider-row"><span>Volume do rádio</span><input type="range" name="radio" min="0" max="1" step="0.05" value="${soundPrefs.radio ?? 0.6}"></label>
         ${sw("steps", "Som de passos e corrida", soundPrefs.steps)}
         ${sw("approach", "Som quando alguém se aproxima", soundPrefs.approach)}
         ${sw("notify", "Sons de mensagem, aceno e chamado", soundPrefs.notify)}
@@ -1765,6 +2289,17 @@ async function openSettings() {
         ${sw("shareMusic", "Mostrar a música que estou ouvindo", prefs.shareMusic)}
       </section>
       <section data-sec="3" hidden>
+        <label class="field"><span class="label">Estilo visual</span><select class="input" name="style">
+          <option value="padrao" ${prefs.style === "padrao" ? "selected" : ""}>Padrão (traço fino, cores chapadas)</option>
+          <option value="realista" ${prefs.style === "realista" ? "selected" : ""}>Realista (luz e sombras suaves, reflexos)</option>
+          <option value="desenho" ${prefs.style === "desenho" ? "selected" : ""}>Desenho (contorno forte, estilo cartoon)</option>
+          <option value="retro" ${prefs.style === "retro" ? "selected" : ""}>Retrô (pixelado, estilo videogame antigo)</option>
+        </select></label>
+        <label class="field"><span class="label">Qualidade gráfica</span><select class="input" name="quality">
+          <option value="leve" ${prefs.quality === "leve" ? "selected" : ""}>Leve (computador mais fraco, sem sombras)</option>
+          <option value="equilibrada" ${prefs.quality === "equilibrada" ? "selected" : ""}>Equilibrada (recomendada)</option>
+          <option value="bonita" ${prefs.quality === "bonita" ? "selected" : ""}>Bonita (mais nítida, usa mais a placa de vídeo)</option>
+        </select></label>
         ${sw("weatherFx", "Efeitos de clima (chuva, neve, folhas)", prefs.weatherFx, "Desligue em computadores mais fracos.")}
         ${sw("eventSkin", "Usar a skin das datas especiais", prefs.look.eventSkin !== false, "Gorro no Natal, chapéu de bruxa no Halloween...")}
       </section>
@@ -1778,12 +2313,16 @@ async function openSettings() {
         <div class="row2"><label class="field"><span class="label">Cidade do clima</span><input class="input" name="env_city" value="${esc(env.city ?? "Campo Grande")}"></label>
         <label class="field"><span class="label">Lat, Lon</span><input class="input" name="env_ll" value="${env.lat ?? -20.4697}, ${env.lon ?? -54.6201}"></label></div>
         ${sw("env_daynight", "Dia e noite pelo horário real", !!env.daynight)}
+        <div class="label">Prédio</div>
+        <div class="editor-actions"><button type="button" class="btn secondary sm" data-build="predio">${icon("wall", 15)} Aumentar o prédio</button><button type="button" class="btn secondary sm" data-build="salas">${icon("room", 15)} Adicionar salas</button></div>
       </section>`
           : ""
       }
+      <section data-sec="${tabs.length - 2}" hidden data-linked></section>
       <section data-sec="${tabs.length - 1}" hidden>
         <div class="pc-row"><span class="label">Versão</span><span>${esc(String(ver))}</span></div>
-        ${isNative ? `<button type="button" class="btn secondary sm" data-check>Procurar atualização</button>` : ""}
+        ${isNative ? `${sw("autoUpdate", "Procurar atualizações automaticamente", prefs.autoUpdate, "Verifica ao abrir, a cada 30 minutos e quando o computador volta do descanso.")}
+        <button type="button" class="btn secondary sm" data-check>Procurar atualização agora</button>` : ""}
         <label class="field"><span class="label">Chave de gestão</span><input class="input" name="adminKey" type="password" value="${esc(prefs.adminKey)}" placeholder="Só para a gestão"></label>
         <div class="note">${isAdmin ? "Você está conectado como gestão." : "Com a chave de gestão você vê a atividade da equipe e configura o escritório. Vale ao entrar de novo."}</div>
       </section>
@@ -1800,6 +2339,14 @@ async function openSettings() {
       bg.querySelectorAll<HTMLElement>("[data-sec]").forEach((s) => (s.hidden = s.dataset.sec !== t.dataset.tab));
     }),
   );
+  bg.querySelectorAll<HTMLElement>("[data-build]").forEach((b) =>
+    b.addEventListener("click", () => {
+      bg.remove();
+      if (!editor.active) dockAction("edit");
+      editor.showTab(b.dataset.build as "predio" | "salas");
+    }),
+  );
+  renderLinkedApps($("[data-linked]", bg));
   bg.querySelector("[data-check]")?.addEventListener("click", async () => {
     try {
       const u = await checkUpdate();
@@ -1838,7 +2385,7 @@ function saveSettings(bg: HTMLElement) {
   });
   media.prefs = mp;
   if (devChanged) media.applyDevices();
-  Object.assign(soundPrefs, { master: Number(v("master")), soundpad: Number(v("soundpad")), steps: c("steps"), approach: c("approach"), notify: c("notify") });
+  Object.assign(soundPrefs, { master: Number(v("master")), soundpad: Number(v("soundpad")), radio: Number(v("radio")), steps: c("steps"), approach: c("approach"), notify: c("notify") });
   prefs.sound = { ...soundPrefs };
   const shareChanged = prefs.shareActivity !== c("shareActivity");
   prefs.shareActivity = c("shareActivity");
@@ -1846,6 +2393,17 @@ function saveSettings(bg: HTMLElement) {
   prefs.shareMeeting = c("shareMeeting");
   prefs.shareMusic = c("shareMusic");
   prefs.weatherFx = c("weatherFx");
+  const st = v("style") as GraphicStyle;
+  if (st && st !== prefs.style) {
+    prefs.style = st;
+    world.setStyle(st);
+  }
+  const q = v("quality") as Prefs["quality"];
+  if (q && q !== prefs.quality) {
+    prefs.quality = q;
+    world.setQuality(q);
+  }
+  if (f.elements.namedItem("autoUpdate")) prefs.autoUpdate = c("autoUpdate");
   if (prefs.look.eventSkin !== c("eventSkin")) {
     prefs.look = { ...prefs.look, eventSkin: c("eventSkin") };
     world.me.setLook(prefs.look);
@@ -1867,8 +2425,8 @@ function saveSettings(bg: HTMLElement) {
       lat: Number.isFinite(lat) ? lat : undefined,
       lon: Number.isFinite(lon) ? lon : undefined,
     };
-    if (JSON.stringify(envCfg) !== JSON.stringify(world.layout.env ?? {})) {
-      const layout: Layout = { ...JSON.parse(JSON.stringify(world.layout)), env: envCfg };
+    if (JSON.stringify(envCfg) !== JSON.stringify(world.fullLayout.env ?? {})) {
+      const layout: Layout = { ...JSON.parse(JSON.stringify(world.fullLayout)), env: envCfg };
       net.send({ t: "layout_save", layout });
     }
   }

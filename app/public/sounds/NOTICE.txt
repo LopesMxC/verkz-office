@@ -1,0 +1,3 @@
+Sons de porta: "RPG Audio" de Kenney (kenney.nl), licença CC0 1.0 (domínio público).
+Arquivos originais: door_open_1, door_open_2, door_close_2, door_close_4 (convertidos para mp3 mono).
+Para trocar por outro som, substitua os .mp3 mantendo os mesmos nomes.

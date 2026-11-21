@@ -4,7 +4,11 @@ import { CSS2DObject, CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPixelatedPass } from "three/addons/postprocessing/RenderPixelatedPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { buildItem, buildWall, DEFS, footprint, Item, Layout, WALL_CUT, WALL_T, WALL_TYPES, wallRects, WallLinks, Zone } from "./furniture";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { buildItem, buildWall, DEFS, doorJamb, levelView, MOUNT_Y, WALL_MOUNT, footprint, Item, Layout, WALL_CUT, WALL_H, WALL_T, WALL_TYPES, wallRects, wallSegment, WallLinks, Zone } from "./furniture";
+
+/** Largura do vão das portas duplas (as duas folhas juntas), em metros. */
+const DOOR_W = 1.3;
 import { LOGO_PATH, NEON } from "./logo";
 import { icon } from "./icons";
 import { pixelTexture, rng, toon } from "./toon";
@@ -44,22 +48,37 @@ function holdMesh(kind: string): THREE.Object3D {
     g.add(x);
     return x;
   };
+  // `fill`: como o conteúdo diminui (o personagem vai bebendo/comendo até acabar)
   if (kind === "cafe") {
-    b(0.1, 0.11, 0.1, "#f2f0ea");
-    b(0.08, 0.01, 0.08, "#5a3a22", 0.055);
+    const cup = b(0.1, 0.11, 0.1, "#f2f0ea");
+    (cup.material as THREE.MeshToonMaterial).transparent = true;
+    (cup.material as THREE.MeshToonMaterial).opacity = 0.92;
+    const coffee = b(0.08, 0.01, 0.08, "#5a3a22", 0.055);
     b(0.03, 0.06, 0.02, "#f2f0ea").position.set(0.065, 0, 0);
+    g.userData.fill = (lv: number) => (coffee.position.y = -0.045 + 0.1 * lv);
   } else if (kind === "agua") {
-    const c = b(0.08, 0.14, 0.08, "#9fd8ef");
-    (c.material as THREE.MeshToonMaterial).transparent = true;
+    const cup = b(0.08, 0.14, 0.08, "#e8f6fc");
+    (cup.material as THREE.MeshToonMaterial).transparent = true;
+    (cup.material as THREE.MeshToonMaterial).opacity = 0.35;
+    const water = b(0.07, 0.13, 0.07, "#59b8e0");
+    g.userData.fill = (lv: number) => {
+      water.scale.y = Math.max(0.02, lv);
+      water.position.y = -0.065 + 0.065 * lv;
+    };
   } else if (kind === "lanche") {
-    b(0.14, 0.03, 0.1, "#e6c08a");
-    b(0.14, 0.02, 0.1, "#7fcf5a", 0.025);
-    b(0.14, 0.03, 0.1, "#e6c08a", 0.05);
+    const parts = [b(0.14, 0.03, 0.1, "#e6c08a"), b(0.14, 0.02, 0.1, "#7fcf5a", 0.025), b(0.14, 0.03, 0.1, "#e6c08a", 0.05)];
+    // mordidas: o sanduíche vai encurtando
+    g.userData.fill = (lv: number) => parts.forEach((p) => ((p.scale.x = Math.max(0.15, lv)), (p.position.x = -0.07 * (1 - lv))));
   } else if (kind === "refri") {
     b(0.07, 0.13, 0.07, "#d9534f");
+    b(0.05, 0.01, 0.05, "#c9c9c9", 0.065);
   } else if (kind === "marmita") {
     b(0.18, 0.06, 0.14, "#dcd8cf");
-    b(0.16, 0.02, 0.12, "#c98a55", 0.035);
+    const food = b(0.16, 0.02, 0.12, "#c98a55", 0.035);
+    g.userData.fill = (lv: number) => {
+      food.scale.y = Math.max(0.05, lv);
+      food.position.y = 0.025 + 0.01 * lv;
+    };
   }
   return g;
 }
@@ -83,7 +102,9 @@ export const AVATAR_SCALE = 0.82;
 /** Altura do assento das cadeiras (m). */
 const SEAT_Y = 0.46;
 /** Móveis em que dá para sentar e a distância do clique até eles. */
-export const SEATS: Record<string, number> = { chair: 0.55, office_chair: 0.55, wood_chair: 0.55, exec_chair: 0.55, stool: 0.5, armchair: 0.8 };
+export type GraphicStyle = "padrao" | "realista" | "desenho" | "retro";
+
+export const SEATS: Record<string, number> = { chair: 0.55, office_chair: 0.55, wood_chair: 0.55, exec_chair: 0.55, stool: 0.5, armchair: 0.8, armchair_plain: 0.8, chair_c: 0.55, chair_b_wood: 0.55, stool_wood: 0.5, k_chair_a: 0.55, k_chair_b: 0.55 };
 
 export class Avatar {
   root = new THREE.Group();
@@ -200,6 +221,15 @@ export class Avatar {
       this.holdObj = holdMesh(kind);
       this.char.hand.add(this.holdObj);
     }
+  }
+
+  /** Quanto ainda tem na mão (1 = cheio), pelo horário em que acaba (vale para todos verem). */
+  private updateHoldLevel() {
+    const fill = this.holdObj?.userData.fill as ((lv: number) => void) | undefined;
+    const end = Number(this.extra.holdEnd);
+    const dur = Number(this.extra.holdDur);
+    if (!fill || !end || !dur) return;
+    fill(THREE.MathUtils.clamp((end - Date.now()) / dur, 0, 1));
   }
 
   playEmote(name: string) {
@@ -374,6 +404,7 @@ export class Avatar {
       c.head.rotation.set(Math.sin(p * 4.2) * 0.08, Math.sin(p * 0.9) * 0.18, Math.sin(p * 1.6) * 0.05);
       if (mouth) mouth.scale.y = mouthH * (1 + Math.abs(Math.sin(p * 13)) * 2.4);
     } else if (this.holding && !this.moving) {
+      this.updateHoldLevel();
       // gole de vez em quando
       const sip = Math.sin(t * 0.7 + this.phase) > 0.93;
       c.armR.rotation.set(sip ? -2.1 : -0.9, 0, 0.1);
@@ -408,7 +439,12 @@ export class World {
   pixelPass: RenderPixelatedPass;
   /** Tamanho do "pixel" na tela. 3 = pixel art bem visível e leve. */
   pixelSize = 1;
+  /** O andar que estou vendo (os itens e salas dele). */
   layout!: Layout;
+  /** Layout completo, com todos os andares (é o que vai para o servidor). */
+  fullLayout!: Layout;
+  /** Andar onde eu estou (0 = térreo). Só esse andar é desenhado. */
+  level = 0;
   itemGroup = new THREE.Group();
   zoneGroup = new THREE.Group();
   floor!: THREE.Mesh;
@@ -418,6 +454,8 @@ export class World {
   others = new Map<string, Avatar>();
   zoom = 1.3;
   camTarget = new THREE.Vector3();
+  /** Quanto a pessoa arrastou o mapa para longe do personagem (zera ao andar). */
+  panOffset = new THREE.Vector3();
   keys = new Set<string>();
   path: THREE.Vector3[] = [];
   onMove?: (x: number, z: number, dir: number, moving: boolean, zone: Zone | null) => void;
@@ -431,6 +469,8 @@ export class World {
   onItemClick?: (item: Item, x: number, y: number) => boolean;
   onStep?: (run: boolean, vol: number) => void;
   editing = false;
+  /** No editor: pode arrastar o mapa agora? (não pode enquanto desenha sala ou parede) */
+  canPanEdit?: () => boolean;
   env!: Environment;
   holiday: Holiday | null = null;
   decorGroup = new THREE.Group();
@@ -458,6 +498,10 @@ export class World {
   private doors: { pivots: THREE.Object3D[]; sign: number[]; x: number; z: number; zone: string; open: number; sounding?: boolean }[] = [];
   /** Uma porta começou a abrir (distância até mim, para o som). */
   onDoorOpen?: (dist: number) => void;
+  /** Uma porta terminou de fechar (distância até mim, para o som). */
+  onDoorClose?: (dist: number) => void;
+  /** Trechos de parede que estreitam o vão das portas (colisão). */
+  private doorBlockers: { x0: number; x1: number; z0: number; z1: number }[] = [];
   private doorGroup = new THREE.Group();
   currentZone: Zone | null = null;
   inputEnabled = true;
@@ -485,7 +529,8 @@ export class World {
     this.labels.domElement.className = "labels";
     host.appendChild(this.labels.domElement);
 
-    this.scene.background = new THREE.Color(0x8fcf72);
+    // fundo escuro até o escritório carregar (antes ficava tudo verde enquanto carregava)
+    this.scene.background = new THREE.Color(0x0d0d0d);
 
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
 
@@ -545,8 +590,13 @@ export class World {
   }
 
   // ---------- layout
-  setLayout(layout: Layout) {
+  setLayout(full: Layout) {
+    this.fullLayout = full;
+    // o andar pode ter sido apagado: volta para o térreo
+    if (this.level && !full.levels?.some((L) => L.id === this.level)) this.level = 0;
+    const layout = levelView(full, this.level);
     this.layout = layout;
+    (this.scene.background as THREE.Color).set(this.level ? 0xa9d6ee : 0x8fcf72);
     // CSS2DObject só tira o elemento do DOM quando ele mesmo é removido; aqui eles são netos.
     this.zoneGroup.traverse((o) => {
       if (o instanceof CSS2DObject) o.element.remove();
@@ -601,9 +651,36 @@ export class World {
     for (const z of layout.zones) this.addZoneMesh(z);
     this.buildDoors();
     if (!this.janitor) this.janitor = new Janitor(this);
-    this.janitor.plan();
+    // o faxineiro fica no térreo
+    if (!this.level) this.janitor.plan();
+    this.janitor.avatar.root.visible = !this.level;
+    // andar de cima: sem gramado em volta (só céu), para ficar claro que é outro andar
+    if (this.grass) this.grass.visible = !this.level;
     this.currentZone = null;
     this.placeDecor();
+    // estava sentado e a cadeira mudou de lugar ou saiu: levanta
+    if (this.me?.sitting) {
+      const p = this.me.root.position;
+      const seat = this.seatNear(p);
+      if (!seat || Math.hypot(seat.x - p.x, seat.z - p.z) > 0.3) this.standUp();
+    }
+    this.unstick();
+  }
+
+  /** Mudou o escritório e fiquei dentro de parede ou móvel: vou para o lugar livre mais perto. */
+  private unstick() {
+    const p = this.me?.root.position;
+    if (!p || !this.blocked(p.x, p.z)) return;
+    for (let r = 0.5; r < 8; r += 0.5)
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+        const x = p.x + Math.cos(a) * r;
+        const z = p.z + Math.sin(a) * r;
+        if (!this.blocked(x, z)) {
+          p.set(x, 0, z);
+          this.path = [];
+          return;
+        }
+      }
   }
 
   setHoliday(h: Holiday | null) {
@@ -681,6 +758,31 @@ export class World {
         i += len;
       }
     }
+    /** Aplica uma cor por cima do desenho do piso, mantendo os detalhes (tábuas, rejunte, trama). */
+    const recolor = (x: number, y: number, ww: number, hh: number, hex?: string) => {
+      if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return;
+      const col = new THREE.Color(hex);
+      const hsl = { h: 0, s: 0, l: 0 };
+      col.getHSL(hsl);
+      g.save();
+      g.globalCompositeOperation = "color";
+      g.fillStyle = hex;
+      g.fillRect(x, y, ww, hh);
+      // cor escura: escurece também (o modo "color" sozinho só troca o tom)
+      if (hsl.l < 0.5) {
+        g.globalCompositeOperation = "multiply";
+        const v = Math.round(255 * Math.max(0.25, hsl.l * 1.6));
+        g.fillStyle = `rgb(${v},${v},${v})`;
+        g.fillRect(x, y, ww, hh);
+      } else if (hsl.l > 0.75) {
+        g.globalCompositeOperation = "screen";
+        const v = Math.round(255 * (hsl.l - 0.6));
+        g.fillStyle = `rgb(${v},${v},${v})`;
+        g.fillRect(x, y, ww, hh);
+      }
+      g.restore();
+    };
+    recolor(0, 0, W, H, layout.floorColor);
     const toPx = (x: number, z: number) => [Math.round((x + (w + 1) / 2) * px), Math.round((z + (d + 1) / 2) * px)];
     for (const zn of layout.zones) {
       const [x0, y0] = toPx(zn.x - zn.w / 2, zn.z - zn.d / 2);
@@ -712,19 +814,41 @@ export class World {
         g.fillRect(x0, y0 + zh - 2, zw, 2);
         g.fillRect(x0, y0, 2, zh);
         g.fillRect(x0 + zw - 2, y0, 2, zh);
-      } else if (floor === "madeira") {
+      } else if (floor === "madeira" || floor === "madeira-escura") {
+        const dark = floor === "madeira-escura";
         for (let y = 0, row = 0; y < zh; y += 8, row++) {
           let x = -((row * 29) % 80);
           while (x < zw) {
             const len = 48 + Math.floor(r() * 48);
-            g.fillStyle = ["#b98557", "#c08d5e", "#b07c4f", "#c4935f"][Math.floor(r() * 4)];
+            g.fillStyle = (dark ? ["#6e4a32", "#76503a", "#664430", "#7a553c"] : ["#b98557", "#c08d5e", "#b07c4f", "#c4935f"])[Math.floor(r() * 4)];
             g.fillRect(x0 + Math.max(0, x), y0 + y, Math.min(len, zw - Math.max(0, x)), 7);
-            g.fillStyle = "#9c6c43";
+            g.fillStyle = dark ? "#4f3424" : "#9c6c43";
             g.fillRect(x0 + Math.max(0, x), y0 + y + 7, Math.min(len, zw - Math.max(0, x)), 1);
             x += len;
             if (x < zw) g.fillRect(x0 + x - 1, y0 + y, 1, 7);
           }
         }
+      } else if (floor === "porcelanato") {
+        // placas grandes claras (1 m) com rejunte fino
+        g.fillStyle = "#e4e2dc";
+        g.fillRect(x0, y0, zw, zh);
+        for (let y = 0; y < zh; y += 32)
+          for (let x = 0; x < zw; x += 32) {
+            g.fillStyle = (x / 32 + y / 32) % 2 ? "#e8e6e1" : "#dedcd5";
+            g.fillRect(x0 + x, y0 + y, Math.min(31, zw - x), Math.min(31, zh - y));
+            g.fillStyle = "#f2f1ed";
+            g.fillRect(x0 + x + 4, y0 + y + 4, 6, 1);
+          }
+      } else if (floor === "concreto") {
+        g.fillStyle = "#a9a8a4";
+        g.fillRect(x0, y0, zw, zh);
+        for (let k = 0; k < (zw * zh) / 40; k++) {
+          g.fillStyle = r() > 0.5 ? "#b2b1ad" : "#9f9e9a";
+          g.fillRect(x0 + Math.floor(r() * zw), y0 + Math.floor(r() * zh), 2, 1);
+        }
+        g.fillStyle = "#93928e";
+        for (let y = 64; y < zh; y += 64) g.fillRect(x0, y0 + y, zw, 1);
+        for (let x = 64; x < zw; x += 64) g.fillRect(x0 + x, y0, 1, zh);
       } else {
         // cerâmica xadrez cinza
         for (let y = 0; y < zh; y += 16)
@@ -735,6 +859,8 @@ export class World {
             g.fillRect(x0 + x + 2, y0 + y + 2, 3, 1);
           }
       }
+      // área aberta sem cor própria segue a cor do piso do salão
+      recolor(x0, y0, zw, zh, zn.floorColor ?? (zn.private ? undefined : layout.floorColor));
     }
     // logo da VERKZ pintada no piso (discreta)
     const logo = new Path2D(LOGO_PATH);
@@ -780,6 +906,37 @@ export class World {
     return Math.round(it.z) === -Math.round(d / 2) || Math.round(it.x) === -Math.round(w / 2);
   }
 
+  /** O item de pendurar está encostado numa parede inteira (do fundo)? */
+  isMounted(it: Item) {
+    if (!this.layout) return false;
+    const W = this.layout.size.w / 2;
+    const D = this.layout.size.d / 2;
+    const r = ((it.rot % 360) + 360) % 360;
+    return (r === 0 && it.z <= -D + 0.6) || (r === 270 && it.x <= -W + 0.6);
+  }
+
+  /** Pedestal simples para quadro solto no meio da sala. */
+  private frameStand(w: number) {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshToonMaterial({ color: 0x3a3a40 });
+    for (const sx of [-1, 1]) {
+      const post = new THREE.Mesh(geo.box(0.05, MOUNT_Y + 0.1, 0.05), mat);
+      post.position.set(sx * Math.min(0.45, w * 0.3), (MOUNT_Y + 0.1) / 2, -0.06);
+      const foot = new THREE.Mesh(geo.box(0.08, 0.04, 0.4), mat);
+      foot.position.set(sx * Math.min(0.45, w * 0.3), 0.02, -0.06);
+      post.castShadow = true;
+      g.add(post, foot);
+    }
+    return g;
+  }
+
+  /** Levanta o personagem (ao abrir o editor ou se a cadeira dele saiu do lugar). */
+  standUp() {
+    if (!this.me?.sitting) return;
+    this.me.sitting = false;
+    this.onSit?.(false);
+  }
+
   addItemMesh(it: Item) {
     if (WALL_TYPES.has(it.type)) {
       const nb = this.wallLinks.get(it.id) ?? { xp: false, xn: false, zp: false, zn: false };
@@ -789,6 +946,8 @@ export class World {
       return obj;
     }
     const obj = buildItem(it);
+    // quadro de pendurar longe de uma parede inteira: ganha um pedestal (não fica flutuando)
+    if (WALL_MOUNT.has(it.type) && !this.isMounted(it)) obj.add(this.frameStand(DEFS[it.type]?.w ?? 1));
     this.itemGroup.add(obj);
     const def = DEFS[it.type];
     if (def?.blocks) {
@@ -813,29 +972,37 @@ export class World {
   }
 
   /**
-   * Portas das salas privadas: cada vão na linha de parede da sala vira uma porta (dupla se tiver 2 m).
+   * Portas das salas privadas: cada vão na linha de parede da sala vira uma porta dupla de 1,3 m;
+   * o que sobra do vão é fechado com parede.
    * Abrem com animação quando alguém chega perto e fecham depois.
    */
   private buildDoors() {
     this.doorGroup.clear();
     this.doors = [];
+    this.doorBlockers = [];
     const walls = new Set(this.layout.items.filter((i) => WALL_TYPES.has(i.type)).map((i) => this.wallKey(i.x, i.z)));
     const has = (x: number, z: number) => walls.has(`${x},${z}`);
     const { d } = this.layout.size;
     const wood = new THREE.MeshToonMaterial({ color: 0x9a6b45 });
     const woodDark = new THREE.MeshToonMaterial({ color: 0x6f4a2e });
     const metal = new THREE.MeshToonMaterial({ color: 0xd9d4c8 });
+    const seen = new Set<string>(); // um vão entre duas salas vira uma porta só
     for (const zn of this.layout.zones) {
       if (!zn.private) continue;
       const x0 = Math.round(zn.x - zn.w / 2 - 0.5);
       const x1 = Math.round(zn.x + zn.w / 2 + 0.5);
       const z0 = Math.round(zn.z - zn.d / 2 - 0.5);
       const z1 = Math.round(zn.z + zn.d / 2 + 0.5);
+      // as paredes podem estar na borda de fora da sala (salas originais) ou na de dentro (salas criadas no editor)
       const lines: { alongX: boolean; fixed: number; from: number; to: number }[] = [
         { alongX: true, fixed: z0, from: x0, to: x1 },
         { alongX: true, fixed: z1, from: x0, to: x1 },
         { alongX: false, fixed: x0, from: z0, to: z1 },
         { alongX: false, fixed: x1, from: z0, to: z1 },
+        { alongX: true, fixed: z0 + 1, from: x0, to: x1 },
+        { alongX: true, fixed: z1 - 1, from: x0, to: x1 },
+        { alongX: false, fixed: x0 + 1, from: z0, to: z1 },
+        { alongX: false, fixed: x1 - 1, from: z0, to: z1 },
       ];
       for (const ln of lines) {
         const at = (k: number) => (ln.alongX ? has(k, ln.fixed) : has(ln.fixed, k));
@@ -848,38 +1015,64 @@ export class World {
           let e = k;
           while (e + 1 <= ln.to && !at(e + 1)) e++;
           // vão de verdade: parede dos dois lados, até 3 m
-          if (k > ln.from && e < ln.to && at(k - 1) && at(e + 1) && e - k + 1 <= 3) {
+          if (k > ln.from && e < ln.to && at(k - 1) && at(e + 1) && e - k + 1 <= 3 && !seen.has(`${ln.alongX ? (k + e) / 2 : ln.fixed},${ln.alongX ? ln.fixed : (k + e) / 2}`)) {
+            seen.add(`${ln.alongX ? (k + e) / 2 : ln.fixed},${ln.alongX ? ln.fixed : (k + e) / 2}`);
             // o vão vai da face de um pilar até a do outro (as paredes vizinhas terminam no pilar)
             const width = e - k + 1 + 1 - WALL_T;
             const cx = ln.alongX ? (k + e) / 2 : ln.fixed;
             const cz = ln.alongX ? ln.fixed : (k + e) / 2;
             const tall = ln.alongX ? ln.fixed === -Math.round(d / 2) : ln.fixed === -Math.round(this.layout.size.w / 2);
             const h = tall ? 2.15 : WALL_CUT + 0.35;
-            const leaves = width >= 2.2 ? 2 : 1;
-            const leafW = width / leaves - 0.015;
+            // porta dupla de tamanho fixo; o resto do vão vira parede (mesmo acabamento)
+            const open = Math.min(width, DOOR_W);
+            const fill = (width - open) / 2;
+            const frame = new THREE.Group();
+            frame.position.set(cx, 0, cz);
+            if (!ln.alongX) frame.rotation.y = Math.PI / 2;
+            this.doorGroup.add(frame);
+            const wallH = tall ? WALL_H : WALL_CUT;
+            for (const s of [-1, 1]) {
+              if (fill > 0.02) {
+                const seg = wallSegment(fill + 0.02, wallH);
+                seg.position.x = s * (open / 2 + fill / 2);
+                frame.add(seg);
+                // colisão do trecho de parede
+                const a = open / 2;
+                const b = width / 2 + 0.02;
+                const t = (WALL_T + 0.06) / 2;
+                const lo = s < 0 ? -b : a;
+                const hi = s < 0 ? -a : b;
+                this.doorBlockers.push(
+                  ln.alongX ? { x0: cx + lo, x1: cx + hi, z0: cz - t, z1: cz + t } : { x0: cx - t, x1: cx + t, z0: cz + lo, z1: cz + hi },
+                );
+              }
+              const jamb = doorJamb(tall ? h : Math.max(h, wallH));
+              jamb.position.x = s * (open / 2 + 0.03);
+              frame.add(jamb);
+            }
+            // verga em cima da porta (só nas paredes inteiras)
+            if (tall) frame.add(wallSegment(open + 0.12, WALL_H - h, h, false));
+            const leafW = open / 2 - 0.01;
             const door = { pivots: [] as THREE.Object3D[], sign: [] as number[], x: cx, z: cz, zone: zn.id, open: 0, sounding: false };
-            for (let l = 0; l < leaves; l++) {
-              const side = leaves === 1 ? -1 : l === 0 ? -1 : 1;
+            for (const side of [-1, 1]) {
               const pivot = new THREE.Group();
-              const hinge = side * (width / 2);
-              if (ln.alongX) pivot.position.set(cx + hinge, 0, cz);
-              else pivot.position.set(cx, 0, cz + hinge);
+              pivot.position.set(side * (open / 2), 0, 0);
               const leaf = new THREE.Group();
-              const panel = new THREE.Mesh(geo.box(leafW, h, 0.07), wood);
+              const panel = new THREE.Mesh(geo.box(leafW, h, 0.06), wood);
               panel.position.set(0, h / 2, 0);
               panel.castShadow = true;
-              const inset = new THREE.Mesh(geo.box(leafW * 0.7, h * 0.35, 0.08), woodDark);
-              inset.position.set(0, h * 0.68, 0);
-              const handle = new THREE.Mesh(geo.box(0.12, 0.04, 0.12), metal);
-              handle.position.set(-side * (leafW / 2 - 0.12), Math.min(1.0, h * 0.6), 0);
-              leaf.add(panel, inset, handle);
+              // duas almofadas (detalhe de porta de madeira)
+              const insetTop = new THREE.Mesh(geo.box(leafW * 0.62, h * 0.32, 0.075), woodDark);
+              insetTop.position.set(0, h * 0.7, 0);
+              const insetLow = new THREE.Mesh(geo.box(leafW * 0.62, h * 0.24, 0.075), woodDark);
+              insetLow.position.set(0, h * 0.28, 0);
+              const handle = new THREE.Mesh(geo.box(0.05, 0.16, 0.12), metal);
+              handle.position.set(-side * (leafW / 2 - 0.08), Math.min(1.0, h * 0.55), 0);
+              leaf.add(panel, insetTop, insetLow, handle);
               // a folha vai da dobradiça para o meio do vão
               leaf.position.set(-side * (leafW / 2), 0, 0);
-              if (!ln.alongX) {
-                pivot.rotation.y = Math.PI / 2;
-              }
               pivot.add(leaf);
-              this.doorGroup.add(pivot);
+              frame.add(pivot);
               door.pivots.push(pivot);
               door.sign.push(side);
             }
@@ -894,7 +1087,7 @@ export class World {
   /** Porta abre quando alguém está a menos de 1,6 m dela; fecha sozinha depois. */
   private updateDoors(dt: number) {
     if (!this.doors.length) return;
-    const people = [this.me, ...this.others.values(), this.janitor?.avatar].filter(Boolean).map((a) => a!.root.position);
+    const people = [this.me, ...[...this.others.values()].filter((a) => this.sameLevel(a)), this.level ? undefined : this.janitor?.avatar].filter(Boolean).map((a) => a!.root.position);
     for (const dr of this.doors) {
       const near = people.some((p) => Math.hypot(p.x - dr.x, p.z - dr.z) < 1.6);
       const target = near ? 1 : 0;
@@ -904,7 +1097,12 @@ export class World {
         const me = this.me?.root.position;
         this.onDoorOpen?.(me ? Math.hypot(me.x - dr.x, me.z - dr.z) : 99);
       }
-      if (target === 0 && dr.open < 0.05) dr.sounding = false;
+      // terminou de fechar: batida da porta
+      if (target === 0 && dr.sounding && dr.open < 0.12) {
+        dr.sounding = false;
+        const me = this.me?.root.position;
+        this.onDoorClose?.(me ? Math.hypot(me.x - dr.x, me.z - dr.z) : 99);
+      }
       dr.open += (target - dr.open) * Math.min(1, dt * 6);
       const ang = dr.open * 1.75;
       dr.pivots.forEach((pv, i) => {
@@ -950,6 +1148,30 @@ export class World {
     this.camTarget.copy(this.me.root.position);
   }
 
+  /** A pessoa está no mesmo andar que eu? */
+  sameLevel(a: Avatar) {
+    return (Number(a.extra?.level) || 0) === this.level;
+  }
+
+  /** Mostra só quem está no meu andar. */
+  refreshLevelVisibility() {
+    for (const a of this.others.values()) a.root.visible = this.sameLevel(a);
+  }
+
+  /** Muda de andar: desenha o andar novo e põe o personagem em (x, z). */
+  setLevel(lv: number, x: number, z: number) {
+    this.level = lv;
+    this.standUp();
+    this.path = [];
+    this.setLayout(this.fullLayout);
+    this.me.root.position.set(x, 0, z);
+    this.camTarget.copy(this.me.root.position);
+    this.panOffset.set(0, 0, 0);
+    this.unstick();
+    this.refreshLevelVisibility();
+    this.applyStyle();
+  }
+
   addPeer(info: PeerInfo) {
     this.removePeer(info.id);
     const a = new Avatar(info, false);
@@ -958,6 +1180,8 @@ export class World {
     a.body.rotation.y = info.dir;
     this.others.set(info.id, a);
     this.scene.add(a.root);
+    a.root.visible = this.sameLevel(a);
+    this.applyStyle();
     return a;
   }
 
@@ -987,6 +1211,9 @@ export class World {
     const { w, d } = this.layout.size;
     if (Math.abs(x) > w / 2 + 0.5 - r || Math.abs(z) > d / 2 + 0.5 - r) return true;
     for (const b of this.blockers) {
+      if (x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1) return true;
+    }
+    for (const b of this.doorBlockers) {
       if (x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1) return true;
     }
     return false;
@@ -1147,6 +1374,23 @@ export class World {
     return best;
   }
 
+  /** Leva a câmera até um ponto (sem mexer o personagem). */
+  focusOn(x: number, z: number) {
+    const base = this.overview ? new THREE.Vector3() : this.me?.root.position.clone() ?? new THREE.Vector3();
+    this.panOffset.set(x - base.x, 0, z - base.z);
+  }
+
+  /** Arrasta o mapa: move a câmera na hora, sem sair muito do prédio. */
+  panBy(dx: number, dz: number) {
+    const { w, d } = this.layout.size;
+    const base = this.overview ? new THREE.Vector3() : this.me?.root.position.clone() ?? new THREE.Vector3();
+    const lim = (v: number, half: number) => THREE.MathUtils.clamp(v, -half - 2, half + 2);
+    const tx = lim(this.camTarget.x + dx, w / 2);
+    const tz = lim(this.camTarget.z + dz, d / 2);
+    this.panOffset.set(tx - base.x, 0, tz - base.z);
+    this.camTarget.set(tx, this.camTarget.y, tz);
+  }
+
   walkTo(x: number, z: number) {
     const goal = new THREE.Vector3(x, 0, z);
     const seat = this.seatNear(goal);
@@ -1170,6 +1414,7 @@ export class World {
       if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
         this.keys.add(k);
         this.path = [];
+        this.panOffset.set(0, 0, 0); // andando pelo teclado, a câmera volta a seguir
         e.preventDefault();
       }
     });
@@ -1192,8 +1437,68 @@ export class World {
       e.preventDefault();
     }, { passive: false });
 
+    // ---- mouse: arrastar com o botão esquerdo move o mapa; dois cliques levam o personagem até o lugar
+    let lastPointer = "mouse";
+    let drag: { id: number; x: number; y: number; lx: number; ly: number; moved: boolean } | null = null;
+    let dragged = false;
+    el.addEventListener("pointerdown", (e) => {
+      lastPointer = e.pointerType || "mouse";
+      if (e.pointerType === "touch" || e.button !== 0 || (e.target as HTMLElement) !== el) return;
+      if (this.editing && !this.canPanEdit?.()) return;
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, moved: false };
+      dragged = false;
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 5) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        el.setPointerCapture?.(e.pointerId);
+        el.classList.add("panning");
+      }
+      // o ponto do chão que estava sob o mouse continua sob o mouse (as duas leituras com a mesma câmera)
+      const a = this.pickFloor({ clientX: drag.lx, clientY: drag.ly } as MouseEvent);
+      const b = this.pickFloor(e);
+      drag.lx = e.clientX;
+      drag.ly = e.clientY;
+      if (a && b) this.panBy(a.x - b.x, a.z - b.z);
+    });
+    const endDrag = (e: PointerEvent) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      if (drag.moved) dragged = true;
+      drag = null;
+      el.classList.remove("panning");
+    };
+    el.addEventListener("pointerup", endDrag);
+    el.addEventListener("pointercancel", endDrag);
+
+    /** Leva o personagem até o ponto (cadeira, lugar do chão ou, no mapa, volta a câmera e vai correndo). */
+    const goTo = (e: MouseEvent, p: THREE.Vector3) => {
+      if (!this.inputEnabled) return;
+      this.panOffset.set(0, 0, 0); // a câmera volta a seguir o personagem
+      const obj = this.pickItem(e);
+      const it = obj && this.layout.items.find((i) => i.id === obj.userData.itemId);
+      // clicou em cima da cadeira (o ponto do chão fica atrás dela na visão diagonal): vai direto sentar
+      if (it && SEATS[it.type]) {
+        if (this.overview) this.setOverview(false);
+        this.walkTo(it.x, it.z);
+        return;
+      }
+      if (this.overview) {
+        this.setOverview(false);
+        this.walkTo(p.x, p.z);
+        this.runPath = this.path.length > 0;
+        return;
+      }
+      this.walkTo(p.x, p.z);
+    };
+
     el.addEventListener("click", (e) => {
       if ((e.target as HTMLElement) !== el) return; // cliques em nameplates etc.
+      if (dragged) {
+        dragged = false; // soltou depois de arrastar o mapa: não é clique
+        return;
+      }
       const p = this.pickFloor(e);
       if (!p) return;
       if (this.onFloorClick?.(p, e)) return;
@@ -1206,23 +1511,18 @@ export class World {
         const obj = this.pickItem(e);
         const it = obj && this.layout.items.find((i) => i.id === obj.userData.itemId);
         if (it && DEFS[it.type]?.interactive && this.onItemClick?.(it, e.clientX, e.clientY)) return;
-        // clicou em cima da cadeira (o ponto do chão fica atrás dela na visão diagonal): vai direto sentar
-        if (it && SEATS[it.type] && this.inputEnabled) {
-          if (this.overview) this.setOverview(false);
-          this.walkTo(it.x, it.z);
-          return;
-        }
       }
-      if (this.inputEnabled) {
-        if (this.overview) {
-          // no mapa: clicou num lugar, volta a câmera para perto e vai correndo até lá
-          this.setOverview(false);
-          this.walkTo(p.x, p.z);
-          this.runPath = this.path.length > 0;
-          return;
-        }
-        this.walkTo(p.x, p.z);
-      }
+      // no toque, um toque já leva até o lugar; no mouse é com dois cliques (abaixo)
+      if (lastPointer === "touch" && !this.editing) goTo(e, p);
+    });
+    el.addEventListener("dblclick", (e) => {
+      if ((e.target as HTMLElement) !== el || this.editing || lastPointer === "touch") return;
+      const p = this.pickFloor(e);
+      if (!p) return;
+      const av = this.pickAvatar(e);
+      if (av && av !== this.me?.info.id) return; // dois cliques numa pessoa: o menu dela já abriu
+      e.preventDefault();
+      goTo(e, p);
     });
     // ---- toque: pinça para zoom e toque longo numa pessoa para abrir o menu
     const touches = new Map<number, { x: number; y: number }>();
@@ -1316,7 +1616,7 @@ export class World {
     const r = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     this.ray.setFromCamera(ndc, this.camera);
-    const roots = [...this.others.values()].map((a) => a.root);
+    const roots = [...this.others.values()].filter((a) => a.root.visible).map((a) => a.root);
     if (this.me) roots.push(this.me.root);
     const hits = this.ray.intersectObjects(roots, true);
     for (const h of hits) {
@@ -1355,6 +1655,122 @@ export class World {
     return null;
   }
 
+  /** Durante a viagem de elevador: 0 = portas fechadas, 1 = abertas; null = automático. */
+  elevatorForce: number | null = null;
+
+  /** Primeiro quadro desenhado com o escritório carregado. */
+  onReady?: () => void;
+  private readyFired = false;
+  private readyFrames = 0;
+  private outline = true;
+  private maxFps = 0;
+  private lastFrame = 0;
+
+  /**
+   * Qualidade gráfica: "leve" (sem sombras nem contorno, 30 fps), "equilibrada" (padrão) ou
+   * "bonita" (resolução da tela, sombras mais definidas).
+   */
+  quality: "leve" | "equilibrada" | "bonita" = "equilibrada";
+  /** Estilo visual: padrão (traço fino), realista (luz e materiais físicos), desenho (traço grosso), retrô (pixelado). */
+  style: GraphicStyle = "padrao";
+  private realMats = new WeakMap<THREE.Material, THREE.Material>();
+  private envMap: THREE.Texture | null = null;
+  private lastStyleScan = 0;
+
+  setQuality(q: "leve" | "equilibrada" | "bonita") {
+    this.quality = q;
+    this.configureRender();
+  }
+
+  setStyle(st: GraphicStyle) {
+    this.style = st;
+    this.configureRender();
+    this.applyStyle();
+  }
+
+  /** Junta qualidade + estilo nas opções do renderizador. */
+  private configureRender() {
+    const q = this.quality;
+    const st = this.style;
+    const coarse = matchMedia("(pointer: coarse)").matches;
+    const dpr = window.devicePixelRatio || 1;
+    const ratio = q === "bonita" ? Math.min(dpr, 2) : q === "leve" ? (coarse ? Math.min(dpr, 1.5) : Math.min(1, dpr)) : coarse ? Math.min(dpr, 2) : 1;
+    this.renderer.setPixelRatio(ratio);
+    this.outline = q !== "leve" && st !== "realista";
+    if (st === "retro") this.outline = true; // o retrô precisa do passe (é ele que pixela)
+    this.maxFps = q === "leve" ? 30 : 0;
+    this.sun.castShadow = q !== "leve";
+    const size = q === "bonita" || st === "realista" ? 2048 : 1024;
+    if (this.sun.shadow.mapSize.x !== size) {
+      this.sun.shadow.mapSize.set(size, size);
+      this.sun.shadow.map?.dispose();
+      (this.sun.shadow as any).map = null;
+    }
+    this.renderer.shadowMap.type = q === "bonita" || st === "realista" ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    this.renderer.shadowMap.needsUpdate = true;
+    // contorno e pixel
+    this.pixelPass.setPixelSize(st === "retro" ? 3 : 1);
+    (this.pixelPass as any).normalEdgeStrength = st === "desenho" ? 0.7 : st === "retro" ? 0.3 : 0.08;
+    (this.pixelPass as any).depthEdgeStrength = st === "desenho" ? 1.0 : st === "retro" ? 0.4 : 0.35;
+    // luz física no realista
+    if (st === "realista") {
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      this.renderer.toneMappingExposure = 0.78;
+      if (!this.envMap) {
+        const pm = new THREE.PMREMGenerator(this.renderer);
+        this.envMap = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+        pm.dispose();
+      }
+      this.scene.environment = this.envMap;
+      (this.scene as any).environmentIntensity = 0.22;
+    } else {
+      this.renderer.toneMapping = THREE.NoToneMapping;
+      this.renderer.toneMappingExposure = 1.05;
+      this.scene.environment = null;
+    }
+    this.resize();
+  }
+
+  /** Troca os materiais em tons (toon) por materiais físicos no estilo realista, e volta. */
+  applyStyle() {
+    const real = this.style === "realista";
+    const conv = (m: THREE.Material): THREE.Material => {
+      if (!(m as any).isMeshToonMaterial) return m;
+      let r = this.realMats.get(m);
+      if (!r) {
+        const t = m as THREE.MeshToonMaterial;
+        const std = new THREE.MeshStandardMaterial({
+          color: t.color,
+          map: t.map,
+          transparent: t.transparent,
+          opacity: t.opacity,
+          vertexColors: t.vertexColors,
+          emissive: t.emissive,
+          emissiveMap: t.emissiveMap,
+          emissiveIntensity: t.emissiveIntensity,
+          side: t.side,
+          roughness: 0.78,
+          metalness: 0.02,
+        });
+        r = std;
+        this.realMats.set(m, r);
+      }
+      return r;
+    };
+    this.scene.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.material) return;
+      if (real) {
+        if (!mesh.userData.toonMat) mesh.userData.toonMat = mesh.material;
+        const src = mesh.userData.toonMat as THREE.Material | THREE.Material[];
+        mesh.material = Array.isArray(src) ? src.map(conv) : conv(src);
+      } else if (mesh.userData.toonMat) {
+        mesh.material = mesh.userData.toonMat;
+        delete mesh.userData.toonMat;
+      }
+    });
+  }
+
   // ---------- loop
   start() {
     const tick = () => {
@@ -1365,8 +1781,23 @@ export class World {
       this.env.update(dt, tt);
       for (const b of this.decorGroup.children)
         if (b.userData.blink) ((b as THREE.Mesh).material as THREE.MeshBasicMaterial).visible = Math.floor(tt * 2 + b.userData.blink) % 3 !== 0;
-      this.composer.render();
+      // qualidade "leve": no máximo 30 quadros por segundo
+      const now = performance.now();
+      // estilo realista: converte o que apareceu de novo (móveis, pessoas, efeitos)
+      if (this.style === "realista" && now - this.lastStyleScan > 1000) {
+        this.lastStyleScan = now;
+        this.applyStyle();
+      }
+      if (this.maxFps && now - this.lastFrame < 1000 / this.maxFps - 2) return;
+      this.lastFrame = now;
+      if (this.outline) this.composer.render();
+      else this.renderer.render(this.scene, this.camera);
       this.labels.render(this.scene, this.camera);
+      // primeiro quadro com o escritório e o personagem: pode tirar a tela de carregamento
+      if (!this.readyFired && this.me && this.layout && ++this.readyFrames > 2) {
+        this.readyFired = true;
+        this.onReady?.();
+      }
     };
     tick();
   }
@@ -1482,6 +1913,7 @@ export class World {
     // passos: tocam quando o pé encosta no chão na animação (os meus e os de quem anda por perto)
     if (this.me.footfall) this.onStep?.(this.me.running, 1);
     for (const a of this.others.values()) {
+      if (!a.root.visible) continue; // outro andar
       a.update(dt, true);
       if (a.footfall) {
         const dist = Math.hypot(a.root.position.x - pos.x, a.root.position.z - pos.z);
@@ -1497,8 +1929,9 @@ export class World {
     }
 
     // câmera segue com suavidade
-    if (this.overview) this.camTarget.lerp(new THREE.Vector3(0, 0, 0), Math.min(1, dt * 4));
-    else this.camTarget.lerp(pos, Math.min(1, dt * 4));
+    // (somado ao deslocamento de quando a pessoa arrasta o mapa)
+    const base = this.overview ? new THREE.Vector3(0, 0, 0) : pos.clone();
+    this.camTarget.lerp(base.add(this.panOffset), Math.min(1, dt * 4));
     // vista isométrica (diagonal, de cima), como em jogos de escritório/The Sims
     this.camera.position.set(this.camTarget.x + 24, 24, this.camTarget.z + 24);
     this.camera.lookAt(this.camTarget);
@@ -1519,11 +1952,21 @@ export class World {
       this.lastState = state;
       this.onMove?.(pos.x, pos.z, this.me.targetDir, moving, zone);
     }
-    this.janitor?.update(dt);
+    if (!this.level) this.janitor?.update(dt);
     // itens animados (Cleiton mexe as antenas e dá uma tremidinha de vez em quando)
     const tt = performance.now() / 1000;
     for (const o of this.itemGroup.children) {
       const an = o.userData.anim;
+      if (an?.kind === "elevator") {
+        // portas abrem com alguém perto (ou durante a viagem, comandado por elevatorDoors)
+        const near = this.me && Math.hypot(this.me.root.position.x - o.position.x, this.me.root.position.z - o.position.z) < 2.4;
+        const want = this.elevatorForce ?? (near ? 1 : 0);
+        an.open += (want - an.open) * Math.min(1, dt * 4);
+        an.left.position.x = -0.31 - an.open * 0.56;
+        an.right.position.x = 0.31 + an.open * 0.56;
+        (an.lamp.material as THREE.MeshBasicMaterial).color.setHex(Math.sin(tt * 3) > 0 || !this.elevatorForce ? 0xc8f501 : 0x3d4a00);
+        continue;
+      }
       if (an?.kind !== "cleiton") continue;
       an.antL.rotation.x = Math.sin(tt * 5.3) * 0.25;
       an.antR.rotation.x = Math.sin(tt * 4.7 + 1) * 0.25;

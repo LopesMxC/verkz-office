@@ -10,9 +10,10 @@ export interface SoundPrefs {
   approach: boolean;
   notify: boolean;
   soundpad: number; // volume do soundpad para mim, 0..1
+  radio: number; // volume do rádio do escritório (YouTube), 0..1
 }
 
-export const soundPrefs: SoundPrefs = { master: 0.8, steps: true, approach: true, notify: true, soundpad: 0.8 };
+export const soundPrefs: SoundPrefs = { master: 0.8, steps: true, approach: true, notify: true, soundpad: 0.8, radio: 0.6 };
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -112,13 +113,51 @@ export function toggleSound(on: boolean) {
   }
 }
 
-/** Porta abrindo: rangido curto de madeira + trinco. */
-export function doorSound() {
+// ------------------------------------------------------------------ portas (sons gravados, CC0)
+/** Gravações reais de porta (public/sounds, Kenney RPG Audio, CC0). Duas de cada para não ficar repetitivo. */
+const DOOR_FILES = {
+  open: ["sounds/porta-abrir-1.mp3", "sounds/porta-abrir-2.mp3"],
+  close: ["sounds/porta-fechar-1.mp3", "sounds/porta-fechar-2.mp3"],
+};
+const sampleCache = new Map<string, Promise<AudioBuffer | null>>();
+function sample(url: string): Promise<AudioBuffer | null> {
+  let p = sampleCache.get(url);
+  if (!p) {
+    p = fetch("./" + url)
+      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((b) => audio().ctx.decodeAudioData(b))
+      .catch((e) => {
+        console.warn("som de porta:", url, e);
+        sampleCache.delete(url); // tenta de novo na próxima
+        return null;
+      });
+    sampleCache.set(url, p);
+  }
+  return p;
+}
+/** Baixa os sons de porta antes da primeira vez (chamado ao entrar no escritório). */
+export function preloadDoorSounds() {
+  [...DOOR_FILES.open, ...DOOR_FILES.close].forEach((u) => sample(u));
+}
+
+/** Porta abrindo (`open`) ou fechando. `vol` já considera a distância (0..1). */
+export async function doorSound(kind: "open" | "close" = "open", vol = 1) {
+  if (vol <= 0.02) return;
+  const list = DOOR_FILES[kind];
+  const buf = await sample(list[Math.floor(Math.random() * list.length)]);
   const { ctx, out } = audio();
-  const t = ctx.currentTime;
-  noise(out, t, 0.05, 0.09, "bandpass", 2600, 3); // trinco
-  tone(out, t + 0.05, 180, 0.35, "sawtooth", 0.025, 240); // rangido
-  noise(out, t + 0.05, 0.4, 0.04, "lowpass", 600, 1);
+  if (!buf) {
+    // sem o arquivo (offline): trinco sintetizado, bem curto
+    noise(out, ctx.currentTime, 0.05, 0.09 * vol, "bandpass", 2600, 3);
+    return;
+  }
+  const s = ctx.createBufferSource();
+  s.buffer = buf;
+  s.playbackRate.value = 0.95 + Math.random() * 0.1; // leve variação natural
+  const g = ctx.createGain();
+  g.gain.value = (kind === "open" ? 0.5 : 0.42) * vol;
+  s.connect(g).connect(out);
+  s.start();
 }
 
 /** Alguém entrou na sala onde estou: "ding-dong" de porta. */
@@ -304,4 +343,78 @@ export async function playPad(id: string) {
   }
   synth(id, bus);
   return 2;
+}
+
+// ------------------------------------------------------------------ elevador
+/** "Plim" do elevador chegando. */
+export function elevatorDing() {
+  const { ctx, out } = audio();
+  const t = ctx.currentTime;
+  tone(out, t, 1318, 0.9, "sine", 0.12);
+  tone(out, t, 2637, 0.6, "sine", 0.03);
+}
+
+/**
+ * Musiquinha de elevador (bossa tranquila, composta aqui): piano elétrico suave, baixo e um shaker.
+ * Toca em loop até `stop()`, que abaixa o volume devagar.
+ */
+export function elevatorMusic(): { stop: () => void } {
+  const { ctx, out } = audio();
+  const bus = ctx.createGain();
+  bus.gain.value = 0.0001;
+  bus.gain.exponentialRampToValueAtTime(0.9, ctx.currentTime + 0.6);
+  bus.connect(out);
+  const beat = 60 / 112; // 112 bpm
+  // Cmaj7 - Am7 - Dm7 - G7 (2 tempos cada), com melodia simples por cima
+  const chords = [
+    [261.6, 329.6, 392.0, 493.9],
+    [220.0, 261.6, 329.6, 392.0],
+    [293.7, 349.2, 440.0, 523.3],
+    [196.0, 246.9, 293.7, 349.2],
+  ];
+  const bass = [130.8, 110.0, 146.8, 98.0];
+  const melody = [659.3, 587.3, 523.3, 493.9, 523.3, 587.3, 659.3, 783.99, 698.5, 659.3, 587.3, 523.3, 493.9, 523.3, 587.3, 0];
+  const ep = (t: number, f: number, dur: number, vol: number) => {
+    // "piano elétrico": seno + harmônico suave com ataque rápido
+    tone(bus, t, f, dur, "sine", vol);
+    tone(bus, t, f * 2, dur * 0.5, "sine", vol * 0.18);
+  };
+  let next = ctx.currentTime + 0.05;
+  let bar = 0;
+  let stopped = false;
+  const schedule = () => {
+    if (stopped) return;
+    while (next < ctx.currentTime + 1.2) {
+      const i = bar % 4;
+      const t0 = next;
+      // acordes em ritmo de bossa (antecipado)
+      for (const [off, len] of [[0, 0.9], [1.5, 0.4], [2.5, 0.9]] as const) chords[i].forEach((f) => ep(t0 + off * beat, f, len * beat * 1.4, 0.022));
+      // baixo: tônica e quinta
+      tone(bus, t0, bass[i], beat * 1.3, "triangle", 0.07);
+      tone(bus, t0 + 2 * beat, bass[i] * 1.5, beat * 1.2, "triangle", 0.055);
+      // melodia (2 notas por compasso)
+      for (let k = 0; k < 4; k++) {
+        const f = melody[(bar * 4 + k) % melody.length];
+        if (f) ep(t0 + k * beat, f, beat * 0.9, 0.03);
+      }
+      // shaker
+      for (let k = 0; k < 8; k++) noise(bus, t0 + k * beat * 0.5, 0.04, k % 2 ? 0.012 : 0.02, "highpass", 7000, 0.8);
+      next += 4 * beat;
+      bar++;
+    }
+  };
+  schedule();
+  const iv = setInterval(schedule, 300);
+  return {
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(iv);
+      const t = ctx.currentTime;
+      bus.gain.cancelScheduledValues(t);
+      bus.gain.setValueAtTime(Math.max(0.0001, bus.gain.value), t);
+      bus.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+      setTimeout(() => bus.disconnect(), 1500);
+    },
+  };
 }

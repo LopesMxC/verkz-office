@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
-import { buildItem, DEFS, Item, Layout, PALETTE, Zone } from "./furniture";
+import { buildItem, DEFS, imageToDataUrl, Item, Layout, levelIds, levelName, levelView, mergeLevel, PALETTE, perimeterWalls, PHOTO_TYPES, WALL_MOUNT, Zone } from "./furniture";
 import type { World } from "./world";
 import { icon } from "./icons";
 import { furnitureThumbs } from "./thumbs";
@@ -9,13 +9,41 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const uid = (p: string) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const isWall = (t: string) => t === "wall" || t === "window_wall";
 
+/** Tamanhos das salas prontas (largura x profundidade, em metros). */
+const ROOM_SIZES: Record<string, [number, number]> = {
+  pequena: [5, 5],
+  media: [7, 6],
+  grande: [9, 7],
+  auditorio: [12, 9],
+};
+
 export const FLOORS: [string, string, string][] = [
   ["carpete-azul", "Carpete azul", "#7d86c2"],
   ["carpete-verde", "Carpete verde", "#7fae8c"],
   ["carpete-lilas", "Carpete lilás", "#a790cf"],
   ["carpete-grafite", "Carpete grafite", "#5d606c"],
   ["madeira", "Madeira", "#b98557"],
+  ["madeira-escura", "Madeira escura", "#6e4a32"],
   ["ceramica", "Cerâmica", "#bcbfc8"],
+  ["porcelanato", "Porcelanato", "#e4e2dc"],
+  ["concreto", "Concreto", "#a9a8a4"],
+];
+
+/** Cores prontas para móveis, tapetes e pisos (e o seletor livre ao lado). */
+const COLORS = ["#C8F501", "#0D0D0D", "#f4f1ea", "#9aa0ab", "#5d606c", "#c0392b", "#e67e22", "#f2c14e", "#27ae60", "#16a085", "#3b6fc0", "#2c3e8f", "#8a6cc9", "#d65db1", "#b98557", "#6e4a32"];
+
+/** Categorias da paleta de móveis. */
+const CATEGORIES: [string, string, RegExp][] = [
+  ["todos", "Todos", /.*/],
+  ["escritorio", "Escritório", /^(elevator|desk|office_chair|exec_chair|conf_table|whiteboard|tv|cabinet|bookshelf|.*_panel|speaker|neon_logo|floor_logo|cabinet_plain|shelf_.*)$/],
+  ["assentos", "Assentos", /^(chair.*|wood_chair|stool.*|sofa.*|armchair.*|beanbag|k_chair_.|pillow_.)$/],
+  ["mesas", "Mesas", /^(table.*|coffee_table|k_table.*|k_round.*|conf_table|desk)$/],
+  ["cozinha", "Cozinha", /^(k_.*|fridge|microwave|coffee|water|counter)$/],
+  ["tapetes", "Tapetes", /^rug.*$/],
+  ["plantas", "Plantas", /^(plant.*|bamboo|cactus.*)$/],
+  ["decor", "Decoração", /^(frame.*|photo_.*|photo_frame|lamp.*|books|book_single|k_pillar|clock_panel|neon_.*|cabinet_small.*)$/],
+  ["lazer", "Lazer e descanso", /^(radio|pool_table|ping_pong|arcade|bed.*|beanbag|tv)$/],
+  ["banheiro", "Banheiro", /^(toilet|sink|stall|k_towelrail)$/],
 ];
 
 type Tool = null | "zone" | "wall" | "erase" | string; // string = tipo de móvel
@@ -24,7 +52,8 @@ type Tool = null | "zone" | "wall" | "erase" | string; // string = tipo de móve
  * Editor do escritório.
  *  - Móveis: colocar, mover, girar, duplicar e remover.
  *  - Salas: desenhar (com paredes automáticas), renomear, privada ou aberta, piso, tamanho, posição, paredes.
- *  - Prédio: tamanho do escritório, desenhar e apagar paredes.
+ *  - Salas: também salas prontas (acha espaço livre sozinho e, se faltar, amplia o prédio).
+ *  - Prédio: tamanho do escritório, ampliar um lado só, desenhar e apagar paredes.
  * As mudanças só valem para todo mundo ao clicar em "Salvar para todos".
  */
 export class Editor {
@@ -36,12 +65,20 @@ export class Editor {
   limit: Zone[] | null = null;
   onClose?: () => void;
   private panel: HTMLDivElement;
+  /** O andar que está sendo editado (itens e salas dele). No térreo é o próprio `full`. */
   private draft!: Layout;
+  /** Layout completo, com todos os andares (é o que vai para o servidor). */
+  private full!: Layout;
+  /** Andar em edição. */
+  private lv = 0;
   private original!: string;
   private tab: "moveis" | "salas" | "predio" = "moveis";
   private filter = "";
   private tool: Tool = null;
   private withWalls = true;
+  private quickSize = "media";
+  private category = "todos";
+  private quickPriv = true;
   private rot = 0;
   private ghost: THREE.Object3D | null = null;
   private selected: Item | null = null;
@@ -106,11 +143,25 @@ export class Editor {
     this.active ? this.cancel() : this.open();
   }
 
+  /** Abre (ou mantém aberto) numa aba específica. */
+  showTab(tab: "moveis" | "salas" | "predio") {
+    if (!this.active) this.open();
+    if (this.limit) return;
+    this.tab = tab;
+    this.setTool(null);
+  }
+
   open() {
     this.active = true;
-    this.draft = JSON.parse(JSON.stringify(this.world.layout));
-    this.original = JSON.stringify(this.world.layout);
+    // editando, o personagem fica em pé (sentado ele "flutuaria" se a cadeira mudasse de lugar)
+    this.world.standUp();
+    this.lv = this.world.level;
+    this.full = JSON.parse(JSON.stringify(this.world.fullLayout));
+    this.draft = levelView(this.full, this.lv);
+    this.original = JSON.stringify(this.world.fullLayout);
     this.world.onFloorClick = (p, e) => this.onClick(p, e);
+    // arrastar o mapa vale no editor, menos quando o arraste desenha sala ou parede
+    this.world.canPanEdit = () => this.tool !== "zone" && this.tool !== "wall";
     this.panel.classList.remove("hidden");
     this.setTool(null);
   }
@@ -118,6 +169,7 @@ export class Editor {
   private close() {
     this.active = false;
     this.world.onFloorClick = undefined;
+    this.world.canPanEdit = undefined;
     this.panel.classList.add("hidden");
     this.clearGhost();
     this.selected = null;
@@ -133,15 +185,101 @@ export class Editor {
   }
 
   save() {
-    this.onSave(this.draft);
-    this.world.setLayout(this.draft);
+    this.full = mergeLevel(this.full, this.lv, this.draft);
+    this.onSave(this.full);
+    this.world.setLayout(this.full);
     this.close();
     this.toast("Escritório salvo para todo mundo");
   }
 
   private apply() {
-    this.world.setLayout(this.draft);
+    this.full = mergeLevel(this.full, this.lv, this.draft);
+    this.world.setLayout(this.full);
     this.highlight();
+  }
+
+  // ------------------------------------------------------------------ andares
+  /** Cria o próximo andar: paredes de fora com janelas e os elevadores no mesmo lugar dos do térreo. */
+  private addLevel() {
+    this.full = mergeLevel(this.full, this.lv, this.draft);
+    const ids = levelIds(this.full);
+    const next = Math.max(...ids) + 1;
+    if (next > 4) {
+      this.toast("O prédio já tem 5 andares");
+      return;
+    }
+    const ground = this.full.items;
+    let elevators = ground.filter((i) => i.type === "elevator");
+    if (!elevators.length) {
+      // sem elevador no térreo: põe um perto da entrada
+      const spot = this.elevatorSpot(ground);
+      if (!spot) {
+        this.toast("Não achei espaço para o elevador no térreo. Abra um espaço de 2 x 2 m perto da entrada.");
+        return;
+      }
+      const el: Item = { id: uid("e"), type: "elevator", x: spot.x, z: spot.z, rot: 0 };
+      ground.push(el);
+      elevators = [el];
+    }
+    const { w, d } = this.full.size;
+    const items: Item[] = [...perimeterWalls(w, d, false, () => uid("w")), ...elevators.map((e) => ({ ...e, id: uid("e") }))];
+    this.full.levels = [...(this.full.levels ?? []), { id: next, name: levelName(next), items, zones: [] }];
+    this.draft = levelView(this.full, this.lv);
+    this.world.setLayout(this.full);
+    this.renderPanel();
+    this.toast(`${levelName(next)} criado. Use o elevador para subir e montar as salas.`);
+  }
+
+  /** Apaga o andar de cima (só o último, para não deixar andar "flutuando"). */
+  private removeTopLevel() {
+    this.full = mergeLevel(this.full, this.lv, this.draft);
+    const ids = levelIds(this.full);
+    const top = Math.max(...ids);
+    if (!top) return;
+    if (!confirm(`Apagar o ${levelName(top)} com tudo o que tem nele?`)) return;
+    this.full.levels = (this.full.levels ?? []).filter((L) => L.id !== top);
+    if (this.lv === top) {
+      this.lv = 0;
+      this.world.level = 0;
+    }
+    this.draft = levelView(this.full, this.lv);
+    this.world.setLayout(this.full);
+    this.renderPanel();
+    this.toast(`${levelName(top)} apagado`);
+  }
+
+  /** Lugar livre de 2 x 2 m no térreo, perto da entrada (embaixo, no meio), para o elevador. */
+  private elevatorSpot(items: Item[]): { x: number; z: number } | null {
+    const { W, D } = this.half();
+    const zones = this.full.zones;
+    // nada de móvel (nem tapete) embaixo, e fora das salas fechadas
+    const free = (x: number, z: number) =>
+      !items.some((it) => !DEFS[it.type]?.outdoor && Math.abs(it.x - x) < 1.8 && Math.abs(it.z - z) < 1.6) &&
+      !zones.some((zn) => zn.private && Math.abs(x - zn.x) < zn.w / 2 + 1.2 && Math.abs(z - zn.z) < zn.d / 2 + 1);
+    const inZone = (x: number, z: number) => zones.some((zn) => Math.abs(x - zn.x) < zn.w / 2 + 1.2 && Math.abs(z - zn.z) < zn.d / 2 + 1);
+    let best: { x: number; z: number } | null = null;
+    let bd = Infinity;
+    for (let x = -W + 2; x <= W - 2; x++)
+      for (let z = -D + 2; z <= D - 2; z++) {
+        if (Math.abs(x) < 3 && z > D - 4) continue; // não tapa a porta
+        if (!free(x, z)) continue;
+        // prefere o corredor (fora de qualquer sala) e perto da entrada
+        const dd = Math.hypot(x - 4, z - (D - 3)) + (inZone(x, z) ? 30 : 0);
+        if (dd < bd) (bd = dd), (best = { x, z });
+      }
+    return best;
+  }
+
+  /** Elevador novo: aparece também nos outros andares, no mesmo lugar. */
+  private syncElevator(it: Item) {
+    if (it.type !== "elevator") return;
+    this.full = mergeLevel(this.full, this.lv, this.draft);
+    const lists = [this.full.items, ...(this.full.levels ?? []).map((L) => L.items)];
+    for (const list of lists) {
+      if (list === this.draft.items) continue;
+      if (list.some((o) => o.type === "elevator" && Math.hypot(o.x - it.x, o.z - it.z) < 1)) continue;
+      list.push({ ...it, id: uid("e") });
+    }
   }
 
   // ------------------------------------------------------------------ ferramentas
@@ -329,7 +467,10 @@ export class Editor {
     const d = Math.max(10, Math.min(60, this.draft.size.d + dd));
     if (w === this.draft.size.w && d === this.draft.size.d) return;
     this.draft.items = this.draft.items.filter((it) => !(isWall(it.type) && this.onPerimeter(it.x, it.z)));
+    // andares de cima: refaz as paredes de fora no tamanho novo
+    for (const L of this.draft.levels ?? []) L.items = L.items.filter((it) => !(isWall(it.type) && this.onPerimeter(it.x, it.z)));
     this.draft.size = { w, d };
+    for (const L of this.draft.levels ?? []) L.items.push(...perimeterWalls(w, d, false, () => uid("w")));
     const W = w / 2;
     const D = d / 2;
     // tira árvores e plantas de fora que ficariam dentro do prédio
@@ -348,6 +489,141 @@ export class Editor {
     this.renderPanel();
   }
 
+  /**
+   * Aumenta (n > 0) ou diminui (n < 0) o prédio só de um lado, em passos de 2 m.
+   * O que já existe fica no lugar em relação ao lado oposto.
+   */
+  private growSide(side: "l" | "r" | "b" | "f", n: number) {
+    const alongX = side === "l" || side === "r";
+    const cur = alongX ? this.draft.size.w : this.draft.size.d;
+    const next = cur + n;
+    const [min, max] = alongX ? [12, 80] : [10, 60];
+    if (next < min || next > max) {
+      this.toast(n > 0 ? `O prédio já está no tamanho máximo (${max} m)` : `O prédio já está no tamanho mínimo (${min} m)`);
+      return false;
+    }
+    const { W, D } = this.half();
+    // diminuir: a faixa que some precisa estar vazia
+    if (n < 0) {
+      const cut = -n;
+      const inStrip = (x: number, z: number) =>
+        side === "r" ? x > W - cut - 0.5 : side === "l" ? x < -W + cut + 0.5 : side === "f" ? z > D - cut - 0.5 : z < -D + cut + 0.5;
+      const busy =
+        this.draft.items.some((it) => !DEFS[it.type]?.outdoor && !(isWall(it.type) && this.onPerimeter(it.x, it.z)) && inStrip(it.x, it.z)) ||
+        this.draft.zones.some((z) =>
+          side === "r" ? z.x + z.w / 2 > W - cut : side === "l" ? z.x - z.w / 2 < -W + cut : side === "f" ? z.z + z.d / 2 > D - cut : z.z - z.d / 2 < -D + cut,
+        );
+      if (busy) {
+        this.toast("Tem sala ou móvel nesse lado. Tire antes de diminuir.");
+        return false;
+      }
+    }
+    // desloca tudo (menos as paredes de fora, que são refeitas) meio passo para o lado oposto
+    const sign = side === "r" || side === "f" ? -1 : 1;
+    const dx = alongX ? (sign * n) / 2 : 0;
+    const dz = alongX ? 0 : (sign * n) / 2;
+    const perimeter = new Set(this.draft.items.filter((it) => isWall(it.type) && this.onPerimeter(it.x, it.z)));
+    for (const it of this.draft.items) {
+      if (perimeter.has(it) || DEFS[it.type]?.outdoor) continue;
+      it.x += dx;
+      it.z += dz;
+    }
+    for (const z of this.draft.zones) {
+      z.x += dx;
+      z.z += dz;
+    }
+    // os andares de cima andam junto (o elevador continua alinhado)
+    for (const L of this.draft.levels ?? []) {
+      for (const it of L.items) {
+        if (isWall(it.type) && this.onPerimeter(it.x, it.z)) continue;
+        it.x += dx;
+        it.z += dz;
+      }
+      for (const z of L.zones) {
+        z.x += dx;
+        z.z += dz;
+      }
+    }
+    // o meu personagem acompanha o prédio (continua na mesma sala)
+    this.world.me?.root.position.add(new THREE.Vector3(dx, 0, dz));
+    this.resizeOffice(alongX ? n : 0, alongX ? 0 : n);
+    return true;
+  }
+
+  /** Lugar livre para uma sala w x d (bordas em meio metro, como as salas desenhadas). */
+  private freeSpot(w: number, d: number): { x: number; z: number } | null {
+    const { W, D } = this.half();
+    const blocks = this.draft.items.filter((it) => (DEFS[it.type]?.blocks || isWall(it.type)) && !this.onPerimeter(it.x, it.z) && !DEFS[it.type]?.outdoor);
+    let best: { x: number; z: number } | null = null;
+    let bestD = Infinity;
+    for (let ex = -W + 0.5; ex + w <= W - 0.5 + 0.01; ex++) {
+      for (let ez = -D + 0.5; ez + d <= D - 0.5 + 0.01; ez++) {
+        const x0 = ex, x1 = ex + w, z0 = ez, z1 = ez + d;
+        // não encosta em outra sala (1 m de folga para as paredes não grudarem)
+        if (this.draft.zones.some((z) => x0 < z.x + z.w / 2 + 1 && x1 > z.x - z.w / 2 - 1 && z0 < z.z + z.d / 2 + 1 && z1 > z.z - z.d / 2 - 1)) continue;
+        if (blocks.some((it) => it.x > x0 - 0.5 && it.x < x1 + 0.5 && it.z > z0 - 0.5 && it.z < z1 + 0.5)) continue;
+        // não tapa a entrada do prédio (embaixo, no meio)
+        if (z1 > D - 2.5 && x0 < 3 && x1 > -3) continue;
+        const cx = (x0 + x1) / 2;
+        const cz = (z0 + z1) / 2;
+        const dist = Math.hypot(cx, cz);
+        if (dist < bestD) {
+          bestD = dist;
+          best = { x: cx, z: cz };
+        }
+      }
+    }
+    return best;
+  }
+
+  /** Sala pronta (com paredes e porta). Se não houver espaço, aumenta o prédio para a direita. */
+  private addQuickRoom(size: string, name: string, priv: boolean) {
+    const [w, d] = ROOM_SIZES[size] ?? ROOM_SIZES.media;
+    let spot = this.freeSpot(w, d);
+    let grew = 0;
+    while (!spot && grew < 4 && !this.lv) {
+      // abre espaço: amplia o lado direito na largura da sala (+ corredor)
+      const need = Math.ceil((w + 2) / 2) * 2;
+      if (!this.growSide("r", need)) break;
+      grew++;
+      spot = this.freeSpot(w, d);
+    }
+    if (!spot) {
+      this.toast("Não achei espaço para a sala. Aumente o prédio ou desenhe a sala no piso.");
+      return;
+    }
+    const zone: Zone = {
+      id: uid("z-"),
+      name: name.trim().slice(0, 30) || `Sala ${this.draft.zones.length + 1}`,
+      x: spot.x,
+      z: spot.z,
+      w,
+      d,
+      private: priv,
+      floor: priv ? "carpete-azul" : "madeira",
+    };
+    this.draft.zones.push(zone);
+    this.addRoomWalls(zone);
+    this.selZone = zone.id;
+    this.apply();
+    this.renderPanel();
+    this.world.focusOn(zone.x, zone.z);
+    this.toast(grew ? `Prédio ampliado e ${zone.name} criada` : `${zone.name} criada`);
+  }
+
+  /** Quadro de pendurar perto de uma parede inteira (fundo do prédio): encosta nela, virado para dentro. */
+  private wallSnap(it: Item) {
+    if (!WALL_MOUNT.has(it.type)) return;
+    const { W, D } = this.half();
+    if (it.z < -D + 1.6) {
+      it.z = -D + 0.15;
+      it.rot = 0;
+    } else if (it.x < -W + 1.6) {
+      it.x = -W + 0.15;
+      it.rot = 270;
+    }
+  }
+
   // ------------------------------------------------------------------ mouse
   private onMouseMove(e: MouseEvent) {
     if (!this.active) return;
@@ -355,8 +631,12 @@ export class Editor {
     if (!p) return;
     if (this.ghost) {
       const s = this.snap(p);
+      // prévia já encostada na parede, como vai ficar
+      const tmp: Item = { id: "ghost", type: String(this.tool), x: s.x, z: s.z, rot: this.rot };
+      this.wallSnap(tmp);
       this.ghost.visible = true;
-      this.ghost.position.set(s.x, 0, s.z);
+      this.ghost.position.set(tmp.x, 0, tmp.z);
+      this.ghost.rotation.y = -(tmp.rot * Math.PI) / 180;
     }
     if (this.dragStart && this.tool === "zone") {
       const s = this.snap(p);
@@ -467,7 +747,10 @@ export class Editor {
     }
     if (this.tool) {
       const s = this.snap(p);
-      this.draft.items.push({ id: uid("i"), type: this.tool, x: s.x, z: s.z, rot: this.rot });
+      const it: Item = { id: uid("i"), type: this.tool, x: s.x, z: s.z, rot: this.rot };
+      this.wallSnap(it);
+      this.draft.items.push(it);
+      this.syncElevator(it);
       this.apply();
       if (!e.shiftKey) this.setTool(null); // Shift mantém o móvel para colocar vários
       return true;
@@ -493,6 +776,7 @@ export class Editor {
       const s = this.snap(p);
       this.selected.x = s.x;
       this.selected.z = s.z;
+      this.wallSnap(this.selected);
       this.apply();
       return true;
     }
@@ -511,13 +795,20 @@ export class Editor {
 
   private renderPanel() {
     const thumbs = furnitureThumbs();
-    const types = PALETTE.filter((t) => t !== "floor_logo" && !isWall(t) && DEFS[t].label.toLowerCase().includes(this.filter.toLowerCase()));
+    const cat = CATEGORIES.find((c) => c[0] === this.category) ?? CATEGORIES[0];
+    const types = PALETTE.filter((t) => t !== "floor_logo" && !isWall(t) && DEFS[t].label.toLowerCase().includes(this.filter.toLowerCase()) && (this.filter ? true : cat[2].test(t)));
+    const colorRow = (attr: string, cur?: string) =>
+      `<div class="colors">${COLORS.map((c) => `<button class="floor-sw ${cur?.toLowerCase() === c.toLowerCase() ? "sel" : ""}" data-${attr}="${c}" title="${c}" style="background:${c}"></button>`).join("")}
+        <label class="floor-sw pick" title="Outra cor"><input type="color" data-${attr}-pick value="${cur ?? "#C8F501"}">${icon("plus", 13)}</label>
+        <button class="floor-sw none ${cur ? "" : "sel"}" data-${attr}="" title="Cor original">${icon("x", 13)}</button></div>`;
     const sel = this.selected;
 
     const moveis = `
       ${sel ? `<div class="sel-card">
           <div class="panel-head"><div class="t-m">${esc(DEFS[sel.type]?.label ?? sel.type)}</div><span class="chip accent">Selecionado</span></div>
           <div class="note">Clique no piso para levar o item até lá.</div>
+          ${PHOTO_TYPES.has(sel.type) ? `<button class="btn secondary sm block" data-photo>${icon("image", 15)} ${sel.cfg?.img ? "Trocar a imagem" : "Escolher imagem do computador"}</button>` : `<div class="label">Cor</div>
+          ${colorRow("icolor", sel.color)}`}
           <div class="editor-actions">
             <button class="btn secondary sm" data-a="rot">${icon("rotate", 15)} Girar</button>
             <button class="btn secondary sm" data-a="dup">${icon("copy", 15)} Duplicar</button>
@@ -525,6 +816,7 @@ export class Editor {
           </div>
         </div>` : ""}
       <label class="search">${icon("search", 16)}<input placeholder="Buscar móvel" value="${esc(this.filter)}" data-search></label>
+      <div class="cats">${CATEGORIES.map(([k, l]) => `<button class="chip ${this.category === k ? "accent" : ""}" data-cat="${k}">${l}</button>`).join("")}</div>
       <div class="tiles">
         ${types.map((t) => `<button class="tile ${this.tool === t ? "sel" : ""}" data-t="${t}"><img src="${thumbs[t]}" alt=""><span>${DEFS[t].label}</span></button>`).join("") || `<div class="empty">Nada encontrado.</div>`}
       </div>
@@ -533,7 +825,21 @@ export class Editor {
     const stepper = (label: string, value: string, key: string) =>
       `<div class="stepper"><span class="c2">${label}</span><div class="stepper-ctl"><button data-step="${key}" data-d="-1" aria-label="Diminuir">${icon("minus", 14)}</button><span>${value}</span><button data-step="${key}" data-d="1" aria-label="Aumentar">${icon("plus", 14)}</button></div></div>`;
 
+    const quickRoom = `
+      <div class="room open">
+        <div class="t-m">Adicionar sala pronta</div>
+        <input class="input" data-qname placeholder="Nome da sala (ex.: Sala de Treinamento)" maxlength="30">
+        <label class="field"><span class="label">Tamanho</span><select class="input" data-qsize>
+          ${[["pequena", "Pequena (5 x 5 m)"], ["media", "Média (7 x 6 m)"], ["grande", "Grande (9 x 7 m)"], ["auditorio", "Auditório (12 x 9 m)"]].map(([k, l]) => `<option value="${k}" ${this.quickSize === k ? "selected" : ""}>${l}</option>`).join("")}
+        </select></label>
+        <label class="toggle-row"><span>Privada (só quem está dentro ouve)</span><span class="switch"><input type="checkbox" data-qpriv ${this.quickPriv ? "checked" : ""}><span></span></span></label>
+        <button class="btn primary sm block" data-qadd>${icon("plus", 15)} Adicionar sala</button>
+        <div class="note">Vai para o primeiro espaço livre, com paredes e porta. Sem espaço, o prédio cresce para a direita.</div>
+      </div>`;
+
     const salas = `
+      ${quickRoom}
+      <div class="label">Ou desenhe no piso</div>
       <button class="btn ${this.tool === "zone" ? "primary" : "secondary"} block" data-t="zone">${icon("room", 16)} ${this.tool === "zone" ? "Arraste no piso para desenhar" : "Nova sala"}</button>
       <label class="toggle-row"><span>Criar com paredes e porta</span><span class="switch"><input type="checkbox" data-withwalls ${this.withWalls ? "checked" : ""}><span></span></span></label>
       <div class="note">Clique numa sala no piso para editar.</div>
@@ -547,6 +853,8 @@ export class Editor {
               <div class="toggle-row"><span class="c2">Privada: só quem está dentro ouve</span><span class="switch"><input type="checkbox" data-zpriv ${z.private ? "checked" : ""}><span></span></span></div>
               <div class="label">Piso</div>
               <div class="floors">${FLOORS.map(([k, l, c]) => `<button class="floor-sw ${floor === k ? "sel" : ""}" data-floor="${k}" title="${l}" style="background:${c}"></button>`).join("")}</div>
+              <div class="label">Cor do piso</div>
+              ${colorRow("zcolor", z.floorColor)}
               ${stepper("Largura", `${z.w} m`, "w")}
               ${stepper("Profundidade", `${z.d} m`, "d")}
               <div class="stepper"><span class="c2">Mover</span><div class="arrows">
@@ -560,12 +868,38 @@ export class Editor {
         })
         .join("")}`;
 
+    const levels = levelIds(this.full ?? this.draft);
+    const top = Math.max(...levels);
+    const andares = `
+      <div class="room open">
+        <div class="t-m">Andares</div>
+        <div class="note">Você está editando: <b>${levelName(this.lv)}</b>. Para editar outro andar, saia do editor, vá pelo elevador e abra o editor de novo.</div>
+        <div class="levels">${levels.map((l) => `<span class="chip ${l === this.lv ? "accent" : ""}">${levelName(l)}</span>`).join("")}</div>
+        <div class="editor-actions">
+          <button class="btn secondary sm" data-level="add">${icon("plus", 15)} Adicionar andar</button>
+          ${top ? `<button class="btn danger sm" data-level="del">${icon("trash", 15)} Apagar o ${levelName(top)}</button>` : ""}
+        </div>
+        <div class="note">Cada andar novo já vem com paredes, janelas e o elevador no mesmo lugar do térreo. Elevador colocado em qualquer andar aparece em todos.</div>
+      </div>`;
     const predio = `
+      ${andares}
+      ${this.lv ? `<div class="note">O tamanho do prédio é o mesmo em todos os andares. Para mudar, edite no térreo.</div>` : `
       <div class="room open">
         <div class="t-m">Tamanho do escritório</div>
         ${stepper("Largura", `${this.draft.size.w} m`, "ow")}
         ${stepper("Profundidade", `${this.draft.size.d} m`, "od")}
         <div class="note">As paredes de fora são refeitas com janelas e a entrada embaixo, no meio.</div>
+      </div>
+      <div class="room open">
+        <div class="t-m">Ampliar só um lado</div>
+        ${[["l", "Esquerda"], ["r", "Direita"], ["b", "Fundo"], ["f", "Frente"]].map(([k, l]) => `<div class="stepper"><span class="c2">${l}</span><div class="stepper-ctl"><button data-side="${k}" data-d="-2" aria-label="Diminuir">${icon("minus", 14)}</button><span>2 m</span><button data-side="${k}" data-d="2" aria-label="Aumentar">${icon("plus", 14)}</button></div></div>`).join("")}
+        <div class="note">As salas e os móveis ficam onde estão; o espaço novo aparece só no lado escolhido.</div>
+      </div>`}
+      <button class="btn secondary sm block" data-tab="salas">${icon("room", 15)} Adicionar salas</button>
+      <div class="room open">
+        <div class="t-m">Piso do salão e áreas abertas</div>
+        ${colorRow("hcolor", this.draft.floorColor)}
+        <div class="note">Vale para o corredor e as áreas abertas sem cor própria. O desenho do piso continua aparecendo.</div>
       </div>
       <div class="label">Paredes</div>
       <div class="editor-actions">
@@ -639,6 +973,66 @@ export class Editor {
         else this.resizeOffice(0, d);
       }),
     );
+    q("[data-side]").forEach((b) =>
+      b.addEventListener("click", () => {
+        if (this.growSide(b.dataset.side as "l" | "r" | "b" | "f", Number(b.dataset.d))) {
+          this.apply();
+          this.renderPanel();
+        }
+      }),
+    );
+    q("[data-level]").forEach((b) => b.addEventListener("click", () => (b.dataset.level === "add" ? this.addLevel() : this.removeTopLevel())));
+    q("[data-cat]").forEach((b) =>
+      b.addEventListener("click", () => {
+        this.category = b.dataset.cat!;
+        this.renderPanel();
+      }),
+    );
+    const colorWire = (attr: string, set: (c: string | undefined, live?: boolean) => void) => {
+      q(`[data-${attr}]`).forEach((b) => b.addEventListener("click", () => set(b.dataset[attr] || undefined)));
+      const pick = this.panel.querySelector<HTMLInputElement>(`[data-${attr}-pick]`);
+      pick?.addEventListener("change", () => set(pick.value));
+    };
+    colorWire("icolor", (c, live) => {
+      if (!this.selected) return;
+      if (c) this.selected.color = c;
+      else delete this.selected.color;
+      this.apply();
+      if (!live) this.renderPanel();
+    });
+    colorWire("hcolor", (c, live) => {
+      if (c) this.draft.floorColor = c;
+      else delete this.draft.floorColor;
+      this.apply();
+      if (!live) this.renderPanel();
+    });
+    this.panel.querySelector("[data-photo]")?.addEventListener("click", () => {
+      const it = this.selected;
+      if (!it) return;
+      const inp = document.createElement("input");
+      inp.type = "file";
+      inp.accept = "image/*";
+      inp.onchange = async () => {
+        const f = inp.files?.[0];
+        if (!f) return;
+        try {
+          const { img, aspect } = await imageToDataUrl(f, it.type === "photo_desk" ? 320 : 560);
+          it.cfg = { ...(it.cfg ?? {}), img, aspect };
+          this.apply();
+          this.renderPanel();
+        } catch (e) {
+          this.toast(String((e as Error).message ?? e));
+        }
+      };
+      inp.click();
+    });
+    // sala pronta
+    this.panel.querySelector<HTMLSelectElement>("[data-qsize]")?.addEventListener("change", (e) => (this.quickSize = (e.target as HTMLSelectElement).value));
+    this.panel.querySelector<HTMLInputElement>("[data-qpriv]")?.addEventListener("change", (e) => (this.quickPriv = (e.target as HTMLInputElement).checked));
+    this.panel.querySelector("[data-qadd]")?.addEventListener("click", () => {
+      const name = this.panel.querySelector<HTMLInputElement>("[data-qname]")?.value ?? "";
+      this.addQuickRoom(this.quickSize, name, this.quickPriv);
+    });
     // salas
     q("[data-z]").forEach((row) => {
       const z = this.draft.zones.find((x) => x.id === row.dataset.z)!;
@@ -653,6 +1047,20 @@ export class Editor {
       });
       row.querySelector<HTMLInputElement>("[data-zpriv]")?.addEventListener("change", (e) => {
         z.private = (e.target as HTMLInputElement).checked;
+        this.apply();
+        this.renderPanel();
+      });
+      row.querySelectorAll<HTMLElement>("[data-zcolor]").forEach((b) =>
+        b.addEventListener("click", () => {
+          if (b.dataset.zcolor) z.floorColor = b.dataset.zcolor;
+          else delete z.floorColor;
+          this.apply();
+          this.renderPanel();
+        }),
+      );
+      const zpick = row.querySelector<HTMLInputElement>("[data-zcolor-pick]");
+      zpick?.addEventListener("change", () => {
+        z.floorColor = zpick.value;
         this.apply();
         this.renderPanel();
       });

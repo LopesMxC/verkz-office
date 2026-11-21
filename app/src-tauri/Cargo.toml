@@ -1,6 +1,6 @@
 [package]
 name = "verkz-office"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "VERKZ Office — escritório virtual"
 
