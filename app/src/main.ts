@@ -598,13 +598,8 @@ async function dockAction(id: string) {
       break;
     case "edit":
       if (!editor.active) {
-        // gestão edita tudo; o resto da equipe edita só a sala do seu cargo
-        const mine = (world.layout?.zones ?? []).filter((z) => z.role && z.role === prefs.role && z.role !== "SDR");
-        if (!isAdmin && !mine.length) {
-          toast(prefs.role ? `A edição é da sala do seu cargo, e ${prefs.role === "SDR" ? "a área dos SDRs é compartilhada" : `não há sala para ${prefs.role}`}. Peça para a gestão.` : "Escolha seu cargo na tela de entrada para editar a sua sala", true);
-          break;
-        }
-        editor.limit = isAdmin ? null : mine;
+        // todo mundo personaliza os móveis; prédio, salas e paredes só a gestão
+        editor.limit = !isAdmin;
       }
       editor.toggle();
       world.editing = editor.active;

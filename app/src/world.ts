@@ -994,15 +994,21 @@ export class World {
       const z0 = Math.round(zn.z - zn.d / 2 - 0.5);
       const z1 = Math.round(zn.z + zn.d / 2 + 0.5);
       // as paredes podem estar na borda de fora da sala (salas originais) ou na de dentro (salas criadas no editor)
-      const lines: { alongX: boolean; fixed: number; from: number; to: number }[] = [
-        { alongX: true, fixed: z0, from: x0, to: x1 },
-        { alongX: true, fixed: z1, from: x0, to: x1 },
-        { alongX: false, fixed: x0, from: z0, to: z1 },
-        { alongX: false, fixed: x1, from: z0, to: z1 },
-        { alongX: true, fixed: z0 + 1, from: x0, to: x1 },
-        { alongX: true, fixed: z1 - 1, from: x0, to: x1 },
-        { alongX: false, fixed: x0 + 1, from: z0, to: z1 },
-        { alongX: false, fixed: x1 - 1, from: z0, to: z1 },
+      type Line = { alongX: boolean; fixed: number; from: number; to: number };
+      // cada lado da sala tem duas linhas possíveis (borda de fora ou de dentro); vale a que tem mais parede.
+      // Sem isso, numa sala estreita (ex.: Ouvidoria, 3 m) a linha de dentro "via" as paredes laterais
+      // como um vão de 3 m e criava portas falsas atravessando a sala.
+      const count = (ln: Line) => {
+        let n = 0;
+        for (let k = ln.from; k <= ln.to; k++) if (ln.alongX ? has(k, ln.fixed) : has(ln.fixed, k)) n++;
+        return n;
+      };
+      const pick = (outer: Line, inner: Line) => (count(inner) > count(outer) ? inner : outer);
+      const lines: Line[] = [
+        pick({ alongX: true, fixed: z0, from: x0, to: x1 }, { alongX: true, fixed: z0 + 1, from: x0, to: x1 }),
+        pick({ alongX: true, fixed: z1, from: x0, to: x1 }, { alongX: true, fixed: z1 - 1, from: x0, to: x1 }),
+        pick({ alongX: false, fixed: x0, from: z0, to: z1 }, { alongX: false, fixed: x0 + 1, from: z0, to: z1 }),
+        pick({ alongX: false, fixed: x1, from: z0, to: z1 }, { alongX: false, fixed: x1 - 1, from: z0, to: z1 }),
       ];
       for (const ln of lines) {
         const at = (k: number) => (ln.alongX ? has(k, ln.fixed) : has(ln.fixed, k));

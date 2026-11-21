@@ -209,3 +209,14 @@ Identity no LiveKit = id do peer no servidor.
   no download do GitHub; para se gerar-update.ps1 achar instalador sem .sig (agora sai com exit 1).
   compilador-mac.command: carrega a chave e usa `--bundles app,dmg` (só "dmg" não gerava o .app.tar.gz).
   compilador-linux.sh: exige a chave. build.yml: confere o segredo antes e os .sig depois de cada build.
+
+## Ajustes de 21/11 (Ouvidoria e permissões de edição)
+- **Portas falsas na Ouvidoria:** `buildDoors` (world.ts) testava as linhas de borda de fora E de dentro de cada sala.
+  Na Ouvidoria (3 m de largura) a linha de dentro via as paredes laterais como um "vão de 3 m" e criava 2 portas
+  extras (com colisão invisível atravessando a sala). Agora, em cada lado, vale só a linha com mais parede.
+  Conferido no layout padrão: Ouvidoria 3 → 1 porta; as outras salas continuam com 1.
+- **Nova regra de edição (pedido do Alifer):** qualquer pessoa personaliza o escritório (móveis em qualquer lugar).
+  Só a gestão (chave de gestão) mexe no prédio, cria/apaga/muda salas, paredes e elevador.
+  - App: `editor.limit` virou boolean (`!isAdmin`); fora da gestão só aparece a aba Móveis, sem parede/elevador.
+  - Servidor: `check_room_edit` → `check_furniture_edit` (não depende mais do cargo; bloqueia size/zones/spawn/env/
+    levels/floorColor e qualquer item wall/window_wall/glass_wall/elevator).

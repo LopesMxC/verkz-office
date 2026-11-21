@@ -331,11 +331,11 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                 st.broadcast(&json!({"t":"look","id":id,"look":look}), None).await;
             }
             (ClientMsg::LayoutSave { layout }, Some(id)) => {
-                // quem não é da gestão só pode mudar os móveis da sala do seu cargo
-                let (admin, role) = st.conns.lock().await.get(id).map(|c| (c.admin, c.peer.extra["role"].as_str().unwrap_or("").to_string())).unwrap_or_default();
+                // quem não é da gestão só mexe nos móveis (prédio, salas e paredes são da gestão)
+                let admin = st.conns.lock().await.get(id).map(|c| c.admin).unwrap_or_default();
                 if !admin {
                     let old = st.layout.read().await.clone();
-                    if let Err(motivo) = check_room_edit(&old, &layout, &role) {
+                    if let Err(motivo) = check_furniture_edit(&old, &layout) {
                         // recusa sem derrubar a conexão e devolve o mapa como está
                         let _ = tx.send(json!({"t":"notice","msg": motivo, "layout": old}).to_string());
                         continue;
@@ -615,36 +615,16 @@ async fn main() {
 }
 
 
-/// Confere se uma edição feita por quem não é da gestão mexeu só nos móveis das salas do seu cargo.
-fn check_room_edit(old: &Value, new: &Value, role: &str) -> Result<(), String> {
-    if role.is_empty() {
-        return Err("Escolha seu cargo para editar a sua sala.".into());
-    }
+/// Confere se uma edição feita por quem não é da gestão mexeu só nos móveis.
+/// Prédio (tamanho, andares, piso, clima), salas e paredes (e o elevador) são só da gestão.
+fn check_furniture_edit(old: &Value, new: &Value) -> Result<(), String> {
     if old["size"] != new["size"] || old["zones"] != new["zones"] || old["spawn"] != new["spawn"] || old["env"] != new["env"] {
-        return Err("Só a gestão pode mudar salas, prédio e clima.".into());
+        return Err("Só a gestão pode mudar o prédio e as salas.".into());
     }
-    // andares de cima e cor do piso do salão: só a gestão
     if old["levels"] != new["levels"] || old["floorColor"] != new["floorColor"] {
         return Err("Só a gestão pode mudar os andares e o piso do salão.".into());
     }
-    let rooms: Vec<(f64, f64, f64, f64)> = old["zones"]
-        .as_array()
-        .map(|zs| {
-            zs.iter()
-                .filter(|z| z["role"].as_str() == Some(role))
-                .map(|z| (z["x"].as_f64().unwrap_or(0.0), z["z"].as_f64().unwrap_or(0.0), z["w"].as_f64().unwrap_or(0.0) / 2.0 + 0.01, z["d"].as_f64().unwrap_or(0.0) / 2.0 + 0.01))
-                .collect()
-        })
-        .unwrap_or_default();
-    if rooms.is_empty() {
-        return Err("Ainda não há sala para o seu cargo.".into());
-    }
-    let inside = |it: &Value| {
-        let x = it["x"].as_f64().unwrap_or(1e9);
-        let z = it["z"].as_f64().unwrap_or(1e9);
-        rooms.iter().any(|(cx, cz, hw, hd)| (x - cx).abs() <= *hw && (z - cz).abs() <= *hd)
-    };
-    let is_wall = |it: &Value| matches!(it["type"].as_str(), Some("wall") | Some("window_wall") | Some("glass_wall"));
+    let locked = |it: &Value| matches!(it["type"].as_str(), Some("wall") | Some("window_wall") | Some("glass_wall") | Some("elevator"));
     let index = |v: &Value| -> std::collections::HashMap<String, Value> {
         v["items"].as_array().map(|a| a.iter().map(|i| (i["id"].as_str().unwrap_or("").to_string(), i.clone())).collect()).unwrap_or_default()
     };
@@ -652,22 +632,14 @@ fn check_room_edit(old: &Value, new: &Value, role: &str) -> Result<(), String> {
     for (id, it) in &a {
         match b.get(id) {
             Some(n) if n == it => {}
-            // mudou ou saiu: precisa ser um móvel que estava (e continua) dentro da sala
-            Some(n) => {
-                if is_wall(it) || is_wall(n) || !inside(it) || !inside(n) {
-                    return Err("Você só pode mexer nos móveis da sua sala.".into());
-                }
-            }
-            None => {
-                if is_wall(it) || !inside(it) {
-                    return Err("Você só pode tirar móveis da sua sala.".into());
-                }
-            }
+            Some(n) if locked(it) || locked(n) => return Err("Só a gestão pode mexer em paredes.".into()),
+            None if locked(it) => return Err("Só a gestão pode apagar paredes.".into()),
+            _ => {}
         }
     }
     for (id, n) in &b {
-        if !a.contains_key(id) && (is_wall(n) || !inside(n)) {
-            return Err("Coloque os móveis dentro da sua sala.".into());
+        if !a.contains_key(id) && locked(n) {
+            return Err("Só a gestão pode adicionar paredes.".into());
         }
     }
     if b.len() > a.len() + 60 {

@@ -8,6 +8,8 @@ import { furnitureThumbs } from "./thumbs";
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const uid = (p: string) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const isWall = (t: string) => t === "wall" || t === "window_wall";
+/** O que só a gestão pode pôr, mexer ou tirar. */
+const LOCKED = new Set(["wall", "window_wall", "glass_wall", "elevator"]);
 
 /** Tamanhos das salas prontas (largura x profundidade, em metros). */
 const ROOM_SIZES: Record<string, [number, number]> = {
@@ -59,10 +61,11 @@ type Tool = null | "zone" | "wall" | "erase" | string; // string = tipo de móve
 export class Editor {
   active = false;
   /**
-   * Quem não é da gestão só edita a(s) sua(s) sala(s): só móveis, só dentro delas.
-   * null = pode editar tudo (gestão).
+   * Quem não é da gestão personaliza o escritório inteiro, mas só os móveis.
+   * Prédio, salas (criar/apagar/mudar), paredes e elevador ficam com a gestão.
+   * false = pode editar tudo (gestão).
    */
-  limit: Zone[] | null = null;
+  limit = false;
   onClose?: () => void;
   private panel: HTMLDivElement;
   /** O andar que está sendo editado (itens e salas dele). No térreo é o próprio `full`. */
@@ -712,26 +715,26 @@ export class Editor {
     }
   }
 
-  /** O ponto está dentro de uma das salas que posso editar? */
+  /** O ponto está dentro do prédio? (móveis podem ir para qualquer lugar do escritório) */
   allowed(x: number, z: number) {
-    if (!this.limit) return true;
-    return this.limit.some((zn) => Math.abs(x - zn.x) <= zn.w / 2 + 0.01 && Math.abs(z - zn.z) <= zn.d / 2 + 0.01);
+    const { w, d } = this.draft.size;
+    return Math.abs(x) <= w / 2 && Math.abs(z) <= d / 2;
   }
 
   private onClick(p: THREE.Vector3, e: MouseEvent): boolean {
     if (!this.active) return false;
     if (this.limit) {
-      // na sua sala: só móveis (nada de paredes, salas ou prédio) e só dentro dela
+      // fora da gestão: só móveis (paredes, salas, prédio e elevador ficam com a gestão)
       const obj0 = this.world.pickItem(e);
       const it0 = obj0 ? this.draft.items.find((i) => i.id === obj0.userData.itemId) : null;
-      if (it0 && (isWall(it0.type) || !this.allowed(it0.x, it0.z))) {
-        this.toast("Você só pode mexer nos móveis da sua sala");
+      if (it0 && LOCKED.has(it0.type)) {
+        this.toast("Paredes, salas e prédio só a gestão muda");
         return true;
       }
       if ((this.tool && this.tool !== "erase") || (this.selected && !it0)) {
         const s0 = this.snap(p);
         if (!this.allowed(s0.x, s0.z)) {
-          this.toast("Coloque dentro da sua sala");
+          this.toast("Coloque dentro do escritório");
           return true;
         }
       }
@@ -796,7 +799,7 @@ export class Editor {
   private renderPanel() {
     const thumbs = furnitureThumbs();
     const cat = CATEGORIES.find((c) => c[0] === this.category) ?? CATEGORIES[0];
-    const types = PALETTE.filter((t) => t !== "floor_logo" && !isWall(t) && DEFS[t].label.toLowerCase().includes(this.filter.toLowerCase()) && (this.filter ? true : cat[2].test(t)));
+    const types = PALETTE.filter((t) => t !== "floor_logo" && !isWall(t) && !(this.limit && LOCKED.has(t)) && DEFS[t].label.toLowerCase().includes(this.filter.toLowerCase()) && (this.filter ? true : cat[2].test(t)));
     const colorRow = (attr: string, cur?: string) =>
       `<div class="colors">${COLORS.map((c) => `<button class="floor-sw ${cur?.toLowerCase() === c.toLowerCase() ? "sel" : ""}" data-${attr}="${c}" title="${c}" style="background:${c}"></button>`).join("")}
         <label class="floor-sw pick" title="Outra cor"><input type="color" data-${attr}-pick value="${cur ?? "#C8F501"}">${icon("plus", 13)}</label>
@@ -915,10 +918,10 @@ export class Editor {
     const keepFocus = document.activeElement instanceof HTMLInputElement && document.activeElement.hasAttribute("data-search");
     if (this.limit) this.tab = "moveis";
     this.panel.innerHTML = `
-      <div class="panel-head"><div class="t-m">${this.limit ? "Editar a minha sala" : "Editar escritório"}</div><button class="x-btn" data-a="cancel">${icon("x", 18)}</button></div>
+      <div class="panel-head"><div class="t-m">Editar escritório</div><button class="x-btn" data-a="cancel">${icon("x", 18)}</button></div>
       ${
         this.limit
-          ? `<div class="note" style="margin:0 0 4px">Mude os móveis da ${this.limit.map((z) => z.name).join(" ou da ")} do seu jeito. Paredes e o resto do escritório ficam com a gestão.</div>`
+          ? `<div class="note" style="margin:0 0 4px">Mude os móveis do escritório do seu jeito. Prédio, salas e paredes ficam com a gestão.</div>`
           : `<div class="seg">
         <button class="${this.tab === "moveis" ? "sel" : ""}" data-tab="moveis">Móveis</button>
         <button class="${this.tab === "salas" ? "sel" : ""}" data-tab="salas">Salas</button>
@@ -928,7 +931,7 @@ export class Editor {
       <div class="scroll">${this.tab === "moveis" ? moveis : this.tab === "salas" ? salas : predio}</div>
       <div class="editor-actions">
         <button class="btn secondary" data-a="cancel">Cancelar</button>
-        <button class="btn primary" data-a="save">${this.limit ? "Salvar a minha sala" : "Salvar para todos"}</button>
+        <button class="btn primary" data-a="save">Salvar para todos</button>
       </div>`;
 
     const q = <T extends HTMLElement>(s: string) => this.panel.querySelectorAll<T>(s);
