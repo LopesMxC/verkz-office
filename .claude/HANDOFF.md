@@ -370,7 +370,7 @@ Identity no LiveKit = id do peer no servidor.
   - NÃO publicado (pedido do Lopes): server/src/main.rs com a mensagem "Chave do escritório inválida" garantida
     (esperar o writer antes de fechar) e chave com trim. Entra no próximo build do servidor (Rust).
   - Estágio web da 0.15.3: fonte = base bc594c5d6d54 + diffs (procure no log); base usada: bc594c5d6d54.
-- **23/11 ~10:40 — 0.16.0 (pacote pronto, build pendente: o Lopes sobe verkz-office-0.16.0-build.tar.gz no Portainer):**
+- **23/11 ~10:50 — 0.16.0 NO AR (stack 4; build pelo upload verkz-office-0.16.0-build.tar.gz):**
   - Seletor de modo/visão acima do dock (bottom 96 px; rótulos só a partir de 2100 px de largura).
   - Caixas de som: `radio.vol` (volume da caixa para todos; quem não é dono pede com `{kind:"radio_vol"}` e o
     dono aplica se a pessoa está perto) + "só para mim" (soundPrefs.radio) no menu da caixa e na pílula.
@@ -384,3 +384,11 @@ Identity no LiveKit = id do peer no servidor.
     de desenvolvimento exige Premium, 1 Client ID por pessoa e no máximo 5 usuários autorizados por Client ID,
     então a integração não atende o time todo. App do Spotify NÃO foi criado.
   - Servidor da 0.16.0 também leva a mensagem de chave inválida garantida e a chave com trim.
+- **23/11 ~11:15 — versão 0.6.5 (app) e servidor 0.16.1 no ar (stack 4):**
+  - Versão do app: 0.6.5 (package.json, tauri.conf.json, Cargo.toml). Instaladores ainda por gerar.
+  - Rádio travando em alguns usuários: (1) não troca de caixa enquanto a atual for audível e não 0,2 mais baixa
+    (antes recriava o player a cada troca); (2) silêncio só desliga o player depois de 8 s (passar na porta não
+    recomeça a música); (3) watchdog a cada 2 s: buffering/tempo parado por 6 s → volta ao ponto (música) ou
+    playVideo; 14 s → próxima da playlist; (4) setVolume só quando muda; (5) player 200x200 (qualidade baixa);
+    (6) app instalado: tirado `--renderer-process-limit=1` (o iframe do YouTube dividia o processo com a cena 3D).
+  - Estágio web da 0.16.1: base c313f78b8ef9 (fonte 0.16.0) + diff do radio.ts.

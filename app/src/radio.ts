@@ -144,7 +144,7 @@ export class RadioPlayer {
   constructor() {
     this.host = document.createElement("div");
     // fora da tela, mas existente (o YouTube não toca em iframe escondido com display:none)
-    this.host.style.cssText = "position:fixed;left:-400px;top:0;width:320px;height:180px;opacity:0;pointer-events:none;";
+    this.host.style.cssText = "position:fixed;left:-400px;top:0;width:200px;height:200px;opacity:0;pointer-events:none;";
     document.body.appendChild(this.host);
     this.timer = window.setInterval(() => this.fade(), 120);
   }
@@ -153,16 +153,29 @@ export class RadioPlayer {
   update(sources: RadioSource[], audible: (s: RadioSource) => number) {
     let best: RadioSource | null = null;
     let bestV = 0;
+    let cur: RadioSource | null = null;
+    let curV = 0;
+    const keyOf = (s: RadioSource) => `${s.item}|${s.vid ?? ""}|${s.list ?? ""}|${s.sp ?? ""}|${s.at}`;
     for (const s of sources) {
       const v = audible(s);
+      if (keyOf(s) === this.key) {
+        cur = s;
+        curV = v;
+      }
       if (v > bestV + 0.01) {
         bestV = v;
         best = s;
       }
     }
+    // continua no rádio que já está tocando enquanto ele for audível e não muito mais baixo que o outro:
+    // antes, com duas caixas parecidas, o player era recriado a cada troca e a música "travava"
+    if (cur && curV > 0.02 && curV >= bestV - 0.2) {
+      best = cur;
+      bestV = curV;
+    }
     this.hasSource = !!best;
     this.wantVol = this.muted ? 0 : bestV * this.master;
-    const key = best ? `${best.item}|${best.vid ?? ""}|${best.list ?? ""}|${best.sp ?? ""}|${best.at}` : "";
+    const key = best ? keyOf(best) : "";
     if (key === this.key) return;
     // trocou de rádio (ou saiu de perto): só troca se o novo for audível
     if (!best) {
@@ -273,8 +286,9 @@ export class RadioPlayer {
     this.host.appendChild(el);
     this.player = new YT.Player(el, {
       host: "https://www.youtube.com",
-      width: 320,
-      height: 180,
+      // player pequeno: o YouTube manda vídeo em qualidade baixa (só o som importa) e pesa menos
+      width: 200,
+      height: 200,
       videoId: s.list ? undefined : s.vid,
       playerVars: vars,
       events: { onReady, onStateChange: onState, onError: onErr },
@@ -292,22 +306,84 @@ export class RadioPlayer {
     this.onNow?.({ title, owner: s.ownerName, key: this.key, cover });
   }
 
+  private sentVol = -1;
+  private silentSince = 0;
+  private lastCheck = 0;
+  private lastTime = -1;
+  private stuckSince = 0;
   private fade() {
     this.vol += (this.wantVol - this.vol) * 0.25;
     if (Math.abs(this.vol - this.wantVol) < 0.01) this.vol = this.wantVol;
-    try {
-      this.player?.setVolume?.(Math.round(this.vol * 100));
-    } catch {
-      /* player ainda carregando */
+    // só manda o volume ao player quando muda (antes eram 8 mensagens por segundo para o iframe)
+    const v = Math.round(this.vol * 100);
+    if (v !== this.sentVol) {
+      try {
+        this.player?.setVolume?.(v);
+        this.sentVol = v;
+      } catch {
+        /* player ainda carregando */
+      }
     }
     this.syncSpotify();
-    if (this.sp && this.wantVol === 0 && this.vol === 0 && (!this.muted || !this.hasSource)) this.stopLocal();
-    // saiu de perto: quando o som some, desliga o player (libera memória). Silenciado mas por perto: continua.
-    if (this.player && this.wantVol === 0 && this.vol === 0 && (!this.muted || !this.hasSource)) this.stopLocal();
+    this.watchdog();
+    // saiu de perto: quando o som some por uns segundos, desliga o player (libera memória).
+    // Passar na porta ou no limite da sala não desliga mais (antes recomeçava a música ao voltar).
+    // Silenciado mas por perto: continua.
+    const now = performance.now();
+    const off = this.wantVol === 0 && this.vol === 0 && (!this.muted || !this.hasSource);
+    if (!off) this.silentSince = 0;
+    else if (!this.silentSince) this.silentSince = now;
+    if ((this.player || this.sp) && off && now - this.silentSince > 8000) this.stopLocal();
+  }
+
+  /**
+   * Destrava o YouTube: carregando ("buffering") há muito tempo ou "tocando" com o tempo parado.
+   * Música única volta para o ponto em que todos estão; playlist tenta de novo e, se não sair, pula.
+   */
+  private watchdog() {
+    const p = this.player;
+    const now = performance.now();
+    if (!p?.getPlayerState || now - this.lastCheck < 2000) return;
+    this.lastCheck = now;
+    let st = -1;
+    let t = 0;
+    try {
+      st = p.getPlayerState();
+      t = p.getCurrentTime?.() ?? 0;
+    } catch {
+      return;
+    }
+    const YTS = { PLAYING: 1, PAUSED: 2, BUFFERING: 3 };
+    const stuck = st === YTS.BUFFERING || (st === YTS.PLAYING && Math.abs(t - this.lastTime) < 0.05) || (st === YTS.PAUSED && this.wantVol > 0);
+    this.lastTime = t;
+    if (!stuck) {
+      this.stuckSince = 0;
+      return;
+    }
+    if (!this.stuckSince) this.stuckSince = now;
+    const s = this.current;
+    if (!s || now - this.stuckSince < 6000) return;
+    try {
+      if (s.list) {
+        if (now - this.stuckSince > 14000) p.nextVideo?.();
+        else p.playVideo?.();
+      } else {
+        const dur = p.getDuration?.() || 0;
+        const off = Math.max(0, (Date.now() - s.at) / 1000);
+        p.seekTo?.(dur > 0 ? off % dur : off, true);
+        p.playVideo?.();
+      }
+    } catch {
+      /* player recriando */
+    }
+    if (now - this.stuckSince > 14000) this.stuckSince = now;
   }
 
   stopLocal() {
     this.destroy();
+    this.sentVol = -1;
+    this.silentSince = 0;
+    this.stuckSince = 0;
     this.key = "";
     this.current = null;
     this.onNow?.(null);
@@ -322,6 +398,8 @@ export class RadioPlayer {
     }
     this.player = null;
     this.sp = null;
+    this.sentVol = -1;
+    this.lastTime = -1;
     this.host.innerHTML = "";
   }
 
