@@ -38,6 +38,8 @@ interface Prefs {
   shareActivity: boolean;
   shareAgendaTitles: boolean;
   weatherFx: boolean;
+  /** Mostrar o nome das salas no mapa. */
+  zoneTags: boolean;
   media: MediaPrefs;
   sound: SoundPrefs;
   role: string;
@@ -83,6 +85,7 @@ function loadPrefs(): Prefs {
     shareActivity: p.shareActivity ?? true,
     shareAgendaTitles: p.shareAgendaTitles ?? false,
     weatherFx: p.weatherFx ?? true,
+    zoneTags: p.zoneTags ?? true,
     media: { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio", spatial: true, ...(p.media ?? {}) },
     sound: { ...soundPrefs, ...(p.sound ?? {}) },
     role: p.role ?? "",
@@ -255,6 +258,7 @@ function start() {
     startRadio();
     world.onOverviewChange = () => renderDock();
     world.setView(prefs.view);
+    document.body.classList.toggle("hide-zone-tags", !prefs.zoneTags);
     mountViewSwitch();
     if (prefs.callMode === "reuniao") openMeeting();
     world.onEnterMyRoom = () => doorChime();
@@ -340,6 +344,13 @@ function start() {
     await Promise.race([modelsReady, new Promise((r) => setTimeout(r, 15_000))]);
     myId = m.id;
     isAdmin = !!m.admin;
+    // Spotify: o ID do app vem do servidor (a gestão configura uma vez); cada pessoa só clica em "Conectar"
+    const spId = String(m.integrations?.spotify_client_id ?? "").trim();
+    if (isNative && spId && !integ.spotify_configured)
+      integrations
+        .setCreds({ google_client_id: "", google_client_secret: "", spotify_client_id: spId })
+        .then(refreshIntegrations)
+        .catch(() => {});
     // reconexão (internet oscilou, servidor reiniciou): guarda onde eu estava para não "teleportar"
     const prev = world.me ? { x: world.me.root.position.x, z: world.me.root.position.z, dir: world.me.targetDir, sitting: world.me.sitting, level: world.level } : null;
     for (const id of [...world.others.keys()]) world.removePeer(id);
@@ -1229,7 +1240,7 @@ function renderApps() {
           <div class="row" style="display:flex;gap:8px"><button type="button" class="btn ghost sm" data-cancel-add>Cancelar</button><button class="btn primary sm">Adicionar atalho</button></div>
         </form>` : ""}
       </div>
-      ${native ? `<details class="keys"><summary>Chaves das integrações</summary>
+      ${native && isAdmin ? `<details class="keys"><summary>Chaves das integrações</summary>
         <form id="creds" class="inline-form" style="margin-top:10px">
           <div class="note">Só precisa preencher se o app não veio com elas. Redirect: http://127.0.0.1:43821/callback</div>
           <input class="input" name="gid" placeholder="Google Client ID">
@@ -1296,7 +1307,8 @@ function renderApps() {
   });
   el.querySelector('[data-g="disconnect"]')?.addEventListener("click", () => run(() => integrations.disconnect("google")));
   el.querySelector('[data-s="connect"]')?.addEventListener("click", () => {
-    toast("Abrindo o navegador para autorizar o Spotify...");
+    if (!integ.spotify_configured) return toast("O Spotify ainda não foi ativado no servidor do escritório. Peça para a gestão ativar.", true);
+    toast("Abrindo o navegador para você entrar na sua conta do Spotify...");
     run(integrations.spotifyConnect, "Spotify conectado");
   });
   el.querySelectorAll<HTMLElement>("[data-sc]").forEach((b) => b.addEventListener("click", () => run(() => integrations.spotifyControl(b.dataset.sc as "play" | "pause" | "next" | "previous"))));
@@ -1533,6 +1545,14 @@ function onDirect(from: string, name: string, msg: any) {
       sendState({ radio: null });
       toast(`${name} desligou o rádio`);
     }
+  } else if (msg.kind === "radio_vol") {
+    // alguém perto da caixa mudou o volume para todos (o estado do rádio fica com quem ligou)
+    const mine = world.me?.extra?.radio as RadioState | undefined;
+    const it = world.layout?.items.find((i) => i.id === msg.item);
+    const who = world.others.get(from);
+    const close = !!(it && who && Math.hypot(who.target.x - it.x, who.target.z - it.z) < RADIO_REACH + 1);
+    const v = Number(msg.vol);
+    if (mine && mine.item === msg.item && close && v >= 0 && v <= 1) sendState({ radio: { ...mine, vol: v } });
   } else if (msg.kind === "call_reply") {
     toast(msg.ok ? `${name} está vindo` : `${name} não pode agora`);
   } else if (msg.kind === "agenda_req") {
@@ -1686,6 +1706,7 @@ function nearItem(it: Item, then: () => void) {
 // o painel financeiro fica de fora: é o único que abre de qualquer lugar
 const ROOM_ITEMS = new Set([
   "cleiton", "coffee", "water", "fridge", "microwave", "elevator", "pool_table", "ping_pong", "speaker", "radio",
+  "p_radio_small", "p_boombox", "p_speaker_tower", "p_speaker_portable", "p_speaker_stage",
   "photo_wall", "photo_big", "photo_easel", "photo_desk", "weather_panel", "goal_panel", "api_panel", "p_vending",
 ]);
 /** Distância máxima para usar um item quando os dois estão na área aberta (sem sala). */
@@ -1805,6 +1826,11 @@ function useItem(it: Item, x: number, y: number): boolean {
       return true;
     case "speaker":
     case "radio":
+    case "p_radio_small":
+    case "p_boombox":
+    case "p_speaker_tower":
+    case "p_speaker_portable":
+    case "p_speaker_stage":
       openRadioMenu(it, x, y);
       return true;
     case "photo_wall":
@@ -2796,9 +2822,41 @@ function radioAudible(s: RadioSource): number {
   const d = Math.hypot(me.x - it.x, me.z - it.z);
   const rz = world.zoneAt(it.x, it.z);
   const mz = world.currentZone;
-  if (rz && mz && rz.id === mz.id) return Math.max(0.75, 1 - d / 40);
+  const box = Math.max(0, Math.min(1, s.vol ?? 1)); // volume da caixa (vale para todos)
+  if (rz && mz && rz.id === mz.id) return Math.max(0.75, 1 - d / 40) * box;
   if (rz?.private || mz?.private) return 0;
-  return d < 9 ? 1 - d / 9 : 0;
+  return d < 9 ? (1 - d / 9) * box : 0;
+}
+
+/** Controles de volume no menu da caixa: "para todos" (volume da caixa) e "só para mim". */
+function radioVolumeControl(it: Item, on: RadioSource, box: HTMLElement) {
+  const pct = (v: number) => Math.round(v * 100);
+  box.className = "ctx-vol";
+  box.innerHTML = `<div class="ctx-vol-head">${icon("volume", 16)}<span>Volume da caixa (todos)</span><b data-a>${pct(on.vol ?? 1)}%</b></div>
+    <input type="range" min="0" max="100" step="5" value="${pct(on.vol ?? 1)}" data-all aria-label="Volume da caixa para todos">
+    <div class="ctx-vol-head">${icon("users", 16)}<span>Só para mim</span><b data-m>${pct(soundPrefs.radio ?? 0.6)}%</b></div>
+    <input type="range" min="0" max="100" step="5" value="${pct(soundPrefs.radio ?? 0.6)}" data-me aria-label="Volume do rádio só para mim">`;
+  let sendT = 0;
+  $<HTMLInputElement>("[data-all]", box).addEventListener("input", (e) => {
+    const v = Number((e.target as HTMLInputElement).value) / 100;
+    $("[data-a]", box).textContent = `${pct(v)}%`;
+    clearTimeout(sendT);
+    // espera parar de arrastar para não mandar 20 mensagens por segundo
+    sendT = window.setTimeout(() => {
+      if (on.owner === myId) {
+        const mine = world.me.extra?.radio as RadioState | undefined;
+        if (mine) sendState({ radio: { ...mine, vol: v } });
+      } else atRadio(it, () => net.send({ t: "to", to: on.owner, msg: { kind: "radio_vol", item: it.id, vol: v } }));
+    }, 250);
+  });
+  $<HTMLInputElement>("[data-me]", box).addEventListener("input", (e) => {
+    const v = Number((e.target as HTMLInputElement).value) / 100;
+    $("[data-m]", box).textContent = `${pct(v)}%`;
+    soundPrefs.radio = v;
+    prefs.sound = { ...soundPrefs };
+    if (radio) radio.master = v;
+    savePrefs();
+  });
 }
 
 let radioPill: HTMLDivElement | null = null;
@@ -2813,11 +2871,21 @@ function startRadio() {
     if (!now) return;
     radioPill = document.createElement("div");
     radioPill.className = "panel radio-pill";
-    radioPill.innerHTML = `${icon("radio", 16)}<div class="meta"><div class="t-s c3">Rádio · ligado por ${esc(now.owner)}</div><div class="t-m"></div></div><button class="round" data-mute title="Silenciar para mim">${icon(radio!.muted ? "mic-off" : "volume", 15)}</button>`;
+    radioPill.innerHTML = `${now.cover ? `<img class="cover" alt="">` : `<span class="cover ph">${icon("radio", 16)}</span>`}<span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><div class="meta"><div class="t-s c3">Rádio · ligado por ${esc(now.owner)}</div><div class="t-m"></div></div><input type="range" class="pill-vol" min="0" max="100" step="5" value="${Math.round((soundPrefs.radio ?? 0.6) * 100)}" title="Volume do rádio para mim" aria-label="Volume do rádio para mim"><button class="round" data-mute title="Silenciar para mim">${icon(radio!.muted ? "mic-off" : "volume", 15)}</button>`;
     $(".t-m", radioPill).textContent = now.title;
+    if (now.cover) radioPill.querySelector<HTMLImageElement>("img.cover")!.src = now.cover;
+    radioPill.classList.toggle("muted", radio!.muted);
+    $<HTMLInputElement>(".pill-vol", radioPill).addEventListener("input", (e) => {
+      const v = Number((e.target as HTMLInputElement).value) / 100;
+      soundPrefs.radio = v;
+      prefs.sound = { ...soundPrefs };
+      radio!.master = v;
+      savePrefs();
+    });
     $("[data-mute]", radioPill).addEventListener("click", () => {
       radio!.muted = !radio!.muted;
       $("[data-mute]", radioPill!).innerHTML = icon(radio!.muted ? "mic-off" : "volume", 15);
+      radioPill!.classList.toggle("muted", radio!.muted);
       toast(radio!.muted ? "Rádio silenciado para você" : "Rádio com som de novo");
     });
     hud.appendChild(radioPill);
@@ -2872,7 +2940,7 @@ function openRadioMenu(it: Item, x: number, y: number) {
     ]);
     if (radio) items.push([radio.muted ? "volume" : "mic-off", radio.muted ? "Ouvir de novo" : "Silenciar só para mim", () => (radio!.muted = !radio!.muted)]);
   }
-  menu(x, y, (DEFS[it.type]?.label ?? "Rádio") + (far ? " · vá até ela para mexer" : ""), items);
+  menu(x, y, (DEFS[it.type]?.label ?? "Rádio") + (far ? " · vá até ela para mexer" : ""), items, on ? (box) => radioVolumeControl(it, on, box) : undefined);
 }
 
 function askRadioLink(it: Item) {
@@ -2968,7 +3036,8 @@ function renderLinkedApps(sec: HTMLElement) {
         run(integrations.googleConnect, "Google conectado");
       } else if (k === "google-off") run(() => integrations.disconnect("google"), "Google desconectado");
       else if (k === "spotify") {
-        toast("Abrindo o navegador para autorizar o Spotify...");
+        if (!integ.spotify_configured) return toast("O Spotify ainda não foi ativado no servidor do escritório. Peça para a gestão ativar.", true);
+        toast("Abrindo o navegador para você entrar na sua conta do Spotify...");
         run(integrations.spotifyConnect, "Spotify conectado");
       } else if (k === "spotify-off") run(() => integrations.disconnect("spotify"), "Spotify desconectado");
       else if (k === "ytm") ytm.open(true).catch((err) => toast(String(err), true));
@@ -3071,6 +3140,7 @@ async function openSettings() {
         </select></label></div>
         ${sw("gfx_shadows", "Sombras", prefs.gfx.shadows, "Sombra dos móveis e das pessoas (no 2D não tem sombra).")}
         ${sw("gfx_outline", "Contorno nas bordas", prefs.gfx.outline, "As linhas que desenham as bordas. Desligar deixa mais leve.")}
+        ${sw("zoneTags", "Mostrar o nome das salas no mapa", prefs.zoneTags)}
         ${sw("weatherFx", "Efeitos de clima (chuva, neve, folhas)", prefs.weatherFx, "Desligue em computadores mais fracos.")}
         ${sw("eventSkin", "Usar a skin das datas especiais", prefs.look.eventSkin !== false, "Gorro no Natal, chapéu de bruxa no Halloween...")}
       </section>
@@ -3179,6 +3249,8 @@ function saveSettings(bg: HTMLElement) {
   prefs.shareMeeting = c("shareMeeting");
   prefs.shareMusic = c("shareMusic");
   prefs.weatherFx = c("weatherFx");
+  prefs.zoneTags = c("zoneTags");
+  document.body.classList.toggle("hide-zone-tags", !prefs.zoneTags);
   const st = v("style") as GraphicStyle;
   if (st && st !== prefs.style) {
     prefs.style = st;

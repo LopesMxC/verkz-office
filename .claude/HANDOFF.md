@@ -370,3 +370,17 @@ Identity no LiveKit = id do peer no servidor.
   - NÃO publicado (pedido do Lopes): server/src/main.rs com a mensagem "Chave do escritório inválida" garantida
     (esperar o writer antes de fechar) e chave com trim. Entra no próximo build do servidor (Rust).
   - Estágio web da 0.15.3: fonte = base bc594c5d6d54 + diffs (procure no log); base usada: bc594c5d6d54.
+- **23/11 ~10:40 — 0.16.0 (pacote pronto, build pendente: o Lopes sobe verkz-office-0.16.0-build.tar.gz no Portainer):**
+  - Seletor de modo/visão acima do dock (bottom 96 px; rótulos só a partir de 2100 px de largura).
+  - Caixas de som: `radio.vol` (volume da caixa para todos; quem não é dono pede com `{kind:"radio_vol"}` e o
+    dono aplica se a pessoa está perto) + "só para mim" (soundPrefs.radio) no menu da caixa e na pílula.
+    Pílula com capa (miniatura do YouTube / oEmbed do Spotify) e barrinhas animadas (paradas quando mudo).
+  - Novos modelos (código, sem arquivo): p_radio_small, p_boombox, p_speaker_tower, p_speaker_portable,
+    p_speaker_stage (categoria Lazer; todos abrem o menu do rádio).
+  - Configurações > Aparência: "Mostrar o nome das salas no mapa" (`prefs.zoneTags`, body.hide-zone-tags).
+  - Spotify: servidor manda `welcome.integrations.spotify_client_id` (env SPOTIFY_CLIENT_ID); o app grava sozinho
+    com setCreds e cada pessoa só clica em "Conectar". "Chaves das integrações" só para a gestão.
+    BLOQUEIO: no developer.spotify.com a opção Web API veio desabilitada na conta do Lucas. Desde fev/2026 o modo
+    de desenvolvimento exige Premium, 1 Client ID por pessoa e no máximo 5 usuários autorizados por Client ID,
+    então a integração não atende o time todo. App do Spotify NÃO foi criado.
+  - Servidor da 0.16.0 também leva a mensagem de chave inválida garantida e a chave com trim.

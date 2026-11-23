@@ -13,6 +13,8 @@ export interface RadioState {
   list?: string;
   /** Spotify: uri "spotify:playlist:ID" (também álbum, música, artista, podcast) */
   sp?: string;
+  /** volume da caixa para todos (0..1; sem valor = 1) — quem está perto ajusta */
+  vol?: number;
   /** quando começou (ms, relógio de quem ligou) */
   at: number;
 }
@@ -136,7 +138,7 @@ export class RadioPlayer {
   muted = false;
   onError?: (msg: string) => void;
   /** Mudou o que está tocando para mim (para a interface mostrar). */
-  onNow?: (now: { title: string; owner: string; key: string } | null) => void;
+  onNow?: (now: { title: string; owner: string; key: string; cover?: string } | null) => void;
   current: RadioSource | null = null;
 
   constructor() {
@@ -189,6 +191,12 @@ export class RadioPlayer {
         if (key !== this.key) return;
         this.syncSpotify(true);
         this.onNow?.({ title: "Spotify", owner: s.ownerName, key });
+        // título e capa pelo oEmbed público do Spotify (sem login)
+        const web = "https://open.spotify.com/" + (s.sp ?? "").split(":").slice(1).join("/");
+        fetch("https://open.spotify.com/oembed?url=" + encodeURIComponent(web))
+          .then((r) => r.json())
+          .then((o) => key === this.key && this.onNow?.({ title: o.title || "Spotify", owner: s.ownerName, key, cover: o.thumbnail_url }))
+          .catch(() => {});
       });
       c.addListener("playback_update", (e: any) => {
         if (key !== this.key) return;
@@ -276,8 +284,12 @@ export class RadioPlayer {
   private announce() {
     const s = this.current;
     if (!s || !this.player?.getVideoData) return;
-    const title = this.player.getVideoData()?.title || "YouTube";
-    this.onNow?.({ title, owner: s.ownerName, key: this.key });
+    const data = this.player.getVideoData() ?? {};
+    const title = data.title || "YouTube";
+    // capa: miniatura do vídeo que está tocando agora (na playlist muda a cada música)
+    const vid = data.video_id || s.vid;
+    const cover = vid ? `https://i.ytimg.com/vi/${vid}/mqdefault.jpg` : undefined;
+    this.onNow?.({ title, owner: s.ownerName, key: this.key, cover });
   }
 
   private fade() {

@@ -43,6 +43,8 @@ struct Config {
     data_dir: PathBuf,
     gemini_key: String,
     gemini_model: String,
+    /// Client ID do app do Spotify (developer.spotify.com): vai para o app, cada pessoa só clica em "Conectar".
+    spotify_client_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -257,6 +259,7 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                     "layout": *st.layout.read().await,
                     "history": *st.history.lock().await,
                     "admin": is_admin,
+                    "integrations": { "spotify_client_id": st.cfg.spotify_client_id },
                     "livekit": {
                         "url": st.cfg.livekit_url,
                         "token": livekit_token(&st.cfg, &id, &peer.name),
@@ -553,6 +556,7 @@ async fn main() {
     let cfg = Config {
         office_key: env("OFFICE_KEY", "verkz"),
         admin_key: env("ADMIN_KEY", ""),
+        spotify_client_id: env("SPOTIFY_CLIENT_ID", ""),
         livekit_url: env("LIVEKIT_URL", "ws://localhost:7880"),
         livekit_api_key: env("LIVEKIT_API_KEY", "devkey"),
         livekit_api_secret: env("LIVEKIT_API_SECRET", "secret"),

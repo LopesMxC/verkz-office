@@ -2171,6 +2171,101 @@ const NEW_DEFS: Record<string, Def> = {
   },
 
   // ---------- cozinha
+  // ---------- som (todas tocam o rádio da sala: clique e cole um link do YouTube ou do Spotify)
+  p_radio_small: {
+    label: "Rádio pequeno",
+    w: 0.5,
+    d: 0.4,
+    blocks: false,
+    interactive: true,
+    build: () => {
+      // rádio retrô de madeira em cima de um banquinho
+      const cone = cyl(0.08, 0.08, 0.02, M.steel, -0.09, 0.66, 0.085, 12).rotateX(Math.PI / 2);
+      return group(
+        cyl(0.16, 0.18, 0.56, P.black, 0, 0, 0, 10),
+        box(0.44, 0.26, 0.17, M.woodDark, 0, 0.56, 0),
+        box(0.42, 0.02, 0.16, P.cream, 0, 0.81, 0),
+        cone,
+        box(0.13, 0.08, 0.02, P.cream, 0.1, 0.7, 0.085),
+        box(0.01, 0.07, 0.022, M.red, 0.1, 0.705, 0.087),
+        cyl(0.025, 0.025, 0.03, P.gold, 0.08, 0.6, 0.09, 8).rotateX(Math.PI / 2),
+        cyl(0.025, 0.025, 0.03, P.gold, 0.15, 0.6, 0.09, 8).rotateX(Math.PI / 2),
+        cyl(0.008, 0.008, 0.3, P.metal, 0.17, 0.82, -0.04, 4),
+      );
+    },
+  },
+  p_boombox: {
+    label: "Rádio boombox",
+    w: 0.7,
+    d: 0.35,
+    blocks: false,
+    interactive: true,
+    build: () =>
+      group(
+        box(0.64, 0.34, 0.2, M.dark, 0, 0, 0),
+        cyl(0.1, 0.1, 0.02, M.steel, -0.19, 0.07, 0.1, 12).rotateX(Math.PI / 2),
+        cyl(0.1, 0.1, 0.02, M.steel, 0.19, 0.07, 0.1, 12).rotateX(Math.PI / 2),
+        box(0.16, 0.1, 0.02, M.neonToon, 0, 0.18, 0.1),
+        box(0.16, 0.05, 0.02, P.metal, 0, 0.06, 0.1),
+        box(0.04, 0.12, 0.04, P.metal, -0.24, 0.34, 0),
+        box(0.04, 0.12, 0.04, P.metal, 0.24, 0.34, 0),
+        box(0.52, 0.03, 0.04, P.metal, 0, 0.45, 0),
+      ),
+  },
+  p_speaker_tower: {
+    label: "Caixa de som torre",
+    w: 0.45,
+    d: 0.45,
+    blocks: true,
+    interactive: true,
+    build: () =>
+      group(
+        box(0.38, 1.25, 0.36, P.black, 0, 0, 0),
+        cyl(0.05, 0.05, 0.02, M.steel, 0, 1.08, 0.18, 10).rotateX(Math.PI / 2),
+        cyl(0.12, 0.12, 0.02, M.steel, 0, 0.8, 0.18, 12).rotateX(Math.PI / 2),
+        cyl(0.12, 0.12, 0.02, M.steel, 0, 0.45, 0.18, 12).rotateX(Math.PI / 2),
+        box(0.4, 0.04, 0.38, M.dark, 0, 0, 0),
+        box(0.04, 0.02, 0.02, M.neonToon, 0.13, 0.12, 0.185),
+      ),
+  },
+  p_speaker_portable: {
+    label: "Caixa de som portátil",
+    w: 0.5,
+    d: 0.4,
+    blocks: false,
+    interactive: true,
+    build: () => {
+      // caixinha bluetooth deitada, num banquinho
+      const body = cyl(0.11, 0.11, 0.42, M.blue, 0, 0, 0, 12);
+      body.rotateZ(Math.PI / 2);
+      body.position.set(0, 0.68, 0);
+      const capL = cyl(0.115, 0.115, 0.03, P.black, 0, 0, 0, 12);
+      capL.rotateZ(Math.PI / 2);
+      capL.position.set(-0.22, 0.68, 0);
+      const capR = capL.clone();
+      capR.position.x = 0.22;
+      return group(cyl(0.16, 0.18, 0.56, P.black, 0, 0, 0, 10), body, capL, capR, box(0.1, 0.02, 0.04, M.neonToon, 0, 0.79, 0));
+    },
+  },
+  p_speaker_stage: {
+    label: "Caixa de som de palco",
+    w: 0.8,
+    d: 0.7,
+    blocks: true,
+    interactive: true,
+    build: () =>
+      group(
+        // tripé
+        cyl(0.02, 0.02, 0.9, P.metal, 0, 0, 0, 6),
+        box(0.7, 0.02, 0.04, P.metal, 0, 0.02, 0),
+        box(0.04, 0.02, 0.6, P.metal, 0, 0.02, 0),
+        // caixa
+        box(0.55, 0.8, 0.42, P.black, 0, 0.9, 0),
+        cyl(0.19, 0.19, 0.02, M.steel, 0, 1.15, 0.21, 14).rotateX(Math.PI / 2),
+        cyl(0.07, 0.07, 0.02, M.steel, 0, 1.5, 0.21, 10).rotateX(Math.PI / 2),
+        box(0.5, 0.03, 0.02, M.neonToon, 0, 0.93, 0.215),
+      ),
+  },
   p_vending: {
     label: "Máquina de lanches",
     w: 0.9,
