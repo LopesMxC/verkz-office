@@ -308,3 +308,49 @@ Identity no LiveKit = id do peer no servidor.
 - Botão de visão só com ícones abaixo de 1560 px de largura (não encosta no dock).
 - **Produção (21/11/2026 ~19:16):** verkz-office-server:0.14.0 rodando na stack 4 (estágio web com a
   fonte v0.6.2 = c5971df87bd0, md5 conferidos; use como base do próximo patch). Bundle index-6Cx4TUIg.js.
+
+## v0.6.3 — pedidos de 23/11/2026 (Lopes; app + web; servidor Rust sem mudança)
+- **Modo de call** (`prefs.callMode` = "escritorio" | "reuniao"; tecla G; seletor junto do botão de visão; também em
+  Configurações > Aparência). Reunião = `.meet-full` com blocos 16:9 em mosaico (maior tamanho que cabe, última linha
+  centralizada), só quem está na minha call (`media.levels > 0` + `canHear`, segura 3 s ao sair), eu primeiro.
+  Câmera presa com `track.attach` no bloco (o adaptiveStream pede qualidade do bloco grande). Sem imagem → iniciais.
+  WASD/setas bloqueados (listener em captura); mapa e etiquetas escondidos e cena a 2 fps. Figma: tela "06 — Modo reunião".
+- **Câmera que não voltava ao chegar perto:** `media.syncCam(p)` a cada passo (200 ms) confere a bolha sem depender
+  da ordem dos eventos do LiveKit: faixa assinada sem `<video>` dela → põe o vídeo; vídeo sem quadros 5 s → religa
+  (detach/attach); 2,5 s sem quadros → `.nofeed` mostra iniciais + "Sem imagem" (antes ficava bloco preto).
+  `dropVideos` faz `detach` antes de trocar (antes o `innerHTML` deixava o elemento preso à faixa e o adaptiveStream
+  pausava o vídeo). Minha câmera sem quadros 6 s → aviso "pode estar em uso por outro programa".
+- **Mesma sala = mesma call:** câmera sempre assinada para quem está na mesma sala (`media.sameRoom`), mesmo no canto
+  (antes era por distância: ~9 m numa sala de 8x7 derrubava a câmera). Sala aberta pequena (`isRoomSized`: lados
+  ≤ 12 m, ex. cozinha) também dá voz cheia para todos dentro; o salão (Área dos SDRs, 49 m) continua por distância.
+- **Volume individual:** botão direito na pessoa (mapa, lista, bloco do modo reunião) → controle 0–200%, guardado
+  por nome em `prefs.volumes`; `media.userVolume` multiplica o ganho.
+- **Fundo da câmera:** `src/cambg.ts` (@livekit/track-processors 0.8.3, carregado só quando usado; MediaPipe e
+  modelo vêm do CDN jsdelivr/googleapis). Nenhum, desfocar, 6 fundos desenhados em canvas, imagem do computador
+  (1280x720 JPEG em `prefs.camBg`). Configurações > Áudio e vídeo; aplica na hora. Não testado com câmera real.
+- **Rádio:** playlists do YouTube via `loadPlaylist` no onReady (pelos playerVars não abriam), pula músicas
+  bloqueadas, aceita music.youtube.com/browse/VL..., ignora Mix (RD...). Spotify (`radio.sp`, Embed IFrame API):
+  sem controle de volume no embed, então toca/pausa pela distância; quem não está logado no Spotify ouve 30 s.
+- **Configurações > Funções:** lista de todas as funções com atalho e botão "Usar" (`FUNCS` em main.ts).
+- Soundpad: abria vazio quando o IndexedDB demorava; agora espera no máximo 1,5 s pelos sons do usuário.
+- Painel financeiro saiu de `ROOM_ITEMS`: único item que abre de qualquer lugar.
+- RAM: `powerPreference: "default"` (não força a placa dedicada), modo reunião a 2 fps e sem desenhar o mapa.
+  JS heap medido ~42 MB; o resto dos ~600 MB são os processos do WebView2 (GPU/renderização).
+- Habbo: pedido de visual "idêntico ao Habbo Hotel" recusado (marca/arte da Sulake); dá para fazer um estilo
+  retrô isométrico próprio se pedirem.
+- Deploy: imagem `verkz-office-server:0.15.0` = FROM estágio web c5971df87bd0 (fonte v0.6.2) com `npm i`
+  (dependência nova) + src novo inteiro + vite build; final FROM 0.14.0 trocando /web/index.html e /web/assets.
+  Chave de gestão (ADMIN_KEY) trocada no stack a pedido do Lopes (valor só no stack, não no código).
+- **Produção (23/11/2026 ~09:30):** verkz-office-server:0.15.0 (2057d8abdfe1) rodando na stack 4. A base antiga
+  (c5971df87bd0) tinha sido limpa do servidor: build com a fonte web inteira (node:22-slim + npm ci + vite build,
+  sem modelos) e final FROM 0.14.0 trocando index.html e assets. Contexto enviado pelo upload da tela
+  Images > Build image do Portainer (verkz-office-0.15.0-build.tar.gz). Estágio web desta build = d5c8a2899c2c
+  (fonte v0.6.3; base do próximo patch, se ainda existir). Bundle index-yDusGADs.js. ADMIN_KEY do stack trocada.
+  Instaladores 0.6.3 (Windows/Mac/Linux) ainda não gerados: rodar compilador.bat e deploy/gerar-update.ps1.
+- **Cadeiras (23/11, 0.15.1):** hitbox de assento (`World.SIT_HIT` = 0,32 m): andando pelo teclado/joystick até em
+  cima da cadeira senta sozinho (`sitOn`); a tecla que ainda está apertada não levanta (`seatHold`), só uma nova;
+  depois de levantar não senta de novo na mesma até sair de perto (`leftSeat`). Um clique na cadeira já vai e senta
+  (no chão continuam dois cliques). Animação: `Avatar.sitT` 0→1 dobra pernas/braços e desce o corpo com leve
+  inclinação; o personagem desliza até o centro do assento. Vale para os outros também (vem de extra.sit).
+  Produção: verkz-office-server:0.15.1 (83938dae5687) na stack 4, feita de FROM d5c8a2899c2c + diff do world.ts
+  aplicado por `apply.mjs` (a imagem node:slim não tem git/patch). Estágio web = bc594c5d6d54 (fonte com cadeiras).

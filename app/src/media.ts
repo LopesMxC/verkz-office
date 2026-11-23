@@ -9,6 +9,7 @@ import {
   RemoteParticipant,
   RemoteTrack,
   RemoteTrackPublication,
+  RemoteVideoTrack,
   Room,
   RoomEvent,
   Track,
@@ -16,6 +17,7 @@ import {
   createLocalScreenTracks,
 } from "livekit-client";
 import type { World } from "./world";
+import { applyCamBg, type CamBg } from "./cambg";
 import { soundpadStream } from "./sound";
 
 /** Alcance da voz: volume cheio até `full`, silêncio a partir de `silent` (metros). */
@@ -115,6 +117,8 @@ export class Media {
   onApproach?: (id: string) => void;
   /** Mudanças no meu estado que os outros precisam saber (câmera ligada etc.). */
   onLocalState?: (patch: Record<string, unknown>) => void;
+  /** Volume individual de cada pessoa (0 a 2; 1 = normal). */
+  userVolume?: (id: string) => number;
   /** Ganho que estou aplicando a cada pessoa (0..1), útil para a lista. */
   levels = new Map<string, number>();
   private voices = new Map<string, Voice>();
@@ -142,14 +146,7 @@ export class Media {
         this.addVoice(track as RemoteAudioTrack, pub.trackSid, p.identity, el);
       } else if (pub.source === Track.Source.Camera) {
         const av = this.world.others.get(p.identity);
-        if (av) {
-          const v = document.createElement("video");
-          v.muted = true;
-          v.playsInline = true;
-          track.attach(v);
-          av.bubble.replaceChildren(v);
-          av.bubble.classList.remove("hidden", "placeholder");
-        }
+        if (av) this.putVideo(av.bubble, track as RemoteVideoTrack, p.name || av.info.name);
       } else if (pub.source === Track.Source.ScreenShare) {
         const v = document.createElement("video");
         v.muted = true;
@@ -233,9 +230,23 @@ export class Media {
     v.muted = true;
     v.playsInline = true;
     if (this.prefs.mirror) v.classList.add("mirror");
+    (v as any)._lkTrack = track;
+    this.camWarned = false;
     track.attach(v);
     me.bubble.replaceChildren(v);
     me.bubble.classList.remove("hidden", "placeholder");
+  }
+  private camWarned = false;
+  /** Minha câmera ligada sem mandar imagem (presa em outro programa): avisa uma vez. */
+  private checkLocalCam(now: number) {
+    const v = this.world.me?.bubble.querySelector("video") as HTMLVideoElement | null;
+    if (!this.camOn || !v) return;
+    const since = ((v as any)._since ??= now);
+    if (v.videoWidth > 0) return;
+    if (!this.camWarned && now - since > 6000) {
+      this.camWarned = true;
+      this.onError?.("Sua câmera não está mandando imagem. Ela pode estar em uso por outro programa (Meet, Zoom, Teams). Feche o outro programa e ligue a câmera de novo.");
+    }
   }
   private hideLocalCam() {
     this.world.me?.bubble.replaceChildren();
@@ -247,19 +258,102 @@ export class Media {
     const pub = p.getTrackPublication(Track.Source.Camera);
     const av = this.world.others.get(p.identity);
     if (!av || !pub || pub.isMuted) return;
-    if (pub.isSubscribed && av.bubble.querySelector("video")) return;
+    if (pub.isSubscribed && pub.videoTrack && av.bubble.querySelector("video")) return;
+    this.dropVideos(av.bubble);
     const name = (p.name || av.info.name || "?").trim();
-    const ini = name.split(/\s+/).slice(0, 2).map((x) => x[0]?.toUpperCase() ?? "").join("");
-    av.bubble.innerHTML = `<div class="cam-ph"><span>${ini}</span><small>Câmera ligada</small></div>`;
-    av.bubble.classList.remove("hidden");
+    av.bubble.innerHTML = `<div class="cam-ph"><span>${initialsOf(name)}</span><small>Câmera ligada</small></div>`;
+    av.bubble.classList.remove("hidden", "nofeed");
     av.bubble.classList.add("placeholder");
+  }
+
+  /** Solta os <video> de um bloco (o adaptiveStream deixa de contar com eles). */
+  private dropVideos(box: HTMLElement) {
+    for (const v of box.querySelectorAll("video")) {
+      const t = (v as any)._lkTrack as RemoteVideoTrack | LocalVideoTrack | undefined;
+      t?.detach(v);
+      v.srcObject = null;
+      v.remove();
+    }
+  }
+
+  /** Põe o vídeo da faixa no bloco (com as iniciais por baixo, para quando a imagem não chega). */
+  private putVideo(box: HTMLElement, track: RemoteVideoTrack, name: string) {
+    this.dropVideos(box);
+    const v = document.createElement("video");
+    v.muted = true;
+    v.playsInline = true;
+    (v as any)._lkTrack = track;
+    (v as any)._since = performance.now();
+    track.attach(v);
+    box.innerHTML = `<div class="cam-ph nofeed-ph"><span>${initialsOf(name)}</span><small>Sem imagem</small></div>`;
+    box.prepend(v);
+    box.classList.remove("hidden", "placeholder", "nofeed");
+  }
+
+  /**
+   * Confere a bolha da câmera de cada pessoa a cada passo, sem depender da ordem dos eventos do
+   * LiveKit. Corrige: (1) ao voltar para perto, a faixa reassinada não aparecia e a bolha ficava
+   * em "Câmera ligada"; (2) vídeo assinado sem quadros (bloco preto): tenta religar e, se não vier
+   * imagem, mostra as iniciais com "Sem imagem".
+   */
+  private syncCam(p: RemoteParticipant) {
+    const av = this.world.others.get(p.identity);
+    if (!av) return;
+    const pub = p.getTrackPublication(Track.Source.Camera) as RemoteTrackPublication | undefined;
+    if (!pub || pub.isMuted) {
+      if (!av.bubble.classList.contains("hidden")) {
+        this.dropVideos(av.bubble);
+        this.clearBubble(p.identity);
+      }
+      return;
+    }
+    const track = pub.isSubscribed ? (pub.videoTrack as RemoteVideoTrack | undefined) : undefined;
+    if (!track) return this.camPlaceholder(p);
+    const v = av.bubble.querySelector("video") as HTMLVideoElement | null;
+    if (!v || (v as any)._lkTrack !== track || !track.attachedElements.includes(v)) return this.putVideo(av.bubble, track, p.name || av.info.name);
+    const noFeed = v.videoWidth === 0 || v.readyState < 2;
+    const age = performance.now() - (v as any)._since;
+    av.bubble.classList.toggle("nofeed", noFeed && age > 2500);
+    // 5 s sem imagem: religa o vídeo (o adaptiveStream às vezes fica pausado depois de reassinar)
+    if (noFeed && age > 5000 && !(v as any)._retried) {
+      (v as any)._retried = true;
+      track.detach(v);
+      track.attach(v);
+      v.play().catch(() => {});
+    }
+  }
+
+  /** Faixa de câmera para os blocos do modo reunião ("me" = a minha). */
+  camTrack(id: string): RemoteVideoTrack | LocalVideoTrack | undefined {
+    if (id === "me") {
+      const pub = this.room.localParticipant.getTrackPublication(Track.Source.Camera);
+      return this.camOn && pub && !pub.isMuted ? (pub.videoTrack as LocalVideoTrack | undefined) : undefined;
+    }
+    const pub = this.room.remoteParticipants.get(id)?.getTrackPublication(Track.Source.Camera) as RemoteTrackPublication | undefined;
+    return pub && !pub.isMuted && pub.isSubscribed ? (pub.videoTrack as RemoteVideoTrack | undefined) : undefined;
+  }
+
+  /** Câmera ligada (mesmo que ainda não assinada). */
+  hasCam(id: string) {
+    const pub = this.room.remoteParticipants.get(id)?.getTrackPublication(Track.Source.Camera);
+    return !!pub && !pub.isMuted;
+  }
+
+  /** Está na mesma sala que eu (sala de verdade, não um salão aberto grande). */
+  sameRoom(id: string) {
+    const av = this.world.others.get(id);
+    const my = this.world.currentZone;
+    if (!av || !my || av.info.zone !== my.id || !this.world.sameLevel(av)) return false;
+    return my.private || isRoomSized(my);
   }
 
   private clearBubble(id: string) {
     const av = this.world.others.get(id);
     if (av) {
+      this.dropVideos(av.bubble);
       av.bubble.replaceChildren();
       av.bubble.classList.add("hidden");
+      av.bubble.classList.remove("nofeed", "placeholder");
     }
   }
 
@@ -387,12 +481,28 @@ export class Media {
       if (on && pub?.track) this.showLocalCam(pub.track as LocalVideoTrack);
       else this.hideLocalCam();
       this.onToggle?.("cam", on);
+      if (on && this.camBg.kind !== "none") this.setCamBg(this.camBg);
     } catch (e: any) {
       this.camOn = false;
       this.onError?.(explainMediaError(e, "câmera"));
     }
     this.onLocalState?.({ cam: this.camOn || null });
     this.onStateChanged?.();
+  }
+
+  /** Fundo da minha câmera (desfocar ou imagem). Vale na hora e nas próximas vezes que ligar. */
+  camBg: CamBg = { kind: "none" };
+  async setCamBg(bg: CamBg) {
+    this.camBg = bg;
+    const pub = this.room.localParticipant.getTrackPublication(Track.Source.Camera);
+    if (!this.camOn || !pub?.track) return;
+    try {
+      await applyCamBg(pub.track as LocalVideoTrack, bg);
+      // a bolha passa a mostrar a imagem já com o fundo
+      this.showLocalCam(pub.track as LocalVideoTrack);
+    } catch (e: any) {
+      this.onError?.("Não consegui aplicar o fundo da câmera: " + (e?.message ?? e));
+    }
   }
 
   async listDevices() {
@@ -519,6 +629,8 @@ export class Media {
       // Dentro de sala privada: todo mundo da sala se ouve com volume cheio, ninguém de fora ouve.
       return { gain: myPrivate && myPrivate === theirPrivate ? 1 : 0, dist };
     }
+    // mesma sala aberta (cozinha, biblioteca...): todo mundo da sala na mesma conversa
+    if (myZone && theirZone && myZone.id === theirZone.id && isRoomSized(myZone)) return { gain: 1, dist };
     return { gain: falloff(dist, full, silent), dist };
   }
 
@@ -601,7 +713,8 @@ export class Media {
     const now = audioCtx.currentTime;
     for (const v of this.voices.values()) {
       const rel = this.relative(v.pid);
-      const want = this.levels.get(v.pid) ?? 0;
+      // volume da distância x volume que eu escolhi para essa pessoa (botão direito > Volume)
+      const want = (this.levels.get(v.pid) ?? 0) * Math.max(0, Math.min(2, this.userVolume?.(v.pid) ?? 1));
       // sobe rápido (não perde o começo da frase) e desce devagar (some sem corte)
       v.vol += (want - v.vol) * (want > v.vol ? 0.45 : 0.18);
       if (Math.abs(want - v.vol) < 0.002) v.vol = want;
@@ -665,6 +778,7 @@ export class Media {
   private updateProximity() {
     const { silent } = RANGES[this.prefs.range] ?? RANGES.medio;
     const now = performance.now();
+    this.checkLocalCam(now);
     for (const p of this.room.remoteParticipants.values()) {
       const id = p.identity;
       const { gain, dist } = this.gainFor(id);
@@ -686,7 +800,8 @@ export class Media {
           want = gain > 0 || (roomOk && dist < (pub.isSubscribed ? silent + 6 : silent + 2));
         } else if (pub.source === Track.Source.Camera) {
           // a câmera aparece em bloco para quem está por perto (um pouco além do alcance da voz)
-          want = roomOk && dist < (pub.isSubscribed ? silent + 4 : silent + 2.5);
+          // na mesma sala a câmera fica sempre ligada, mesmo do canto mais longe
+          want = this.sameRoom(id) || gain > 0 || (roomOk && dist < (pub.isSubscribed ? silent + 4 : silent + 2.5));
         } else {
           want = gain > 0 || (pub.isSubscribed && roomOk && dist < silent + 3);
         }
@@ -699,8 +814,8 @@ export class Media {
             this.subAt.set(key, now);
           }
         }
-        if (pub.source === Track.Source.Camera && !pub.isSubscribed && !pub.isMuted) this.camPlaceholder(p);
       }
+      this.syncCam(p);
     }
   }
 
@@ -733,4 +848,13 @@ export function falloff(dist: number, full: number, silent: number) {
   const inv = full / (full + (dist - full) * 1.1); // perde volume com a distância
   const edge = 1 - t * t * (3 - 2 * t); // suaviza a chegada no zero
   return Math.min(1, inv * 0.35 + 0.65) * edge;
+}
+
+/** Sala "de verdade" (não o salão aberto grande): quem está dentro conversa como numa call. */
+export function isRoomSized(z: { w: number; d: number }) {
+  return Math.max(z.w, z.d) <= 12;
+}
+
+export function initialsOf(name: string) {
+  return (name || "?").trim().split(/\s+/).slice(0, 2).map((x) => x[0]?.toUpperCase() ?? "").join("") || "?";
 }

@@ -199,6 +199,8 @@ export class Avatar {
   /** Para sons de passo dos outros: posição anterior e ritmo. */
   /** Sentado numa cadeira (o meu vem do mundo, o dos outros vem da rede em extra.sit). */
   sitting = false;
+  /** 0 = em pé, 1 = sentado: anda aos poucos para o gesto de sentar/levantar ser animado. */
+  sitT = 0;
   private hipY = -1;
   /** true no quadro em que um pé toca o chão (para o som do passo). */
   footfall = false;
@@ -438,7 +440,13 @@ export class Avatar {
     c.armR.rotation.set(sw * 0.8, 0, 0);
     c.head.rotation.set(0, 0, 0);
     c.root.rotation.set(this.running && this.moving ? 0.12 : 0, 0, 0);
-    if (this.sitting && !this.moving) {
+    // sentar/levantar animado: o corpo desce dobrando as pernas em ~0,3 s (e o contrário ao levantar)
+    const wantSit = this.sitting && !this.moving ? 1 : 0;
+    this.sitT += (wantSit - this.sitT) * Math.min(1, dt * (wantSit ? 9 : 12));
+    if (Math.abs(this.sitT - wantSit) < 0.01) this.sitT = wantSit;
+    if (this.sitT > 0) {
+      const k = this.sitT;
+      const e = k * k * (3 - 2 * k); // suaviza começo e fim
       // altura do quadril em pé (medida uma vez por visual) para encaixar no assento
       if (this.hipY < 0) {
         const by = this.body.position.y;
@@ -449,12 +457,16 @@ export class Avatar {
         this.hipY = v.y - this.root.position.y;
         this.body.position.y = by;
       }
-      this.body.position.y = SEAT_Y - this.hipY + 0.04;
-      c.legL.rotation.set(-1.5, 0, 0);
-      c.legR.rotation.set(-1.5, 0, 0);
-      c.armL.rotation.set(-0.45, 0, 0);
-      c.armR.rotation.set(-0.45, 0, 0);
-      c.root.rotation.set(0, 0, 0);
+      const standY = this.body.position.y;
+      const sitY = SEAT_Y - this.hipY + 0.04;
+      // no meio do gesto o corpo dobra um pouco para a frente (como quem senta de verdade)
+      const lean = Math.sin(e * Math.PI) * 0.22;
+      this.body.position.y = standY + (sitY - standY) * e;
+      c.legL.rotation.set(c.legL.rotation.x + (-1.5 - c.legL.rotation.x) * e, 0, 0);
+      c.legR.rotation.set(c.legR.rotation.x + (-1.5 - c.legR.rotation.x) * e, 0, 0);
+      c.armL.rotation.set(c.armL.rotation.x + (-0.45 - c.armL.rotation.x) * e, 0, 0);
+      c.armR.rotation.set(c.armR.rotation.x + (-0.45 - c.armR.rotation.x) * e, 0, 0);
+      c.root.rotation.set(lean, 0, 0);
     }
     // fala: liga em ~0,15 s e apaga em ~0,8 s
     this.talkAmt += ((this.talking ? 1 : 0) - this.talkAmt) * Math.min(1, dt * (this.talking ? 7 : 2.2));
@@ -616,6 +628,12 @@ export class World {
   private runPath = false;
   /** Onde o último clique mandou andar (para sentar ao chegar numa cadeira). */
   private walkGoal: THREE.Vector3 | null = null;
+  /** Cadeira em que estou sentado (o personagem desliza até o centro dela). */
+  private seatId: string | null = null;
+  /** Sentei andando pelo teclado: ignora a tecla ainda apertada até soltar (senão levantava na hora). */
+  private seatHold = false;
+  /** Cadeira de que acabei de levantar: não senta de novo nela até sair de perto. */
+  private leftSeat: string | null = null;
   /** Sentei / levantei (para avisar os outros). */
   onSit?: (on: boolean) => void;
   /** Alguém entrou na sala onde eu estou. */
@@ -639,7 +657,7 @@ export class World {
   private clock = new THREE.Clock();
 
   constructor(readonly host: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", stencil: false });
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "default", stencil: false });
     // resolução cheia (HD / retina): a cara de pixel art vem dos modelos e texturas, não de baixar a resolução
     // nitidez boa sem gastar memória de vídeo à toa (2x em tela 4K passa de 100 MB só em buffers)
     // no celular a tela tem 2-3x de densidade: 1x fica borrado, então usa até 2x (tela pequena, custo baixo)
@@ -1060,6 +1078,8 @@ export class World {
   standUp() {
     if (!this.me?.sitting) return;
     this.me.sitting = false;
+    this.leftSeat = this.seatId;
+    this.seatId = null;
     this.onSit?.(false);
   }
 
@@ -1456,12 +1476,44 @@ export class World {
     return out;
   }
 
+  /** Raio da "hitbox" do assento: andar até aqui dentro senta sozinho. */
+  private static SIT_HIT = 0.32;
+
+  /** Assento cuja hitbox contém o ponto. */
+  private seatAt(x: number, z: number): Item | null {
+    let best: Item | null = null;
+    let bd = World.SIT_HIT;
+    for (const it of this.layout.items) {
+      if (!SEATS[it.type]) continue;
+      const dd = Math.hypot(it.x - x, it.z - z);
+      if (dd < bd) {
+        bd = dd;
+        best = it;
+      }
+    }
+    return best;
+  }
+
+  /** Senta nessa cadeira com animação: desliza até o centro e vira para a frente dela. */
+  private sitOn(seat: Item, fromKeys: boolean) {
+    this.me.sitting = true;
+    this.me.targetDir = -(seat.rot * Math.PI) / 180;
+    this.seatId = seat.id;
+    this.seatHold = fromKeys;
+    this.leftSeat = null;
+    this.path = [];
+    this.walkGoal = null;
+    this.onSit?.(true);
+  }
+
   /** Coloca o meu personagem sentado nessa cadeira (ao entrar no escritório). */
   sitAt(seat: Item) {
     this.me.root.position.set(seat.x, 0, seat.z);
     this.me.targetDir = -(seat.rot * Math.PI) / 180;
     this.me.body.rotation.y = this.me.targetDir;
     this.me.sitting = true;
+    this.me.sitT = 1;
+    this.seatId = seat.id;
     this.path = [];
     this.onSit?.(true);
   }
@@ -1669,6 +1721,11 @@ export class World {
         const obj = this.pickItem(e);
         const it = obj && this.layout.items.find((i) => i.id === obj.userData.itemId);
         if (it && DEFS[it.type]?.interactive && this.onItemClick?.(it, e.clientX, e.clientY)) return;
+        // um clique numa cadeira já basta: vai até ela e senta (no chão continuam os dois cliques)
+        if (it && SEATS[it.type]) {
+          goTo(e, p);
+          return;
+        }
       }
       // no toque, um toque já leva até o lugar; no mouse é com dois cliques (abaixo)
       if (lastPointer === "touch" && !this.editing) goTo(e, p);
@@ -2105,7 +2162,14 @@ export class World {
       vz = -kRight - kUp;
     }
 
-    const keyMove = vx !== 0 || vz !== 0;
+    let keyMove = vx !== 0 || vz !== 0;
+    // acabou de sentar andando: a tecla que ainda está apertada não levanta (só uma nova)
+    if (this.seatHold) {
+      if (keyMove && this.me.sitting) {
+        vx = vz = 0;
+        keyMove = false;
+      } else this.seatHold = false;
+    }
     if (keyMove) {
       this.path = [];
       this.walkGoal = null;
@@ -2115,6 +2179,8 @@ export class World {
     const hadPath = this.path.length > 0;
     if ((keyMove || hadPath) && this.me.sitting) {
       this.me.sitting = false;
+      this.leftSeat = this.seatId;
+      this.seatId = null;
       this.onSit?.(false);
     }
     const stickRun = Math.hypot(this.stick.x, this.stick.y) > 0.92; // empurrou até a borda: corre
@@ -2181,15 +2247,30 @@ export class World {
     // chegou onde clicou: se foi numa cadeira, senta virado para a frente dela
     if (hadPath && !this.path.length && this.walkGoal) {
       const seat = this.seatNear(this.walkGoal);
-      if (seat && Math.hypot(seat.x - pos.x, seat.z - pos.z) < 1.2) {
-        pos.set(seat.x, 0, seat.z);
-        this.me.targetDir = -(seat.rot * Math.PI) / 180;
-        this.me.body.rotation.y = this.me.targetDir;
-        this.me.sitting = true;
-        this.onSit?.(true);
-        moving = true; // manda a posição final para os outros
-      }
+      if (seat && Math.hypot(seat.x - pos.x, seat.z - pos.z) < 1.2) this.sitOn(seat, false);
       this.walkGoal = null;
+    }
+    // hitbox do assento: andando pelo teclado (ou joystick) até em cima da cadeira, senta sozinho
+    if (this.leftSeat) {
+      const ls = this.layout.items.find((i) => i.id === this.leftSeat);
+      if (!ls || Math.hypot(ls.x - pos.x, ls.z - pos.z) > World.SIT_HIT + 0.35) this.leftSeat = null;
+    }
+    if (keyMove && moving && !this.me.sitting && !this.editing) {
+      const seat = this.seatAt(pos.x, pos.z);
+      if (seat && seat.id !== this.leftSeat) this.sitOn(seat, true);
+    }
+    // sentado: desliza até o centro do assento (parte da animação de sentar)
+    if (this.me.sitting && this.seatId) {
+      const seat = this.layout.items.find((i) => i.id === this.seatId);
+      if (seat) {
+        const dx = seat.x - pos.x;
+        const dz = seat.z - pos.z;
+        if (Math.hypot(dx, dz) > 0.003) {
+          const k = Math.min(1, dt * 10);
+          pos.x += dx * k;
+          pos.z += dz * k;
+        } else pos.set(seat.x, 0, seat.z);
+      }
     }
     this.me.moving = moving && !this.me.sitting;
     this.me.running = run && moving;

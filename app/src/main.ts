@@ -12,7 +12,8 @@ import type { Item, Layout, Zone } from "./furniture";
 import { DEFS, PHOTO_TYPES, imageToDataUrl, findItemAnyLevel, levelIds, levelName, levelView } from "./furniture";
 import { soundPrefs, SoundPrefs, notify, approachChime, doorChime, toggleSound, doorSound, preloadDoorSounds, elevatorDing, elevatorMusic, footstep, kitchenSound, PAD_SOUNDS, listCustom, addCustom, removeCustom, playPad, PadSound } from "./sound";
 import { GameSession, GameKind, PoolPose, PoolTable, POOL_W, POOL_H, PM } from "./games";
-import { RadioPlayer, RadioSource, RadioState, parseYouTube } from "./radio";
+import { CAM_BG_PRESETS, presetImage, fileToBg, camBgSupported, type CamBg } from "./cambg";
+import { RadioPlayer, RadioSource, RadioState, parseRadioLink } from "./radio";
 import { EnvConfig, WEATHERS, SEASONS, HOLIDAYS, seasonByDate, weatherFromCode, resolveHoliday, Weather, Season } from "./env";
 import { DEFAULT_GOAL, DEFAULT_CUSTOM, GoalCfg, CustomCfg, financeData, weatherData, customValue, weatherText, fmtBRL, fmtNum, refreshWidgets } from "./widgets";
 import { loadModels, modelProgress } from "./models";
@@ -50,7 +51,14 @@ interface Prefs {
   view: ViewMode;
   /** Opções gráficas finas: sombras, contorno, limite de quadros, resolução. */
   gfx: GfxOptions;
+  /** Modo de call: escritório (mundo 3D) ou reunião (blocos em mosaico, como no Meet). */
+  callMode: CallMode;
+  /** Volume individual por pessoa (pelo nome; 0 a 200%). */
+  volumes: Record<string, number>;
+  /** Fundo da minha câmera. */
+  camBg: CamBg;
 }
+type CallMode = "escritorio" | "reuniao";
 
 /** Cargos da equipe: cada um tem a sua sala no mapa (zona com `role`). */
 const ROLES = ["SDR", "Closer", "Editor", "Gestor", "Head", "CEO"];
@@ -83,6 +91,9 @@ function loadPrefs(): Prefs {
     style: (["padrao", "realista", "desenho", "retro"] as const).includes(p.style as any) ? (p.style as GraphicStyle) : "padrao",
     view: p.view === "aerea" || p.view === "2d" ? p.view : "iso",
     gfx: { shadows: true, outline: true, fps: 0, scale: 0, ...(p.gfx ?? {}) },
+    callMode: p.callMode === "reuniao" ? "reuniao" : "escritorio",
+    volumes: p.volumes && typeof p.volumes === "object" ? p.volumes : {},
+    camBg: p.camBg?.kind === "blur" || p.camBg?.kind === "image" ? p.camBg : { kind: "none" },
   };
 }
 const prefs = loadPrefs();
@@ -219,11 +230,13 @@ function start() {
     world.gfx = { ...prefs.gfx };
     world.setQuality(prefs.quality);
     world.setStyle(prefs.style);
-    if (import.meta.env.DEV) (window as any).__verkz = { world, prefs, get editor() { return editor; } };
+    if (import.meta.env.DEV) (window as any).__verkz = { world, prefs, get media() { return media; }, get editor() { return editor; } };
     showEnterCover();
     world.onReady = () => hideEnterCover();
     media = new Media(world);
     media.prefs = prefs.media;
+    media.userVolume = personVolume;
+    media.camBg = prefs.camBg;
     media.onApproach = () => {
       if (soundPrefs.approach) approachChime();
     };
@@ -242,6 +255,7 @@ function start() {
     world.onOverviewChange = () => renderDock();
     world.setView(prefs.view);
     mountViewSwitch();
+    if (prefs.callMode === "reuniao") openMeeting();
     world.onEnterMyRoom = () => doorChime();
     world.onStep = (run, vol) => {
       if (soundPrefs.steps) footstep(run, vol);
@@ -284,7 +298,7 @@ function start() {
     if (isTouch) keepScreenOn();
     window.addEventListener("resize", () => renderDock());
     // economia: sem foco a cena roda a 20 quadros; com uma tela compartilhada em tela cheia, a 12
-    const fpsCap = () => (world.backgroundFps = document.body.classList.contains("screen-mode") ? 12 : document.hasFocus() ? 0 : 20);
+    const fpsCap = () => (world.backgroundFps = document.body.classList.contains("meet-mode") ? 2 : document.body.classList.contains("screen-mode") ? 12 : document.hasFocus() ? 0 : 20);
     window.addEventListener("focus", fpsCap);
     window.addEventListener("blur", fpsCap);
     new MutationObserver(fpsCap).observe(document.body, { attributes: true, attributeFilter: ["class"] });
@@ -633,6 +647,7 @@ async function dockAction(id: string) {
       openSettings();
       break;
     case "exit":
+      closeMeeting();
       if (recorder.active) await toggleRecording();
       net.close();
       await media.disconnect();
@@ -1295,17 +1310,47 @@ function floatAt(el: HTMLElement, x: number, y: number) {
   el.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
 }
 
-function menu(x: number, y: number, title: string, items: [string, string, () => void][]) {
+function menu(x: number, y: number, title: string, items: [string, string, () => void][], top?: (el: HTMLElement) => void) {
   const el = document.createElement("div");
   el.className = "panel ctx-menu";
-  el.innerHTML = `<div class="ctx-title">${esc(title)}</div>` + items.map(([ic, label], i) => `<button data-i="${i}">${icon(ic, 16)}<span>${esc(label)}</span></button>`).join("");
+  el.innerHTML = `<div class="ctx-title">${esc(title)}</div><div data-top></div>` + items.map(([ic, label], i) => `<button data-i="${i}">${icon(ic, 16)}<span>${esc(label)}</span></button>`).join("");
   el.querySelectorAll<HTMLElement>("[data-i]").forEach((b) =>
     b.addEventListener("click", () => {
       el.remove();
       items[Number(b.dataset.i)][2]();
     }),
   );
+  if (top) top($("[data-top]", el));
   floatAt(el, x, y);
+}
+
+/** Volume que eu escolhi para uma pessoa (1 = normal). Guardado pelo nome (o id muda a cada entrada). */
+function personVolume(id: string) {
+  const a = world?.others.get(id);
+  const v = a ? prefs.volumes[a.info.name] : undefined;
+  return typeof v === "number" ? v : 1;
+}
+
+/** Controle de volume dentro do menu da pessoa (botão direito). */
+function volumeControl(id: string, box: HTMLElement) {
+  const a = world.others.get(id);
+  if (!a) return;
+  const pct = Math.round(personVolume(id) * 100);
+  box.className = "ctx-vol";
+  box.innerHTML = `<div class="ctx-vol-head">${icon(pct === 0 ? "mic-off" : "volume", 16)}<span>Volume</span><b>${pct}%</b></div>
+    <input type="range" min="0" max="200" step="5" value="${pct}" aria-label="Volume de ${esc(a.info.name)}">`;
+  const r = $<HTMLInputElement>("input", box);
+  const lbl = $("b", box);
+  r.addEventListener("input", () => {
+    const v = Number(r.value);
+    lbl.textContent = `${v}%`;
+    if (v === 100) delete prefs.volumes[a.info.name];
+    else prefs.volumes[a.info.name] = v / 100;
+    savePrefs();
+  });
+  // o menu fecha ao clicar fora; arrastar o controle não pode fechar
+  box.addEventListener("pointerdown", (e) => e.stopPropagation());
+  box.addEventListener("click", (e) => e.stopPropagation());
 }
 
 // ------------------------------------------------------------ pessoas: menu e cartão
@@ -1380,7 +1425,7 @@ function openAvatarMenu(id: string, x: number, y: number, isMe: boolean) {
     ],
     ["activity", "Ver atividade", () => openPersonCard(id, x, y)],
   ];
-  menu(x, y, a.info.name, items);
+  menu(x, y, a.info.name, items, (box) => volumeControl(id, box));
 }
 
 const since = (t?: number) => {
@@ -1519,7 +1564,8 @@ function doEmote(id: string) {
 }
 
 async function renderPad(el: HTMLElement) {
-  const custom = await listCustom();
+  // se o banco local demorar (aba antiga segurando o IndexedDB), abre com os sons prontos mesmo
+  const custom = await Promise.race([listCustom(), new Promise<PadSound[]>((r) => setTimeout(() => r([]), 1500))]);
   const btn = (s: PadSound, rm = false) => `<button class="pad" data-p="${esc(s.id)}"><span>${s.emoji ?? "🔊"}</span><small>${esc(s.name)}</small>${rm ? `<i data-rm="${esc(s.id)}" title="Remover">×</i>` : ""}</button>`;
   el.innerHTML = `<div class="section-head"><span class="label">Soundpad</span><span class="t-s c3">Quem está perto ouve</span></div>
     <div class="pad-grid">${PAD_SOUNDS.map((s) => btn(s)).join("")}${custom.map((s) => btn(s, true)).join("")}
@@ -1602,9 +1648,10 @@ function nearItem(it: Item, then: () => void) {
 }
 
 /** Itens que a pessoa usa (rádio, café, jogos, painéis...): só funcionam no mesmo cômodo. */
+// o painel financeiro fica de fora: é o único que abre de qualquer lugar
 const ROOM_ITEMS = new Set([
   "cleiton", "coffee", "water", "fridge", "microwave", "elevator", "pool_table", "ping_pong", "speaker", "radio",
-  "photo_wall", "photo_big", "photo_easel", "photo_desk", "fin_panel", "weather_panel", "goal_panel", "api_panel", "p_vending",
+  "photo_wall", "photo_big", "photo_easel", "photo_desk", "weather_panel", "goal_panel", "api_panel", "p_vending",
 ]);
 /** Distância máxima para usar um item quando os dois estão na área aberta (sem sala). */
 const OPEN_REACH = 6;
@@ -2313,17 +2360,25 @@ function mountViewSwitch() {
   document.querySelector(".view-switch")?.remove();
   const el = document.createElement("div");
   el.className = "view-switch panel";
-  el.innerHTML = `<button data-v="iso" title="Visão isométrica 3D (V)">${icon("cube", 17)}<span>Isométrica</span></button><button data-v="aerea" title="Visão aérea 3D (V)">${icon("plan", 17)}<span>Aérea</span></button><button data-v="2d" title="Visão 2D, plana (V)">${icon("square", 17)}<span>2D</span></button>`;
-  const sync = () => el.querySelectorAll<HTMLElement>("[data-v]").forEach((b) => b.classList.toggle("on", b.dataset.v === world.view));
+  el.innerHTML = `<button data-m="escritorio" title="Modo escritório: o mapa (G)">${icon("building", 17)}<span>Escritório</span></button><button data-m="reuniao" title="Modo reunião: blocos em mosaico (G)">${icon("users", 17)}<span>Reunião</span></button><i class="vs-sep"></i><button data-v="iso" title="Visão isométrica 3D (V)">${icon("cube", 17)}<span>Isométrica</span></button><button data-v="aerea" title="Visão aérea 3D (V)">${icon("plan", 17)}<span>Aérea</span></button><button data-v="2d" title="Visão 2D, plana (V)">${icon("square", 17)}<span>2D</span></button>`;
+  const sync = () => {
+    el.querySelectorAll<HTMLElement>("[data-v]").forEach((b) => b.classList.toggle("on", b.dataset.v === world.view));
+    el.querySelectorAll<HTMLElement>("[data-m]").forEach((b) => b.classList.toggle("on", b.dataset.m === prefs.callMode));
+    el.classList.toggle("meeting", prefs.callMode === "reuniao");
+  };
   el.addEventListener("click", (e) => {
+    const m = (e.target as HTMLElement).closest<HTMLElement>("[data-m]");
+    if (m) return setCallMode(m.dataset.m as CallMode);
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-v]");
     if (!b) return;
     setView(b.dataset.v as ViewMode);
   });
   world.onViewChange = sync;
+  syncViewSwitch = sync;
   sync();
   hud.appendChild(el);
 }
+let syncViewSwitch = () => {};
 function setView(v: ViewMode) {
   world.setView(v);
   prefs.view = v;
@@ -2334,15 +2389,274 @@ window.addEventListener("keydown", (e) => {
   if (e.key.toLowerCase() !== "v" || e.ctrlKey || e.metaKey || e.altKey || !world?.me) return;
   const t = e.target as HTMLElement;
   if (t.closest("input, textarea, select, [contenteditable]")) return;
+  if (document.body.classList.contains("meet-mode")) return;
   setView(world.view === "iso" ? "aerea" : world.view === "aerea" ? "2d" : "iso");
 });
+window.addEventListener("keydown", (e) => {
+  // G alterna entre o modo escritório e o modo reunião
+  if (e.key.toLowerCase() !== "g" || e.ctrlKey || e.metaKey || e.altKey || !world?.me) return;
+  const t = e.target as HTMLElement;
+  if (t.closest("input, textarea, select, [contenteditable]") || overlay.innerHTML || document.querySelector(".modal-bg")) return;
+  setCallMode(prefs.callMode === "reuniao" ? "escritorio" : "reuniao");
+});
+// no modo reunião o mapa fica atrás dos blocos: as setas e WASD não andam com o personagem
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!document.body.classList.contains("meet-mode")) return;
+    const t = e.target as HTMLElement;
+    if (t.closest?.("input, textarea, select, [contenteditable]")) return;
+    if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright", "shift"].includes(e.key.toLowerCase())) e.stopImmediatePropagation();
+  },
+  true,
+);
+
+// botão direito numa pessoa da lista ou num bloco do modo reunião: mesmo menu do personagem (com o volume)
+document.addEventListener("contextmenu", (e) => {
+  const t = (e.target as HTMLElement).closest<HTMLElement>(".person[data-id], .mt-tile[data-pid]");
+  const id = t?.dataset.id ?? t?.dataset.pid;
+  if (!id || id === "me" || !world?.others.has(id)) return;
+  e.preventDefault();
+  openAvatarMenu(id, e.clientX, e.clientY, false);
+});
+
+// ------------------------------------------------------------ menu de funções (Configurações > Funções)
+type Func = { id: string; ic: string; name: string; desc: string; key?: string; run?: () => void };
+const FUNCS: { group: string; items: Func[] }[] = [
+  {
+    group: "Conversa",
+    items: [
+      { id: "mic", ic: "mic", name: "Microfone", desc: "Liga e desliga o seu microfone.", key: "M", run: () => dockAction("mic") },
+      { id: "cam", ic: "video", name: "Câmera", desc: "Liga e desliga a câmera (aparece acima do personagem e nos blocos).", run: () => dockAction("cam") },
+      { id: "screen", ic: "screen", name: "Compartilhar tela", desc: "Mostra a sua tela para quem está na conversa.", run: () => dockAction("screen") },
+      { id: "meet", ic: "users", name: "Modo reunião", desc: "Troca o mapa por blocos em mosaico com quem está na sua call.", key: "G", run: () => setCallMode(prefs.callMode === "reuniao" ? "escritorio" : "reuniao") },
+      { id: "vol", ic: "volume", name: "Volume de cada pessoa", desc: "Botão direito na pessoa (no mapa, na lista ou no bloco) e ajuste de 0 a 200%." },
+      { id: "bg", ic: "image", name: "Fundo da câmera", desc: "Desfocar ou trocar o fundo. Fica em Áudio e vídeo.", run: async () => {
+          await openSettings();
+          document.querySelector("[data-bgs]")?.scrollIntoView({ block: "center" });
+        } },
+      { id: "rec", ic: "record", name: "Gravar reunião", desc: "Grava o que você ouve e gera resumo, decisões e tarefas.", run: () => dockAction("rec") },
+      { id: "meetings", ic: "download", name: "Reuniões gravadas", desc: "Vídeos, resumos e transcrições dos últimos 15 dias.", run: () => dockAction("meetings") },
+      { id: "chat", ic: "chat", name: "Chat", desc: "Mensagens para todos ou só para a sala.", key: "Enter", run: () => dockAction("chat") },
+    ],
+  },
+  {
+    group: "Escritório",
+    items: [
+      { id: "walk", ic: "map", name: "Andar e correr", desc: "WASD ou setas; segure Shift para correr. Dois cliques no piso levam o personagem." },
+      { id: "map", ic: "map", name: "Mapa inteiro", desc: "Mostra o escritório todo de cima.", key: "Tab", run: () => dockAction("map") },
+      { id: "home", ic: "home", name: "Ir para a minha sala", desc: "Leva você até a sala do seu cargo.", run: () => dockAction("home") },
+      { id: "view", ic: "cube", name: "Visão", desc: "Isométrica, aérea ou 2D.", key: "V", run: () => setView(world.view === "iso" ? "aerea" : world.view === "aerea" ? "2d" : "iso") },
+      { id: "people", ic: "users", name: "Pessoas", desc: "Quem está online, onde está e o seu status.", run: () => dockAction("people") },
+      { id: "edit", ic: "pencil", name: "Editar escritório", desc: "Móveis para todos; salas, paredes e prédio só a gestão.", run: () => dockAction("edit") },
+      { id: "person", ic: "hand", name: "Chamar, ir até, acenar", desc: "Clique ou botão direito numa pessoa." },
+    ],
+  },
+  {
+    group: "Diversão",
+    items: [
+      { id: "emote", ic: "smile", name: "Emotes", desc: "Acenar, joinha, palmas, dançar... Teclas 1 a 0 usam direto.", key: "E", run: () => togglePopover("emote") },
+      { id: "pad", ic: "volume", name: "Soundpad", desc: "Sons para quem está perto. Dá para subir os seus (até 3 MB).", run: () => togglePopover("pad") },
+      { id: "radio", ic: "radio", name: "Rádio / caixa de som", desc: "Clique na caixa e cole um link do YouTube, YouTube Music ou Spotify." },
+      { id: "games", ic: "gamepad", name: "Sinuca e pingue-pongue", desc: "Clique na mesa para jogar ou convidar alguém." },
+      { id: "kitchen", ic: "home", name: "Cozinha", desc: "Café, água, geladeira e micro-ondas: clique para pegar." },
+    ],
+  },
+  {
+    group: "Você",
+    items: [
+      { id: "char", ic: "shirt", name: "Personagem", desc: "Pele, cabelo, roupa, acessórios.", run: () => dockAction("char") },
+      { id: "apps", ic: "calendar", name: "Agenda e apps", desc: "Reuniões do dia, e-mails, Spotify e atalhos.", run: () => dockAction("apps") },
+    ],
+  },
+];
+function funcsHtml() {
+  return FUNCS.map(
+    (g) => `<div class="label">${esc(g.group)}</div><div class="fn-list">${g.items
+      .map(
+        (f) => `<div class="fn-row">${icon(f.ic, 18)}<div class="fn-txt"><b>${esc(f.name)}</b><small>${esc(f.desc)}</small></div>${f.key ? `<kbd>${esc(f.key)}</kbd>` : ""}${
+          f.run ? `<button type="button" class="btn secondary sm" data-fn="${f.id}">Usar</button>` : ""
+        }</div>`,
+      )
+      .join("")}</div>`,
+  ).join("");
+}
+
+// ------------------------------------------------------------ fundo da câmera
+/** Opções de fundo (nenhum, desfocar, prontos, foto do computador). Aplica na hora, sem precisar salvar. */
+async function mountBgPicker(box: HTMLElement) {
+  const cur = () => prefs.camBg;
+  const key = (b: CamBg) => (b.kind === "image" ? (b.img?.startsWith("preset:") ? b.img : "custom") : b.kind);
+  const opts: { k: string; name: string; thumb: string; bg: CamBg }[] = [
+    { k: "none", name: "Nenhum", thumb: "", bg: { kind: "none" } },
+    { k: "blur", name: "Desfocar", thumb: "", bg: { kind: "blur" } },
+    ...CAM_BG_PRESETS.map((p) => ({ k: "preset:" + p.id, name: p.name, thumb: presetImage(p.id), bg: { kind: "image" as const, img: "preset:" + p.id } })),
+  ];
+  const custom = cur().kind === "image" && cur().img && !cur().img!.startsWith("preset:") ? cur().img! : "";
+  if (custom) opts.push({ k: "custom", name: "Sua imagem", thumb: custom, bg: { kind: "image", img: custom } });
+  box.innerHTML =
+    opts
+      .map(
+        (o) =>
+          `<button type="button" class="bg-opt ${key(cur()) === o.k ? "on" : ""}" data-k="${esc(o.k)}" title="${esc(o.name)}" ${o.thumb ? `style="background-image:url('${o.thumb}')"` : ""}>${
+            o.k === "none" ? icon("x", 18) : o.k === "blur" ? icon("eye", 18) : ""
+          }<small>${esc(o.name)}</small></button>`,
+      )
+      .join("") + `<label class="bg-opt add" title="Usar uma imagem do computador">${icon("plus", 18)}<small>Enviar imagem</small><input type="file" accept="image/*" hidden></label>`;
+  const choose = async (b: CamBg) => {
+    prefs.camBg = b;
+    savePrefs();
+    box.querySelectorAll(".bg-opt").forEach((x) => x.classList.toggle("on", (x as HTMLElement).dataset.k === key(b)));
+    if (b.kind !== "none" && !(await camBgSupported())) return toast("Este computador não suporta fundo de câmera.", true);
+    await media.setCamBg(b);
+    if (b.kind !== "none" && !media.camOn) toast("Fundo escolhido. Ele aparece quando você ligar a câmera.");
+  };
+  box.querySelectorAll<HTMLElement>("[data-k]").forEach((el) => el.addEventListener("click", () => choose(opts.find((o) => o.k === el.dataset.k)!.bg)));
+  $<HTMLInputElement>("input[type=file]", box).addEventListener("change", async (e) => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    try {
+      const img = await fileToBg(f);
+      await choose({ kind: "image", img });
+      mountBgPicker(box);
+    } catch {
+      toast("Não consegui abrir essa imagem.", true);
+    }
+  });
+}
+
+// ------------------------------------------------------------ modo reunião (blocos em mosaico)
+function setCallMode(m: CallMode) {
+  if (prefs.callMode !== m) {
+    prefs.callMode = m;
+    savePrefs();
+  }
+  if (m === "reuniao") openMeeting();
+  else closeMeeting();
+  syncViewSwitch();
+}
+
+type VidEl = HTMLVideoElement & { _lkTrack?: any; _since?: number };
+let meet: { el: HTMLElement; grid: HTMLElement; timer: number; tiles: Map<string, HTMLElement>; seen: Map<string, number> } | null = null;
+
+function openMeeting() {
+  if (meet) return;
+  // ainda entrando no escritório: abre assim que o personagem existir
+  if (!world?.me) {
+    setTimeout(() => prefs.callMode === "reuniao" && openMeeting(), 500);
+    return;
+  }
+  const el = document.createElement("div");
+  el.className = "meet-full";
+  el.innerHTML = `<div class="meet-bar"><span class="chip accent" data-room></span><span class="chip" data-count></span></div>
+    <div class="meet-grid"></div>`;
+  hud.insertBefore(el, $("#dock"));
+  document.body.classList.add("meet-mode");
+  meet = { el, grid: $(".meet-grid", el), timer: window.setInterval(updateMeeting, 250), tiles: new Map(), seen: new Map() };
+  updateMeeting();
+}
+
+function closeMeeting() {
+  if (!meet) return;
+  clearInterval(meet.timer);
+  for (const t of meet.tiles.values()) dropTileVideo(t);
+  meet.el.remove();
+  meet = null;
+  document.body.classList.remove("meet-mode");
+}
+
+function dropTileVideo(tile: HTMLElement) {
+  const v = tile.querySelector("video") as VidEl | null;
+  if (!v) return;
+  v._lkTrack?.detach(v);
+  v.srcObject = null;
+  v.remove();
+}
+
+function updateMeeting() {
+  if (!meet || !world?.me) return;
+  const now = performance.now();
+  const me = media.room.localParticipant.identity;
+  type P = { id: string; name: string; ini: string; color: string; talking: boolean; muted: boolean; mirror: boolean };
+  const list: P[] = [
+    { id: "me", name: `${prefs.name} (você)`, ini: initials(prefs.name), color: lookColor(prefs.look), talking: media.micOn && media.isTalking(me), muted: !media.micOn, mirror: prefs.media.mirror },
+  ];
+  const others: P[] = [];
+  for (const [id, a] of world.others) {
+    // na call = quem eu ouço; segura 3 s depois de sair, para o bloco não piscar na borda do alcance
+    if ((media.levels.get(id) ?? 0) > 0.01 && media.canHear(id)) meet.seen.set(id, now);
+    if (now - (meet.seen.get(id) ?? -1e9) > 3000) continue;
+    others.push({ id, name: a.info.name, ini: initials(a.info.name), color: lookColor(a.look), talking: media.isTalking(id) && media.canHear(id), muted: a.label.classList.contains("muted"), mirror: false });
+  }
+  others.sort((a, b) => a.name.localeCompare(b.name));
+  list.push(...others);
+  const z = world.currentZone;
+  $("[data-room]", meet.el).innerHTML = `${z?.private ? icon("lock", 13) : '<span class="dot"></span>'}${esc(z ? z.name : "Área aberta")}`;
+  $("[data-count]", meet.el).textContent = list.length === 1 ? "Só você na call" : `${list.length} na call`;
+
+  // tamanho dos blocos: o maior 16:9 que cabe (como no Meet), última linha centralizada
+  const g = meet.grid;
+  const W = g.clientWidth, H = g.clientHeight, gap = 12, n = list.length;
+  let tw = 0;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    tw = Math.max(tw, Math.min((W - (cols - 1) * gap) / cols, ((H - (rows - 1) * gap) / rows) * (16 / 9)));
+  }
+  g.style.setProperty("--tw", `${Math.max(120, Math.floor(tw))}px`);
+
+  const keep = new Set<string>();
+  list.forEach((p, i) => {
+    keep.add(p.id);
+    let el = meet!.tiles.get(p.id);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "mt-tile";
+      el.dataset.pid = p.id;
+      el.innerHTML = `<div class="av"></div><small class="nofeed-t">Sem imagem</small><div class="nm"><i class="off hidden">${icon("mic-off", 13, 2.4)}</i><span></span></div>`;
+      $(".av", el).textContent = p.ini;
+      $(".av", el).setAttribute("style", `background:${p.color}`);
+      $(".nm span", el).textContent = p.name;
+      meet!.tiles.set(p.id, el);
+    }
+    el.classList.toggle("talking", p.talking);
+    $(".off", el).classList.toggle("hidden", !p.muted);
+    // câmera: a mesma faixa da bolha, presa a um <video> próprio (o LiveKit manda a qualidade do bloco grande)
+    const track = media.camTrack(p.id === "me" ? "me" : p.id);
+    let v = el.querySelector("video") as VidEl | null;
+    if (track && (!v || v._lkTrack !== track)) {
+      dropTileVideo(el);
+      v = document.createElement("video") as VidEl;
+      v.muted = true;
+      v.playsInline = true;
+      v._lkTrack = track;
+      v._since = now;
+      if (p.mirror) v.classList.add("mirror");
+      track.attach(v);
+      el.prepend(v);
+    } else if (!track && v) {
+      dropTileVideo(el);
+      v = null;
+    }
+    const camWanted = p.id === "me" ? media.camOn : media.hasCam(p.id);
+    const noFeed = !!v && (v.videoWidth === 0 || v.readyState < 2) && now - (v._since ?? now) > 2500;
+    el.classList.toggle("cam", !!v && !noFeed);
+    el.classList.toggle("nofeed", camWanted && noFeed);
+    if (g.children[i] !== el) g.insertBefore(el, g.children[i] ?? null);
+  });
+  for (const [id, el] of meet.tiles)
+    if (!keep.has(id)) {
+      dropTileVideo(el);
+      el.remove();
+      meet.tiles.delete(id);
+    }
+}
 
 // ------------------------------------------------------------ rádio (YouTube na sala)
 /** Todos os rádios ligados agora (o mais novo vale, se dois ligaram a mesma caixa). */
 function radioSources(): RadioSource[] {
   const byItem = new Map<string, RadioSource>();
   const add = (owner: string, ownerName: string, r: RadioState | undefined) => {
-    if (!r?.item || (!r.vid && !r.list)) return;
+    if (!r?.item || (!r.vid && !r.list && !r.sp)) return;
     const cur = byItem.get(r.item);
     if (!cur || r.at > cur.at) byItem.set(r.item, { ...r, owner, ownerName });
   };
@@ -2441,8 +2755,8 @@ function openRadioMenu(it: Item, x: number, y: number) {
 function askRadioLink(it: Item) {
   const bg = modal(
     "Tocar no rádio",
-    `<label class="field"><span class="label">Link do YouTube</span><input class="input" name="yt" placeholder="https://www.youtube.com/watch?v=... ou link de playlist" autocomplete="off"></label>
-     <div class="note">Quem estiver nesta sala ouve junto. Vale música, clipe ou playlist (o link com “list=”). Para parar, clique no rádio de novo.</div>`,
+    `<label class="field"><span class="label">Link do YouTube ou do Spotify</span><input class="input" name="yt" placeholder="Música, álbum ou playlist" autocomplete="off"></label>
+     <div class="note">Quem estiver nesta sala ouve junto. Vale YouTube, YouTube Music e Spotify (música, álbum ou playlist). No Spotify, quem não estiver logado nele ouve só 30 s de cada música. Para parar, clique no rádio de novo.</div>`,
     [
       ["Cancelar", "ghost", () => {}],
       [
@@ -2450,9 +2764,9 @@ function askRadioLink(it: Item) {
         "primary",
         () => {
           const url = $<HTMLInputElement>('input[name="yt"]', bg).value;
-          const yt = parseYouTube(url);
+          const yt = parseRadioLink(url);
           if (!yt) {
-            toast("Cole um link do YouTube (youtube.com, youtu.be ou music.youtube.com)", true);
+            toast("Cole um link do YouTube, YouTube Music ou Spotify (música, álbum ou playlist)", true);
             return false;
           }
           atRadio(it, () => {
@@ -2572,7 +2886,7 @@ async function openSettings() {
   const sw = (name: string, label: string, on: boolean, note = "") =>
     `<label class="toggle-row"><span>${label}${note ? `<br><span class="t-s c3">${note}</span>` : ""}</span><span class="switch"><input type="checkbox" name="${name}" ${on ? "checked" : ""}><span></span></span></label>`;
   const env: EnvConfig = world.layout?.env ?? {};
-  const tabs = ["Áudio e vídeo", "Sons", "Privacidade", "Aparência", ...(isAdmin ? ["Escritório"] : []), "Apps", "Sobre"];
+  const tabs = ["Áudio e vídeo", "Sons", "Privacidade", "Aparência", ...(isAdmin ? ["Escritório"] : []), "Funções", "Apps", "Sobre"];
   const bg = modal(
     "Configurações",
     `<div class="settings-wrap"><div class="tabs vtabs">${tabs.map((t, i) => `<button type="button" data-tab="${i}" class="${i ? "" : "on"}">${t}</button>`).join("")}</div>
@@ -2587,6 +2901,7 @@ async function openSettings() {
         ${sw("noiseSuppression", "Redução de ruído", mp.noiseSuppression)}
         ${sw("micOnJoin", "Microfone ligado ao entrar", mp.micOnJoin)}
         ${sw("mirror", "Espelhar minha câmera", mp.mirror)}
+        <div class="field"><span class="label">Fundo da câmera</span><div class="bg-grid" data-bgs></div></div>
       </section>
       <section data-sec="1" hidden>
         <label class="slider-row"><span>Volume geral</span><input type="range" name="master" min="0" max="1" step="0.05" value="${soundPrefs.master}"></label>
@@ -2604,6 +2919,10 @@ async function openSettings() {
       </section>
       <section data-sec="3" hidden>
         <div class="label">Visual</div>
+        <label class="field"><span class="label">Modo de call</span><select class="input" name="callMode">
+          <option value="escritorio" ${prefs.callMode === "escritorio" ? "selected" : ""}>Escritório (o mapa, com as bolhas de câmera)</option>
+          <option value="reuniao" ${prefs.callMode === "reuniao" ? "selected" : ""}>Reunião (blocos em mosaico, como no Meet)</option>
+        </select></label>
         <label class="field"><span class="label">Visão</span><select class="input" name="view">
           <option value="iso" ${prefs.view === "iso" ? "selected" : ""}>3D isométrica (diagonal, padrão)</option>
           <option value="aerea" ${prefs.view === "aerea" ? "selected" : ""}>3D aérea (de cima, com luz e sombra)</option>
@@ -2647,6 +2966,7 @@ async function openSettings() {
       </section>`
           : ""
       }
+      <section data-sec="${tabs.length - 3}" hidden data-funcs>${funcsHtml()}</section>
       <section data-sec="${tabs.length - 2}" hidden data-linked></section>
       <section data-sec="${tabs.length - 1}" hidden>
         <div class="pc-row"><span class="label">Versão</span><span>${esc(String(ver))}</span></div>
@@ -2663,6 +2983,15 @@ async function openSettings() {
     true,
   );
   bg.querySelector(".modal")?.classList.add("settings-modal");
+  mountBgPicker($("[data-bgs]", bg));
+  bg.querySelectorAll<HTMLElement>("[data-fn]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const f = FUNCS.flatMap((g) => g.items).find((x) => x.id === b.dataset.fn);
+      if (!f?.run) return;
+      bg.remove();
+      f.run();
+    }),
+  );
   bg.querySelectorAll<HTMLElement>("[data-tab]").forEach((t) =>
     t.addEventListener("click", () => {
       bg.querySelectorAll("[data-tab]").forEach((x) => x.classList.toggle("on", x === t));
@@ -2744,6 +3073,8 @@ function saveSettings(bg: HTMLElement) {
   }
   const vw = v("view") as ViewMode;
   if (vw && vw !== prefs.view) setView(vw);
+  const cm = v("callMode") as CallMode;
+  if (cm && cm !== prefs.callMode) setCallMode(cm);
   if (f.elements.namedItem("autoUpdate")) prefs.autoUpdate = c("autoUpdate");
   if (prefs.look.eventSkin !== c("eventSkin")) {
     prefs.look = { ...prefs.look, eventSkin: c("eventSkin") };

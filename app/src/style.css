@@ -649,10 +649,69 @@ body.screen-mode .screens { display: none; }
 }
 
 /* ---------- v0.6.1: botão flutuante de visão (isométrica / aérea) */
-.view-switch { position: absolute; right: 20px; bottom: 20px; display: flex; gap: 4px; padding: 5px; border-radius: 14px; z-index: 6; }
+.view-switch { position: absolute; right: 20px; bottom: 20px; display: flex; flex-direction: row; gap: 4px; padding: 5px; border-radius: 14px; z-index: 6; }
 .view-switch button { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--text-2); font: 600 12.5px/1 inherit; font-family: inherit; cursor: pointer; transition: background .15s, color .15s; }
 .view-switch button:hover { background: var(--raised); color: var(--text); }
 .view-switch button.on { background: var(--accent, #C8F501); color: #0D0D0D; }
 body.screen-mode .view-switch { display: none; }
 @media (max-width: 1560px) { .view-switch span { display: none; } .view-switch button { padding: 0 10px; } }
 @media (max-width: 760px) { .view-switch { right: calc(10px + env(safe-area-inset-right)); bottom: calc(80px + env(safe-area-inset-bottom)); } }
+
+/* ---------- bolha da câmera sem imagem (vídeo assinado mas sem quadros) */
+.bubble .nofeed-ph { display: none; }
+.bubble.nofeed video { display: none; }
+.bubble.nofeed .nofeed-ph { display: flex; }
+
+/* ---------- modo de call: escritório x reunião (seletor junto da visão) */
+.view-switch .vs-sep { width: 1px; align-self: stretch; margin: 6px 4px; background: var(--border); }
+.view-switch.meeting [data-v], .view-switch.meeting .vs-sep { display: none; }
+body.meet-mode .view-switch { z-index: 45; display: flex; }
+
+/* ---------- modo reunião: blocos em mosaico */
+.meet-full { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; background: var(--bg, #0D0D0D); padding: 20px 20px 104px; }
+.meet-bar { display: flex; align-items: center; gap: 12px; min-height: 40px; margin-bottom: 16px; }
+.meet-grid { flex: 1; min-height: 0; display: flex; flex-wrap: wrap; justify-content: center; align-content: center; gap: 12px; }
+.mt-tile { position: relative; width: var(--tw, 320px); aspect-ratio: 16 / 9; border-radius: 16px; overflow: hidden; background: var(--raised); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; transition: border-color .45s ease, box-shadow .45s ease; }
+.mt-tile.talking { border: 3px solid var(--accent); box-shadow: 0 0 18px rgba(200, 245, 1, .35); }
+.mt-tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
+.mt-tile.cam video { display: block; }
+.mt-tile video.mirror { transform: scaleX(-1); }
+.mt-tile .av { width: clamp(56px, 22%, 112px); aspect-ratio: 1; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: clamp(18px, 2.4vw, 34px); color: #0D0D0D; }
+.mt-tile.cam .av { display: none; }
+.mt-tile .nofeed-t { display: none; position: absolute; top: 12px; left: 12px; font-size: 11px; color: var(--text-2); }
+.mt-tile.nofeed .nofeed-t { display: block; }
+.mt-tile .nm { position: absolute; left: 12px; bottom: 12px; max-width: calc(100% - 24px); display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; background: rgba(13, 13, 13, .72); font-size: 12.5px; font-weight: 600; color: #fff; }
+.mt-tile .nm span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-tile .nm .off { display: flex; color: var(--danger, #ff5a5a); }
+.mt-tile .nm .off.hidden { display: none; }
+body.meet-mode .dock { z-index: 46; }
+body.meet-mode .side.right, body.meet-mode .popover { z-index: 47; }
+body.meet-mode .side.left { display: none; }
+@media (max-width: 760px) { .meet-full { padding: 12px 12px calc(150px + env(safe-area-inset-bottom)); } .meet-grid { gap: 8px; } }
+body.meet-mode .screens { z-index: 45; }
+
+/* ---------- volume individual (botão direito numa pessoa) */
+.ctx-vol { padding: 8px 12px 12px; margin-bottom: 6px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+.ctx-vol-head { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.ctx-vol-head .ico { color: var(--text-2); }
+.ctx-vol-head span { flex: 1; }
+.ctx-vol-head b { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ctx-vol input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+/* ---------- fundo da câmera (Configurações > Áudio e vídeo) */
+.bg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.bg-opt { position: relative; aspect-ratio: 16 / 9; border-radius: 10px; border: 2px solid var(--border); background: var(--raised) center / cover no-repeat; color: var(--text-2); display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; font-family: inherit; }
+.bg-opt small { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; font-size: 10.5px; font-weight: 600; color: #fff; background: linear-gradient(transparent, rgba(0, 0, 0, .65)); text-align: left; }
+.bg-opt:hover { border-color: var(--border-strong); }
+.bg-opt.on { border-color: var(--accent); }
+.bg-opt.add { border-style: dashed; }
+body.meet-mode #stage canvas, body.meet-mode .labels { visibility: hidden; }
+
+/* ---------- Configurações > Funções */
+.fn-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.fn-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: var(--raised); }
+.fn-row > .ico { color: var(--accent); flex: none; }
+.fn-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.fn-txt b { font-size: 13px; font-weight: 600; }
+.fn-txt small { font-size: 12px; color: var(--text-2); }
+.fn-row kbd { flex: none; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border-strong); font: 600 11px/1.4 inherit; font-family: inherit; color: var(--text-2); }
