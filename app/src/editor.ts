@@ -44,7 +44,7 @@ const CATEGORIES: [string, string, RegExp][] = [
   ["tapetes", "Tapetes", /^rug.*$/],
   ["plantas", "Plantas", /^(plant.*|bamboo|cactus.*|p_(monstera|succulents|fern|planter_long|olive))$/],
   ["decor", "Decoração", /^(frame.*|photo_.*|photo_frame|lamp.*|books|book_single|k_pillar|clock_panel|neon_.*|cabinet_small.*|p_(aquarium|globe|trophy|trophy_cup|neon_ring|clock_wall|mirror|floor_lamp|vase|books|bookcase_full|coat_rack|fireplace))$/],
-  ["lazer", "Lazer e descanso", /^(radio|speaker|p_(radio_small|boombox|speaker_.*)|pool_table|ping_pong|arcade|bed.*|beanbag|tv|p_(foosball|dartboard|videogame|guitar|keyboard|basket|hammock|lounge))$/],
+  ["lazer", "Lazer e descanso", /^(radio|speaker|p_(radio_small|radio_retro|radio_console|boombox|speaker_.*|tv_vintage|jukebox|turntable|gramophone|soundbar|studio_monitors)|pool_table|ping_pong|arcade|bed.*|beanbag|tv|p_(foosball|dartboard|videogame|guitar|keyboard|basket|hammock|lounge))$/],
   ["banheiro", "Banheiro", /^(toilet|sink|stall|k_towelrail|p_(towel|hamper|mirror))$/],
 ];
 

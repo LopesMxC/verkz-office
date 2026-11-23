@@ -5,7 +5,7 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPixelatedPass } from "three/addons/postprocessing/RenderPixelatedPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { buildItem, buildWall, DEFS, doorJamb, levelView, MOUNT_Y, WALL_MOUNT, footprint, Item, Layout, WALL_CUT, WALL_H, WALL_T, WALL_TYPES, wallRects, wallSegment, WallLinks, Zone } from "./furniture";
+import { buildItem, buildWall, SCREEN_MATS, DEFS, doorJamb, levelView, MOUNT_Y, WALL_MOUNT, footprint, Item, Layout, WALL_CUT, WALL_H, WALL_T, WALL_TYPES, wallRects, wallSegment, WallLinks, Zone } from "./furniture";
 
 /** Largura do vão das portas duplas (as duas folhas juntas), em metros. */
 const DOOR_W = 1.3;
@@ -17,28 +17,259 @@ import { Environment, Holiday } from "./env";
 import { foliageMaterials } from "./models";
 import { PoolSim, POOL_W, POOL_H, PM, PR } from "./games";
 
-/** Emotes: nome → emoji e animação. */
+/** Emotes: nome → ícone (traço, sem emoji) e animação. */
 export const EMOTES: [string, string, string][] = [
-  ["acenar", "👋", "Acenar"],
-  ["joinha", "👍", "Joinha"],
-  ["palmas", "👏", "Palmas"],
-  ["rir", "😂", "Rir"],
-  ["coracao", "❤️", "Coração"],
-  ["danca", "💃", "Dançar"],
-  ["pular", "🎉", "Comemorar"],
-  ["pensar", "🤔", "Pensar"],
-  ["cafe", "☕", "Pausa"],
-  ["fogo", "🔥", "Mandou bem"],
+  ["acenar", "hand", "Acenar"],
+  ["joinha", "thumbs-up", "Joinha"],
+  ["palmas", "sparkles", "Palmas"],
+  ["rir", "laugh", "Rir"],
+  ["coracao", "heart", "Coração"],
+  ["danca", "music", "Dançar"],
+  ["pular", "party-popper", "Comemorar"],
+  ["pensar", "lightbulb", "Pensar"],
+  ["cafe", "coffee", "Pausa"],
+  ["fogo", "flame", "Mandou bem"],
 ];
 
 /** Itens que o personagem pode segurar (cozinha). */
-export const HOLD_ITEMS: Record<string, { label: string; emoji: string; status: string }> = {
-  cafe: { label: "Café", emoji: "☕", status: "Tomando um café" },
-  agua: { label: "Água", emoji: "🥤", status: "Pausa para a água" },
-  lanche: { label: "Lanche", emoji: "🥪", status: "Fazendo um lanche" },
-  refri: { label: "Refrigerante", emoji: "🥫", status: "Pausa" },
-  marmita: { label: "Marmita", emoji: "🍱", status: "Almoçando" },
+export const HOLD_ITEMS: Record<string, { label: string; ic: string; status: string }> = {
+  cafe: { label: "Café", ic: "coffee", status: "Tomando um café" },
+  agua: { label: "Água", ic: "glass-water", status: "Pausa para a água" },
+  lanche: { label: "Lanche", ic: "sandwich", status: "Fazendo um lanche" },
+  refri: { label: "Refrigerante", ic: "cup-soda", status: "Pausa" },
+  marmita: { label: "Marmita", ic: "utensils", status: "Almoçando" },
 };
+
+// ------------------------------------------------------------------ status e apps: ícone e animação
+export type StatusKind = "disponivel" | "ocupado" | "reuniao" | "foco" | "ausente" | "musica" | "pausa" | "outro";
+export const STATUS_KINDS: Record<StatusKind, { ic: string; label: string }> = {
+  disponivel: { ic: "check", label: "Disponível" },
+  ocupado: { ic: "zap", label: "Ocupado" },
+  reuniao: { ic: "users", label: "Em reunião" },
+  foco: { ic: "target", label: "Foco" },
+  ausente: { ic: "moon", label: "Ausente" },
+  musica: { ic: "music", label: "Ouvindo música" },
+  pausa: { ic: "coffee", label: "Pausa" },
+  outro: { ic: "circle-dot", label: "Status" },
+};
+/** Tipo do status pelo texto (o status é livre; palavras comuns viram uma animação). */
+export function statusKind(s: string): StatusKind {
+  const t = s.toLowerCase();
+  if (/reuni|call|meet|chamada|apresenta/.test(t)) return "reuniao";
+  if (/ocupad|n[aã]o perturbe|dnd|urgente|correria/.test(t)) return "ocupado";
+  if (/foc|concentr|estudando|programando|codando/.test(t)) return "foco";
+  if (/ausente|volto|fora|saindo|afk|almo[cç]o|dormindo/.test(t)) return "ausente";
+  if (/ouvindo|m[uú]sica|playlist/.test(t)) return "musica";
+  if (/caf[eé]|[aá]gua|lanche|almo[cç]ando|marmita|pausa|intervalo|refri/.test(t)) return "pausa";
+  if (/dispon[ií]vel|livre|online|on|pode chamar/.test(t)) return "disponivel";
+  return "outro";
+}
+
+export type AppKind = "code" | "web" | "design" | "music" | "chat" | "sheet" | "game" | "video" | "work";
+export const APP_KINDS: Record<AppKind, { ic: string }> = {
+  code: { ic: "code" },
+  web: { ic: "globe" },
+  design: { ic: "palette" },
+  music: { ic: "music" },
+  chat: { ic: "message-circle" },
+  sheet: { ic: "table" },
+  game: { ic: "gamepad" },
+  video: { ic: "video" },
+  work: { ic: "briefcase" },
+};
+/** Tipo do app (programa em uso) para o ícone animado e a tela do computador. */
+export function appKind(app = "", title = ""): AppKind {
+  const a = `${app} ${title}`.toLowerCase();
+  if (/visual studio|vs ?code|\bcode\b|cursor|intellij|pycharm|webstorm|android studio|xcode|terminal|powershell|cmd\.exe|git|sublime|notepad\+\+|neovim|vim|godot|unity|unreal|roblox studio/.test(a)) return "code";
+  if (/figma|photoshop|illustrator|canva|blender|krita|gimp|inkscape|affinity|lightroom|sketch|xd\b/.test(a)) return "design";
+  if (/premiere|after effects|davinci|resolve|capcut|vegas|obs|youtube(?! music)|netflix|twitch|prime video/.test(a)) return "video";
+  if (/spotify|youtube music|deezer|music|tidal|soundcloud|apple music/.test(a)) return "music";
+  if (/whatsapp|teams|slack|discord|zoom|telegram|outlook|gmail|meet|skype|messenger/.test(a)) return "chat";
+  if (/excel|sheets|planilha|word|docs|notion|powerpoint|slides|onenote|obsidian|trello|clickup|monday|pdf|acrobat/.test(a)) return "sheet";
+  if (/steam|epic|valorant|league|minecraft|fortnite|counter-strike|cs2|riot|battle\.net|xbox|roblox(?! studio)|jogo|game/.test(a)) return "game";
+  if (/chrome|edge|firefox|opera|brave|safari|vivaldi|navegador|arc\b/.test(a)) return "web";
+  return "work";
+}
+
+/** Telas animadas (canvas pequeno, cara de pixel art), uma por tipo de app. Só redesenha as que estão em uso. */
+export class ScreenFx {
+  private cache = new Map<AppKind | "standby", { mat: THREE.MeshBasicMaterial; tex: THREE.CanvasTexture; g: CanvasRenderingContext2D; used: number }>();
+  private t = 0;
+  get(kind: AppKind) {
+    let c = this.cache.get(kind);
+    if (!c) {
+      const cv = document.createElement("canvas");
+      cv.width = 48;
+      cv.height = 28;
+      const g = cv.getContext("2d")!;
+      const tex = new THREE.CanvasTexture(cv);
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      tex.generateMipmaps = false;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const mat = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
+      mat.userData.shared = true;
+      c = { mat, tex, g, used: 0 };
+      this.cache.set(kind, c);
+      this.draw(kind, c.g);
+      tex.needsUpdate = true;
+    }
+    c.used = performance.now();
+    return c.mat;
+  }
+  /** Avança as animações (chamado ~8 vezes por segundo). */
+  tick() {
+    this.t++;
+    const now = performance.now();
+    for (const [k, c] of this.cache) {
+      if (k === "standby" || now - c.used > 1500) continue;
+      this.draw(k as AppKind, c.g);
+      c.tex.needsUpdate = true;
+    }
+  }
+  private draw(kind: AppKind, g: CanvasRenderingContext2D) {
+    const t = this.t;
+    const W = 48;
+    const H = 28;
+    const bg = (c: string) => {
+      g.fillStyle = c;
+      g.fillRect(0, 0, W, H);
+    };
+    const r = (x: number, y: number, w: number, h: number, c: string) => {
+      g.fillStyle = c;
+      g.fillRect(x, y, w, h);
+    };
+    const rnd = (n: number) => {
+      const x = Math.sin(n * 12.9898) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    switch (kind) {
+      case "code": {
+        // linhas de código subindo e o cursor piscando
+        bg("#14181f");
+        r(0, 0, 8, H, "#1c2230");
+        const colors = ["#c678dd", "#61afef", "#98c379", "#e5c07b", "#e06c75", "#56b6c2"];
+        for (let i = 0; i < 9; i++) {
+          const line = i + Math.floor(t / 3);
+          const y = 1 + i * 3;
+          r(2, y, 3, 1, "#4b5263");
+          const ind = (rnd(line) * 4) | 0;
+          let x = 10 + ind * 3;
+          const parts = 1 + ((rnd(line + 7) * 3) | 0);
+          for (let p = 0; p < parts; p++) {
+            const w = 3 + ((rnd(line * 3 + p) * 9) | 0);
+            r(x, y, Math.min(w, W - x - 1), 1, colors[(line + p) % colors.length]);
+            x += w + 2;
+            if (x > W - 4) break;
+          }
+        }
+        if ((t >> 2) % 2) r(10 + ((rnd(Math.floor(t / 3) + 8) * 20) | 0), 25, 1, 2, "#C8F501");
+        break;
+      }
+      case "web": {
+        // navegador: barra de abas e uma página rolando
+        bg("#f4f1ea");
+        r(0, 0, W, 4, "#d9d4c8");
+        r(2, 1, 12, 3, "#f4f1ea");
+        r(15, 1, 10, 3, "#c9c3b5");
+        r(4, 5, 40, 2, "#e4e0d6");
+        const off = t % 30;
+        for (let i = 0; i < 8; i++) {
+          const y = 9 + i * 6 - off / 2;
+          if (y < 8 || y > H - 2) continue;
+          if (i % 3 === 0) r(4, y, 16, 4, ["#5ec8ff", "#ffb35c", "#8a6cc9"][i % 3]);
+          r(22, y, 22, 1, "#9aa0ab");
+          r(22, y + 2, 16, 1, "#c9c3b5");
+        }
+        break;
+      }
+      case "design": {
+        // quadro de design: formas aparecendo e o cursor andando
+        bg("#2a2d34");
+        r(0, 0, 6, H, "#1f2127");
+        r(W - 8, 0, 8, H, "#1f2127");
+        const s = t % 24;
+        r(10, 6, Math.min(12, s), 8, "#C8F501");
+        if (s > 8) r(24, 10, 10, Math.min(10, s - 8), "#ff7aa8");
+        if (s > 14) {
+          g.fillStyle = "#5ec8ff";
+          g.beginPath();
+          g.arc(20, 21, Math.min(4, (s - 14) / 2), 0, Math.PI * 2);
+          g.fill();
+        }
+        const cx = 10 + ((Math.sin(t / 4) + 1) * 13) | 0;
+        const cy = 8 + ((Math.cos(t / 5) + 1) * 7) | 0;
+        r(cx, cy, 1, 3, "#ffffff");
+        r(cx, cy, 3, 1, "#ffffff");
+        break;
+      }
+      case "music": {
+        // equalizador
+        bg("#121212");
+        for (let i = 0; i < 11; i++) {
+          const h = 3 + ((Math.abs(Math.sin(t / 2 + i * 1.7)) * 16) | 0);
+          r(3 + i * 4, H - 5 - h, 3, h, i % 3 ? "#1ed760" : "#C8F501");
+        }
+        r(3, H - 3, 42, 1, "#3a3a3a");
+        r(3, H - 3, (t * 2) % 42, 1, "#ffffff");
+        break;
+      }
+      case "chat": {
+        // conversa: balões chegando
+        bg("#e9e4da");
+        const n = (t >> 3) % 6;
+        for (let i = 0; i < 5; i++) {
+          const k = i + n;
+          const mine = rnd(k) > 0.5;
+          const w = 10 + ((rnd(k + 3) * 14) | 0);
+          const y = 2 + i * 5;
+          r(mine ? W - w - 3 : 3, y, w, 4, mine ? "#c8f5a0" : "#ffffff");
+        }
+        if ((t >> 1) % 3 === 0) r(5, 25, 1, 1, "#888");
+        break;
+      }
+      case "sheet": {
+        // planilha: células sendo preenchidas e um gráfico
+        bg("#ffffff");
+        for (let y = 0; y < H; y += 3) r(0, y, W, 1, "#e3e3e3");
+        for (let x = 0; x < W; x += 8) r(x, 0, 1, H, "#e3e3e3");
+        const fill = t % 40;
+        for (let i = 0; i < Math.min(fill, 30); i++) r(1 + (i % 3) * 8, 1 + Math.floor(i / 3) * 3, 6, 1, i % 3 === 2 ? "#27ae60" : "#5d606c");
+        for (let i = 0; i < 4; i++) r(30 + i * 4, H - 2 - ((rnd(i) * 12) | 0) - 3, 3, ((rnd(i) * 12) | 0) + 3, "#3b6fc0");
+        break;
+      }
+      case "game": {
+        // jogo: chão rolando e um bonequinho pulando
+        bg("#5ec8ff");
+        r(0, 20, W, 8, "#27ae60");
+        for (let i = 0; i < 6; i++) r(((i * 11 - t) % 60 + 60) % 60 - 6, 20, 4, 2, "#1e8449");
+        const jy = Math.abs(Math.sin(t / 3)) * 7;
+        r(14, 15 - jy, 4, 5, "#e74c3c");
+        r(((40 - t) % 52 + 52) % 52, 17, 4, 3, "#6e4a32");
+        break;
+      }
+      case "video": {
+        // edição de vídeo: timeline correndo
+        bg("#1d1f24");
+        r(4, 2, 40, 14, "#3b4252");
+        r(4 + ((t * 2) % 40), 2, 1, 22, "#ff5a65");
+        r(4, 18, 40, 2, "#8a6cc9");
+        r(4, 21, 28, 2, "#5ec8ff");
+        r(10, 24, 30, 2, "#ffb35c");
+        break;
+      }
+      default: {
+        // trabalho genérico: janelas e uma barra de progresso
+        bg("#1d2433");
+        r(3, 3, 26, 14, "#5ec8ff");
+        r(31, 3, 14, 6, "#C8F501");
+        r(31, 11, 14, 6, "#ffd35c");
+        r(3, 21, 42, 2, "#2c3e5a");
+        r(3, 21, (t % 42) + 1, 2, "#C8F501");
+      }
+    }
+  }
+}
 
 /** Taco de sinuca (no espaço do corpo, que já tem a escala do personagem). */
 function cueMesh(): THREE.Object3D {
@@ -269,7 +500,16 @@ export class Avatar {
     this.setHold(this.extra.hold ?? null);
     const act = this.extra.activity;
     this.activityEl.classList.toggle("hidden", !act?.app);
-    if (act?.app) this.activityEl.textContent = act.app;
+    if (act?.app) {
+      const kind = appKind(act.app, act.title);
+      const txt = activityText(act);
+      if (this.activityEl.dataset.k !== kind + txt) {
+        this.activityEl.dataset.k = kind + txt;
+        this.activityEl.className = `activity-tag ak-${kind}`;
+        this.activityEl.innerHTML = `<i class="ak">${icon(APP_KINDS[kind].ic, 11, 2.4)}</i><span></span>`;
+        this.activityEl.querySelector("span")!.textContent = txt;
+      }
+    }
     this.label.classList.toggle("cam-on", !!this.extra.cam);
     if (!this.isMe) this.sitting = !!this.extra.sit;
     this.setPool(this.extra.pool ?? null);
@@ -346,7 +586,7 @@ export class Avatar {
     const e = EMOTES.find((x) => x[0] === name);
     if (!e) return;
     this.emote = { name, until: performance.now() + 2600 };
-    this.emoteEl.textContent = e[1];
+    this.emoteEl.innerHTML = icon(e[1], 26, 2.2);
     this.emoteEl.classList.remove("hidden");
     this.emoteEl.classList.remove("pop");
     void this.emoteEl.offsetWidth;
@@ -375,7 +615,10 @@ export class Avatar {
 
   setStatus(s: string) {
     this.info.status = s;
-    this.statusEl.textContent = s;
+    const kind = statusKind(s);
+    this.statusEl.className = `status st-${kind}`;
+    this.statusEl.innerHTML = `<i class="sk">${icon(STATUS_KINDS[kind].ic, 11, 2.4)}</i><span></span>`;
+    this.statusEl.querySelector("span")!.textContent = s;
     this.statusEl.style.display = s ? "" : "none";
   }
 
@@ -644,7 +887,27 @@ export class World {
   /** Alguém entrou na sala onde eu estou. */
   onEnterMyRoom?: (id: string) => void;
   private wallLinks = new Map<string, WallLinks>();
-  private doors: { pivots: THREE.Object3D[]; sign: number[]; x: number; z: number; zone: string; open: number; sounding?: boolean; npc?: boolean }[] = [];
+  private doors: { pivots: THREE.Object3D[]; sign: number[]; x: number; z: number; zone: string; open: number; sounding?: boolean; npc?: boolean; rect?: { x0: number; x1: number; z0: number; z1: number }; lockMark?: THREE.Object3D }[] = [];
+  /** Salas com a porta trancada (reunião importante) e as que eu posso abrir mesmo assim. */
+  /** Telas dos computadores: animam quando alguém senta na mesa. */
+  private screenFx = new ScreenFx();
+  private screens: { mesh: THREE.Mesh; orig: THREE.Material; dim: THREE.Material; x: number; z: number }[] = [];
+  private screenScan = 0;
+  private screenTick = 0;
+  private screenItems = -1;
+  private dimMats = new Map<THREE.Material, THREE.Material>();
+  lockedZones = new Set<string>();
+  lockPass = new Set<string>();
+  private doorLocked(zone: string) {
+    return this.lockedZones.has(zone) && !this.lockPass.has(zone);
+  }
+  /** Porta trancada perto de mim (para "bater na porta"). */
+  lockedDoorNear(r = 2.4): string | null {
+    const me = this.me?.root.position;
+    if (!me) return null;
+    for (const dr of this.doors) if (this.doorLocked(dr.zone) && Math.hypot(me.x - dr.x, me.z - dr.z) < r) return dr.zone;
+    return null;
+  }
   /** Uma porta começou a abrir (distância até mim, para o som). */
   onDoorOpen?: (dist: number, npc: boolean) => void;
   /** Uma porta terminou de fechar (distância até mim, para o som). */
@@ -1210,7 +1473,30 @@ export class World {
             // verga em cima da porta (só nas paredes inteiras)
             if (tall) frame.add(wallSegment(open + 0.12, WALL_H - h, h, false));
             const leafW = open / 2 - 0.01;
-            const door = { pivots: [] as THREE.Object3D[], sign: [] as number[], x: cx, z: cz, zone: zn.id, open: 0, sounding: false };
+            const tt = (WALL_T + 0.06) / 2;
+            // cadeado vermelho dos dois lados (aparece com a porta trancada)
+            const lockMark = new THREE.Group();
+            const lockRed = new THREE.MeshToonMaterial({ color: 0xc0392b });
+            for (const fz of [-1, 1]) {
+              const body = new THREE.Mesh(geo.box(0.16, 0.13, 0.04), lockRed);
+              body.position.set(0, Math.min(1.25, h * 0.62), fz * 0.07);
+              const shackle = new THREE.Mesh(geo.box(0.1, 0.08, 0.03), metal);
+              shackle.position.set(0, Math.min(1.25, h * 0.62) + 0.1, fz * 0.07);
+              lockMark.add(body, shackle);
+            }
+            lockMark.visible = false;
+            frame.add(lockMark);
+            const door = {
+              pivots: [] as THREE.Object3D[],
+              sign: [] as number[],
+              x: cx,
+              z: cz,
+              zone: zn.id,
+              open: 0,
+              sounding: false,
+              lockMark,
+              rect: ln.alongX ? { x0: cx - open / 2, x1: cx + open / 2, z0: cz - tt, z1: cz + tt } : { x0: cx - tt, x1: cx + tt, z0: cz - open / 2, z1: cz + open / 2 },
+            };
             for (const side of [-1, 1]) {
               const pivot = new THREE.Group();
               pivot.position.set(side * (open / 2), 0, 0);
@@ -1241,14 +1527,72 @@ export class World {
     }
   }
 
+  /** Acha as telas dos computadores (de novo quando os móveis mudam). */
+  private scanScreens() {
+    for (const sc of this.screens) if (sc.mesh.material !== sc.orig) sc.mesh.material = sc.orig;
+    this.screens = [];
+    const set = new Set(SCREEN_MATS);
+    const v = new THREE.Vector3();
+    this.itemGroup.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || Array.isArray(m.material) || !set.has(m.material)) return;
+      let dim = this.dimMats.get(m.material);
+      if (!dim) {
+        // tela em espera: a mesma imagem bem apagada
+        const src = m.material as THREE.MeshToonMaterial;
+        const d = src.clone();
+        d.color = new THREE.Color(0.32, 0.34, 0.4);
+        d.userData.shared = true;
+        dim = d;
+        this.dimMats.set(m.material, d);
+      }
+      m.getWorldPosition(v);
+      this.screens.push({ mesh: m, orig: m.material, dim, x: v.x, z: v.z });
+    });
+  }
+
+  /** Alguém sentado perto da tela: ela liga e mostra o app que a pessoa usa; sem ninguém, fica em espera. */
+  private updateScreens() {
+    const now = performance.now();
+    if (now - this.screenTick < 125) return;
+    this.screenTick = now;
+    const n = this.itemGroup.children.length;
+    if (n !== this.screenItems || now - this.screenScan > 5000) {
+      this.screenItems = n;
+      this.screenScan = now;
+      this.scanScreens();
+    }
+    if (!this.screens.length) return;
+    const seated: { x: number; z: number; kind: AppKind }[] = [];
+    for (const a of [this.me, ...this.others.values()]) {
+      if (!a || !a.sitting || (a !== this.me && !this.sameLevel(a))) continue;
+      const act = a.extra?.activity;
+      seated.push({ x: a.root.position.x, z: a.root.position.z, kind: act?.app ? appKind(act.app, act.title) : "work" });
+    }
+    for (const sc of this.screens) {
+      let kind: AppKind | null = null;
+      for (const p of seated)
+        if (Math.hypot(p.x - sc.x, p.z - sc.z) < 1.35) {
+          kind = p.kind;
+          break;
+        }
+      const want = kind ? this.screenFx.get(kind) : sc.dim;
+      if (sc.mesh.material !== want) sc.mesh.material = want;
+    }
+    this.screenFx.tick();
+  }
+
   /** Porta abre quando alguém está a menos de 1,6 m dela; fecha sozinha depois. */
   private updateDoors(dt: number) {
     if (!this.doors.length) return;
     const people = [this.me, ...[...this.others.values()].filter((a) => this.sameLevel(a))].filter(Boolean).map((a) => a!.root.position);
     const ze = !this.level && this.janitor?.avatar.root.visible ? this.janitor.avatar.root.position : null;
     for (const dr of this.doors) {
-      const human = people.some((p) => Math.hypot(p.x - dr.x, p.z - dr.z) < 1.6);
-      const near = human || (!!ze && Math.hypot(ze.x - dr.x, ze.z - dr.z) < 1.6);
+      const locked = this.lockedZones.has(dr.zone);
+      if (dr.lockMark) dr.lockMark.visible = locked;
+      // trancada: só abre para quem está do lado de dentro (ou tem passe)
+      const human = people.some((p) => Math.hypot(p.x - dr.x, p.z - dr.z) < 1.6 && (!locked || this.zoneAt(p.x, p.z)?.id === dr.zone || (p === this.me?.root.position && !this.doorLocked(dr.zone))));
+      const near = human || (!locked && !!ze && Math.hypot(ze.x - dr.x, ze.z - dr.z) < 1.6);
       // porta aberta só pelo Seu Zé: som bem baixinho (ele passa o dia abrindo porta)
       if (near && dr.open < 0.05 && !dr.sounding) dr.npc = !human;
       const target = near ? 1 : 0;
@@ -1377,6 +1721,11 @@ export class World {
     for (const b of this.doorBlockers) {
       if (x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1) return true;
     }
+    if (this.lockedZones.size)
+      for (const dr of this.doors) {
+        const b = dr.rect;
+        if (b && this.doorLocked(dr.zone) && x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1) return true;
+      }
     return false;
   }
 
@@ -2357,6 +2706,7 @@ export class World {
       an.bug.rotation.y = twitch + Math.sin(tt * 0.6) * 0.15;
     }
     this.updateDoors(dt);
+    this.updateScreens();
     this.updatePool(dt);
     this.onFrame?.();
   }
@@ -2527,4 +2877,35 @@ export class Janitor {
     this.avatar.dispose();
     this.sign.removeFromParent();
   }
+}
+
+/** Navegadores: no lugar do nome do programa, mostra a aba aberta (vem do título da janela). */
+const BROWSERS: [RegExp, string][] = [
+  [/chrome/i, "Chrome"],
+  [/edge/i, "Edge"],
+  [/firefox/i, "Firefox"],
+  [/opera/i, "Opera"],
+  [/brave/i, "Brave"],
+  [/vivaldi/i, "Vivaldi"],
+  [/arc/i, "Arc"],
+  [/safari/i, "Safari"],
+];
+
+/** Título da aba sem o nome do navegador e do perfil ("Gmail - Google Chrome" → "Gmail"). */
+export function browserTab(app: string, title: string): { browser: string; tab: string } | null {
+  const b = BROWSERS.find(([re]) => re.test(app));
+  if (!b || !title) return null;
+  let t = title.trim();
+  // tira " - Google Chrome", " — Mozilla Firefox", " - Microsoft Edge", " - Pessoal - Microsoft​ Edge"...
+  t = t.replace(/\s+[-–—]\s+(google chrome|mozilla firefox|firefox|microsoft\S*\s*edge|opera|brave|vivaldi|arc|safari)\s*$/i, "");
+  t = t.replace(/\s+[-–—]\s+(perfil|profile|pessoal|trabalho|work|pessoa \d+|person \d+)[^-–—]*$/i, "");
+  t = t.replace(/\s+e mais \d+ páginas?$/i, "");
+  if (!t || /^(nova guia|new tab|nova aba)$/i.test(t)) return { browser: b[1], tab: "Nova aba" };
+  return { browser: b[1], tab: t.length > 60 ? t.slice(0, 57) + "…" : t };
+}
+
+/** Texto da atividade: navegador mostra a aba; outros programas, o nome. */
+export function activityText(act: { app?: string; title?: string }) {
+  const bt = browserTab(act.app ?? "", act.title ?? "");
+  return bt ? `${bt.browser} · ${bt.tab}` : act.app ?? "";
 }

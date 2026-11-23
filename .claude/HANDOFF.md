@@ -392,3 +392,32 @@ Identity no LiveKit = id do peer no servidor.
     playVideo; 14 s → próxima da playlist; (4) setVolume só quando muda; (5) player 200x200 (qualidade baixa);
     (6) app instalado: tirado `--renderer-process-limit=1` (o iframe do YouTube dividia o processo com a cena 3D).
   - Estágio web da 0.16.1: base c313f78b8ef9 (fonte 0.16.0) + diff do radio.ts.
+
+## 0.16.2 — atividade mostra a aba do navegador
+- world.ts: `activityText`/`browserTab` limpam o título da aba (tira " - Google Chrome", perfil etc.) e mostram no painel da equipe e no cartão da pessoa.
+
+## 0.16.3 — playlist do YouTube sem "Invalid video id"
+- radio.ts: o player é criado com `playerVars.listType="playlist"` + `list` (videoId só se o link tiver `v=`). Se der erro 2 ou se em 4s não houver playlist carregada, faz `loadPlaylist` uma vez.
+- Mensagem amigável: playlist precisa ser pública/não listada; "Mix" (lista RD…) não pode ser incorporada.
+- Deploy: imagem verkz-office-server:0.16.3 (base web c313f78b8ef9 + diffs main/world/radio; final FROM 0.16.2). Stack 4 atualizada.
+
+## App 0.6.6 / servidor 0.17.0
+- Regra: TODA mudança sobe a versão (tauri.conf.json, package.json, Cargo.toml) — sem isso o atualizador não instala.
+- Regra: nada de emoji como ícone. Só ícones de traço (Lucide, em icons.ts). Emotes, soundpad, itens e avisos foram trocados.
+- Rádio: controles para todos na sala (voltar/recomeçar, pausar/tocar, próxima). Estado em RadioState: paused/pos/idx/ep.
+  Quem pede manda msg "radio_ctl" para o dono do rádio; o dono aplica e republica (applyRadioCtl). Spotify: só pausar/tocar.
+- Modelos de som: 4 do Kenney Furniture Kit (public/models/kenney-furniture, CC0) + 6 desenhados (jukebox, toca-discos,
+  gramofone, vitrola de chão, soundbar, monitores de estúdio). Os modelos "sumiam" porque o app instalado era antigo (mesma versão).
+- Gestão (servidor): Join leva `device` (id do aparelho). Kick {id, ban}, Admit {rid, ok}, Bans, Unban, Gate {approval}.
+  data/gestao.json guarda bloqueados e "aprovar cada entrada". Sala de espera: o servidor segura o Join e manda "knock_office"
+  para a gestão; sem gestão online entra direto. Expulsar fecha a conexão (CLOSE_SIGNAL no escritor).
+- Porta trancada: extra.lock = id da sala (vale enquanto quem trancou está dentro). world.lockedZones/lockPass bloqueiam o vão
+  da porta (blocked) e mostram o cadeado. Chip no topo: Trancar/Destrancar/Bater na porta; msgs knock/door_pass/door_no/door_unlock.
+- Títulos das salas: botão "Títulos" no seletor de visão (tecla T).
+- Telas: world.updateScreens liga a tela do PC com alguém sentado a até 1,35 m (ScreenFx: code/web/design/music/chat/sheet/game/video/work
+  pelo app em uso); sem ninguém, tela apagada.
+- Status e atividade: ícone animado por tipo (statusKind/appKind em world.ts; CSS .st-* e .ak-*).
+- Linux: compilador.bat opção 3 compila no WSL Ubuntu-22.04 (GLIBC 2.35) via compilador-linux.sh --wsl (copia para ~/verkz-office-build
+  e devolve os instaladores). O GitHub ficou só para o Mac.
+- Deploy 0.17.0: web = etapa web da 0.16.3 (ab92c2a0ab30) + diffs; Rust = etapa build da 0.16.0 (08def30a335b) + main.rs com diff,
+  cargo --offline; GLBs baixados no build do GitHub (Xiul109/SiSHoDit @49a5c6a).

@@ -6,6 +6,7 @@ import { toon } from "./toon";
 /**
  * Modelos 3D prontos (CC0):
  *  - KayKit Furniture Bits e Restaurant Bits — Kay Lousberg (kaylousberg.com)
+ *  - Kenney Furniture Kit — kenney.nl (rádio, caixas de som e TV antiga)
  *  - Kenney Nature Kit — kenney.nl (cópias otimizadas do pacote @netforge/asset-library-files)
  * Licenças em public/models/*.
  */
@@ -81,6 +82,12 @@ export const MODEL_FILES: Record<string, string> = {
   k_towelrail: "kaykit-restaurant/towelrail.gltf",
   k_jar: "kaykit-restaurant/jar_A_large.gltf",
   k_dishrack: "kaykit-restaurant/dishrack_plates.gltf",
+  // ---- som (Kenney Furniture Kit, CC0)
+  kf_radio: "kenney-furniture/radio.glb",
+  kf_speaker: "kenney-furniture/speaker.glb",
+  kf_speaker_small: "kenney-furniture/speakerSmall.glb",
+  kf_tv_vintage: "kenney-furniture/televisionVintage.glb",
+  kf_tv_antenna: "kenney-furniture/televisionAntenna.glb",
   tree_oak: "kenney/tree_oak.glb",
   tree_fat: "kenney/tree_fat.glb",
   tree_pine: "kenney/tree_pine.glb",

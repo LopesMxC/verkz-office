@@ -71,6 +71,8 @@ struct Peer {
 struct Conn {
     peer: Peer,
     admin: bool,
+    /// Identificador do aparelho (gerado pelo app): é o que o bloqueio da gestão usa.
+    device: String,
     tx: mpsc::UnboundedSender<String>,
 }
 
@@ -79,7 +81,30 @@ pub(crate) struct AppState {
     conns: Mutex<HashMap<String, Conn>>,
     layout: RwLock<Value>,
     history: Mutex<Vec<Value>>,
+    /// Gestão de entrada: bloqueados e "aprovar cada entrada" (salvo em gestao.json).
+    gestao: Mutex<Gestao>,
+    /// Pedidos de entrada esperando a gestão (sala de espera).
+    pending: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
 }
+
+#[derive(Clone, Serialize, Deserialize, Default)]
+struct Gestao {
+    #[serde(default)]
+    bans: Vec<Ban>,
+    #[serde(default)]
+    approval: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Ban {
+    #[serde(default)]
+    device: String,
+    name: String,
+    at: u64,
+}
+
+/// Mensagem interna para o escritor do WebSocket fechar a conexão (expulsar).
+const CLOSE_SIGNAL: &str = "\u{0}close";
 
 pub(crate) type Shared = Arc<AppState>;
 
@@ -87,7 +112,15 @@ pub(crate) type Shared = Arc<AppState>;
 #[derive(Deserialize, Debug)]
 #[serde(tag = "t", rename_all = "snake_case")]
 enum ClientMsg {
-    Join { key: String, name: String, #[serde(default)] color: String, #[serde(default)] look: Value, #[serde(default)] admin_key: String },
+    Join { key: String, name: String, #[serde(default)] color: String, #[serde(default)] look: Value, #[serde(default)] admin_key: String, #[serde(default)] device: String },
+    /// Gestão: tira a pessoa do escritório (e, com `ban`, bloqueia a entrada dela).
+    Kick { id: String, #[serde(default)] ban: bool },
+    /// Gestão: responde a um pedido de entrada (sala de espera).
+    Admit { rid: String, ok: bool },
+    /// Gestão: lista de bloqueados e se a entrada precisa de aprovação.
+    Bans,
+    Unban { #[serde(default)] device: String, #[serde(default)] name: String },
+    Gate { approval: bool },
     Look { look: Value },
     Move { x: f32, z: f32, dir: f32, moving: bool, zone: Option<String> },
     Chat { text: String, zone: Option<String> },
@@ -187,6 +220,23 @@ impl AppState {
         }
     }
 
+    async fn save_gestao(&self) {
+        let g = self.gestao.lock().await.clone();
+        let path = self.cfg.data_dir.join("gestao.json");
+        if let Err(e) = tokio::fs::write(&path, serde_json::to_vec_pretty(&g).unwrap()).await {
+            warn!("não consegui salvar {path:?}: {e}");
+        }
+    }
+
+    async fn gestao_view(&self) -> Value {
+        let g = self.gestao.lock().await;
+        json!({"t":"bans","list":g.bans,"approval":g.approval})
+    }
+
+    async fn is_admin(&self, id: &str) -> bool {
+        self.conns.lock().await.get(id).map(|c| c.admin).unwrap_or_default()
+    }
+
     async fn save_layout(&self, layout: Value) {
         *self.layout.write().await = layout.clone();
         let path = self.cfg.data_dir.join("layout.json");
@@ -207,6 +257,10 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
 
     let mut writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
+            if m == CLOSE_SIGNAL {
+                let _ = sink.send(Message::Close(None)).await;
+                break;
+            }
             if sink.send(Message::Text(m.into())).await.is_err() {
                 break;
             }
@@ -227,15 +281,58 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
         };
 
         match (parsed, &my_id) {
-            (ClientMsg::Join { key, name, color, look, admin_key }, None) => {
+            (ClientMsg::Join { key, name, color, look, admin_key, device }, None) => {
                 let is_admin = !st.cfg.admin_key.is_empty() && admin_key == st.cfg.admin_key;
                 // sem espaço sobrando (copiar e colar a chave)
                 if key.trim() != st.cfg.office_key.trim() {
                     let _ = tx.send(json!({"t":"error","msg":"Chave do escritório inválida"}).to_string());
                     break;
                 }
-                let id = uuid::Uuid::new_v4().to_string();
                 let name: String = name.trim().chars().take(32).collect();
+                let device: String = device.trim().chars().take(64).collect();
+                // bloqueado pela gestão (pelo aparelho ou pelo nome)
+                if !is_admin {
+                    let lname = name.to_lowercase();
+                    let banned = st.gestao.lock().await.bans.iter().any(|b| (!device.is_empty() && b.device == device) || (!lname.is_empty() && b.name.to_lowercase() == lname));
+                    if banned {
+                        let _ = tx.send(json!({"t":"error","msg":"A gestão bloqueou sua entrada neste escritório."}).to_string());
+                        break;
+                    }
+                }
+                // sala de espera: com "aprovar cada entrada" ligado, alguém da gestão libera (sem gestão online, entra direto)
+                if !is_admin && st.gestao.lock().await.approval {
+                    let admins: Vec<mpsc::UnboundedSender<String>> = st.conns.lock().await.values().filter(|c| c.admin).map(|c| c.tx.clone()).collect();
+                    if !admins.is_empty() {
+                        let rid = uuid::Uuid::new_v4().to_string();
+                        let (otx, mut orx) = tokio::sync::oneshot::channel::<bool>();
+                        st.pending.lock().await.insert(rid.clone(), otx);
+                        let shown = if name.is_empty() { "Alguém".to_string() } else { name.clone() };
+                        let knock = json!({"t":"knock_office","rid":rid,"name":shown}).to_string();
+                        for a in &admins {
+                            let _ = a.send(knock.clone());
+                        }
+                        // avisa de tempos em tempos (o app derruba conexão muda depois de 50 s)
+                        let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+                        let limit = tokio::time::sleep(std::time::Duration::from_secs(180));
+                        tokio::pin!(limit);
+                        let ok = loop {
+                            tokio::select! {
+                                r = &mut orx => break r.unwrap_or(false),
+                                _ = tick.tick() => { let _ = tx.send(json!({"t":"waiting"}).to_string()); }
+                                _ = &mut limit => break false,
+                            }
+                        };
+                        st.pending.lock().await.remove(&rid);
+                        for a in &admins {
+                            let _ = a.send(json!({"t":"knock_done","rid":rid}).to_string());
+                        }
+                        if !ok {
+                            let _ = tx.send(json!({"t":"error","msg":"A gestão não liberou sua entrada agora. Tente de novo daqui a pouco."}).to_string());
+                            break;
+                        }
+                    }
+                }
+                let id = uuid::Uuid::new_v4().to_string();
                 let peer = Peer {
                     id: id.clone(),
                     name: if name.is_empty() { "Sem nome".into() } else { name },
@@ -267,7 +364,7 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                 });
                 let _ = tx.send(welcome.to_string());
                 st.broadcast(&json!({"t":"peer_join","peer":peer}), None).await;
-                st.conns.lock().await.insert(id.clone(), Conn { peer, admin: is_admin, tx: tx.clone() });
+                st.conns.lock().await.insert(id.clone(), Conn { peer, admin: is_admin, device, tx: tx.clone() });
                 info!("entrou: {id}");
                 my_id = Some(id);
             }
@@ -408,6 +505,56 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                     continue;
                 }
                 st.broadcast(&json!({"t":"fx","from":id,"data":data}), Some(id)).await;
+            }
+            (ClientMsg::Kick { id: target, ban }, Some(id)) => {
+                if !st.is_admin(id).await || &target == id {
+                    continue;
+                }
+                let mut banned = None;
+                if let Some(c) = st.conns.lock().await.get(&target) {
+                    if ban {
+                        banned = Some(Ban { device: c.device.clone(), name: c.peer.name.clone(), at: now() });
+                    }
+                    let msg = if ban { "A gestão tirou você do escritório e bloqueou sua entrada." } else { "A gestão tirou você do escritório." };
+                    let _ = c.tx.send(json!({"t":"kicked","msg":msg}).to_string());
+                    let _ = c.tx.send(CLOSE_SIGNAL.to_string());
+                }
+                if let Some(b) = banned {
+                    st.gestao.lock().await.bans.push(b);
+                    st.save_gestao().await;
+                }
+                info!("gestão {id} tirou {target} (bloqueio: {ban})");
+                let v = st.gestao_view().await;
+                let _ = tx.send(v.to_string());
+            }
+            (ClientMsg::Admit { rid, ok }, Some(id)) => {
+                if st.is_admin(id).await {
+                    if let Some(s) = st.pending.lock().await.remove(&rid) {
+                        let _ = s.send(ok);
+                    }
+                }
+            }
+            (ClientMsg::Bans, Some(id)) => {
+                if st.is_admin(id).await {
+                    let v = st.gestao_view().await;
+                    let _ = tx.send(v.to_string());
+                }
+            }
+            (ClientMsg::Unban { device, name }, Some(id)) => {
+                if st.is_admin(id).await {
+                    st.gestao.lock().await.bans.retain(|b| !(b.device == device && b.name == name));
+                    st.save_gestao().await;
+                    let v = st.gestao_view().await;
+                    let _ = tx.send(v.to_string());
+                }
+            }
+            (ClientMsg::Gate { approval }, Some(id)) => {
+                if st.is_admin(id).await {
+                    st.gestao.lock().await.approval = approval;
+                    st.save_gestao().await;
+                    let v = st.gestao_view().await;
+                    let _ = tx.send(v.to_string());
+                }
             }
             (ClientMsg::Ping, Some(_)) => {
                 let _ = tx.send(json!({"t":"pong"}).to_string());
@@ -585,7 +732,13 @@ async fn main() {
         tokio::fs::write(&old, serde_json::to_vec(&layout).unwrap()).await.ok();
     }
 
+    let gestao: Gestao = match tokio::fs::read(cfg.data_dir.join("gestao.json")).await {
+        Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
+        Err(_) => Gestao::default(),
+    };
     let state = Arc::new(AppState {
+        gestao: Mutex::new(gestao),
+        pending: Mutex::new(HashMap::new()),
         cfg,
         conns: Mutex::new(HashMap::new()),
         layout: RwLock::new(layout),

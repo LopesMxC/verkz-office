@@ -1,5 +1,5 @@
 import "./style.css";
-import { World, PeerInfo, EMOTES, HOLD_ITEMS, SEATS, GraphicStyle, ViewMode, GfxOptions } from "./world";
+import { World, PeerInfo, EMOTES, HOLD_ITEMS, SEATS, GraphicStyle, ViewMode, GfxOptions, activityText, browserTab } from "./world";
 import { Net } from "./net";
 import { Media, MediaPrefs, RANGES } from "./media";
 import { Editor } from "./editor";
@@ -319,6 +319,7 @@ function start() {
     // ?debug expõe o mundo no console (útil para testes e capturas)
     if (new URLSearchParams(location.search).has("debug")) (window as any).__office = { world, media };
     setInterval(renderPeople, 1000);
+    setInterval(updateLocks, 400);
     startIntegrations();
     startActivity();
     startUpdates();
@@ -330,16 +331,45 @@ function start() {
     setInterval(applyEnv, 10 * 60_000);
   }
 
-  net = new Net(prefs.server, () => ({ t: "join", key: prefs.key.trim(), name: prefs.name, color: lookColor(prefs.look), look: prefs.look, admin_key: prefs.adminKey.trim() }));
+  net = new Net(prefs.server, () => ({ t: "join", key: prefs.key.trim(), name: prefs.name, color: lookColor(prefs.look), look: prefs.look, admin_key: prefs.adminKey.trim(), device: deviceId() }));
   net.on("error", (m) => {
+    waitingEl?.remove();
+    waitingEl = null;
     net.close();
     showLogin(m.msg);
+  });
+  // a gestão tirou a pessoa do escritório: não reconecta sozinho
+  net.on("kicked", (m) => {
+    net.close();
+    showLogin(m.msg);
+  });
+  // sala de espera: a gestão precisa liberar a entrada
+  net.on("waiting", () => {
+    if (waitingEl) return;
+    waitingEl = document.createElement("div");
+    waitingEl.className = "waiting-cover";
+    waitingEl.innerHTML = `<div class="panel waiting-box">${icon("door-closed", 28, 1.6)}<div class="t-m">Esperando a gestão liberar sua entrada</div><div class="t-s c3">Avisamos a gestão que você chegou. Isso costuma levar poucos segundos.</div><button class="btn ghost sm" data-cancel>Cancelar</button></div>`;
+    $("[data-cancel]", waitingEl).addEventListener("click", () => {
+      waitingEl?.remove();
+      waitingEl = null;
+      net.close();
+      showLogin();
+    });
+    document.body.appendChild(waitingEl);
+  });
+  net.on("knock_office", (m) => showEntryRequest(String(m.rid), String(m.name)));
+  net.on("knock_done", (m) => entryCards.get(String(m.rid))?.remove());
+  net.on("bans", (m) => {
+    gestaoState = { list: m.list ?? [], approval: !!m.approval };
+    renderGestao();
   });
   net.on("notice", (m) => {
     toast(m.msg, true);
     if (m.layout) world.setLayout(m.layout as Layout);
   });
   net.on("welcome", async (m) => {
+    waitingEl?.remove();
+    waitingEl = null;
     // não deixa a entrada travada se algum modelo 3D demorar (ele aparece em caixa simples)
     await Promise.race([modelsReady, new Promise((r) => setTimeout(r, 15_000))]);
     myId = m.id;
@@ -1466,6 +1496,10 @@ function openAvatarMenu(id: string, x: number, y: number, isMe: boolean) {
     ],
     ["activity", "Ver atividade", () => openPersonCard(id, x, y)],
   ];
+  if (isAdmin) {
+    items.push(["log-out", "Tirar do escritório", () => kickPerson(id, false)]);
+    items.push(["ban", "Tirar e bloquear a entrada", () => kickPerson(id, true)]);
+  }
   menu(x, y, a.info.name, items, (box) => volumeControl(id, box));
 }
 
@@ -1491,8 +1525,8 @@ function openPersonCard(id: string, x: number, y: number) {
       <div class="meta"><div class="t-m">${esc(a.info.name)}${id === myId ? " (você)" : ""}</div><div class="t-s c2">${esc(a.info.status || zn)}</div></div></div>
     ${a.extra.role ? `<div class="pc-row"><span class="label">Cargo</span><span>${esc(a.extra.role)}</span></div>` : ""}
     <div class="pc-row"><span class="label">Onde</span><span>${esc(zn)}</span></div>
-    <div class="pc-row"><span class="label">Atividade</span><span>${act?.app ? `${esc(act.app)}${act.title ? `<br><span class="t-s c2">${esc(act.title)}</span>` : ""}<br><span class="t-s c3">${since(act.since)}${act.share === false && isAdmin ? " · visível só para a gestão" : ""}</span>` : '<span class="c3">Não compartilhada</span>'}</span></div>
-    ${hold ? `<div class="pc-row"><span class="label">Agora</span><span>${hold.emoji} ${esc(hold.status)}</span></div>` : ""}
+    <div class="pc-row"><span class="label">Atividade</span><span>${act?.app ? `${esc(activityText(act))}${act.title && !browserTab(act.app, act.title) ? `<br><span class="t-s c2">${esc(act.title)}</span>` : ""}<br><span class="t-s c3">${since(act.since)}${act.share === false && isAdmin ? " · visível só para a gestão" : ""}</span>` : '<span class="c3">Não compartilhada</span>'}</span></div>
+    ${hold ? `<div class="pc-row"><span class="label">Agora</span><span>${icon(hold.ic, 14)} ${esc(hold.status)}</span></div>` : ""}
     ${a.extra.cam ? `<div class="pc-row"><span class="label">Câmera</span><span>Ligada</span></div>` : ""}
     ${id !== myId ? `<div class="pc-actions"><button class="btn primary sm" data-a="call">Chamar</button><button class="btn secondary sm" data-a="go">Ir até</button><button class="btn ghost sm" data-a="agenda">Agenda</button></div>` : ""}`;
   el.querySelector('[data-a="call"]')?.addEventListener("click", () => (el.remove(), callPerson(id)));
@@ -1553,6 +1587,28 @@ function onDirect(from: string, name: string, msg: any) {
     const close = !!(it && who && Math.hypot(who.target.x - it.x, who.target.z - it.z) < RADIO_REACH + 1);
     const v = Number(msg.vol);
     if (mine && mine.item === msg.item && close && v >= 0 && v <= 1) sendState({ radio: { ...mine, vol: v } });
+  } else if (msg.kind === "knock") {
+    showKnock(from, name, String(msg.zone));
+  } else if (msg.kind === "door_pass") {
+    doorPass.set(String(msg.zone), Date.now() + 120_000);
+    toast(`${name} abriu a porta`);
+    updateLocks();
+  } else if (msg.kind === "door_no") {
+    toast(`${name} não pode abrir agora`, true);
+  } else if (msg.kind === "door_unlock") {
+    if (world.me?.extra?.lock === msg.zone && world.currentZone?.id === msg.zone) {
+      sendState({ lock: null });
+      toast(`${name} destrancou a porta`);
+    }
+  } else if (msg.kind === "radio_ctl") {
+    // pausar / próxima / anterior pedido por alguém na mesma sala da caixa
+    const mine = world.me?.extra?.radio as RadioState | undefined;
+    const it = world.layout?.items.find((i) => i.id === msg.item);
+    const who = world.others.get(from);
+    if (mine && it && who && mine.item === msg.item && nearRadio(it, who.target.x, who.target.z)) {
+      applyRadioCtl(msg);
+      toast(`${name}: ${RADIO_ACT_LABEL[msg.act as RadioAct] ?? "mexeu no rádio"}`);
+    }
   } else if (msg.kind === "call_reply") {
     toast(msg.ok ? `${name} está vindo` : `${name} não pode agora`);
   } else if (msg.kind === "agenda_req") {
@@ -1604,7 +1660,7 @@ function togglePopover(id: string) {
     return;
   }
   if (popover === "emote") {
-    el.innerHTML = `<div class="label">Emotes · teclas 1–0</div><div class="emote-grid">${EMOTES.map(([id, emo, label], i) => `<button data-e="${id}" title="${esc(label)} (${(i + 1) % 10})"><span>${emo}</span><small>${esc(label)}</small></button>`).join("")}</div>`;
+    el.innerHTML = `<div class="label">Emotes · teclas 1–0</div><div class="emote-grid">${EMOTES.map(([id, emo, label], i) => `<button data-e="${id}" title="${esc(label)} (${(i + 1) % 10})"><span>${icon(emo, 22, 1.8)}</span><small>${esc(label)}</small></button>`).join("")}</div>`;
     el.querySelectorAll<HTMLElement>("[data-e]").forEach((b) => b.addEventListener("click", () => doEmote(b.dataset.e!)));
   } else renderPad(el);
 }
@@ -1620,7 +1676,7 @@ function doEmote(id: string) {
 async function renderPad(el: HTMLElement) {
   // se o banco local demorar (aba antiga segurando o IndexedDB), abre com os sons prontos mesmo
   const custom = await Promise.race([listCustom(), new Promise<PadSound[]>((r) => setTimeout(() => r([]), 1500))]);
-  const btn = (s: PadSound, rm = false) => `<button class="pad" data-p="${esc(s.id)}"><span>${s.emoji ?? "🔊"}</span><small>${esc(s.name)}</small>${rm ? `<i data-rm="${esc(s.id)}" title="Remover">×</i>` : ""}</button>`;
+  const btn = (s: PadSound, rm = false) => `<button class="pad" data-p="${esc(s.id)}"><span>${icon(s.ic ?? "volume", 22, 1.8)}</span><small>${esc(s.name)}</small>${rm ? `<i data-rm="${esc(s.id)}" title="Remover">×</i>` : ""}</button>`;
   el.innerHTML = `<div class="section-head"><span class="label">Soundpad</span><span class="t-s c3">Quem está perto ouve</span></div>
     <div class="pad-grid">${PAD_SOUNDS.map((s) => btn(s)).join("")}${custom.map((s) => btn(s, true)).join("")}
       <label class="pad add" title="Adicionar som (mp3/wav até 3 MB)">${icon("plus", 18)}<small>Adicionar</small><input type="file" accept="audio/*" hidden></label></div>
@@ -1681,7 +1737,7 @@ function checkHoldEnd() {
   if (!kind || !holdEnd || Date.now() < holdEnd) return;
   const it = HOLD_ITEMS[kind];
   setHolding(null);
-  if (it) toast(`${it.emoji} ${kind === "lanche" || kind === "marmita" ? `${it.label} acabou` : `Acabou ${kind === "agua" ? "a água" : kind === "cafe" ? "o café" : "o refrigerante"}`}`);
+  if (it) toast(`${kind === "lanche" || kind === "marmita" ? `${it.label} acabou` : `Acabou ${kind === "agua" ? "a água" : kind === "cafe" ? "o café" : "o refrigerante"}`}`);
 }
 setInterval(checkHoldEnd, 5000);
 
@@ -1706,7 +1762,7 @@ function nearItem(it: Item, then: () => void) {
 // o painel financeiro fica de fora: é o único que abre de qualquer lugar
 const ROOM_ITEMS = new Set([
   "cleiton", "coffee", "water", "fridge", "microwave", "elevator", "pool_table", "ping_pong", "speaker", "radio",
-  "p_radio_small", "p_boombox", "p_speaker_tower", "p_speaker_portable", "p_speaker_stage",
+  "p_radio_small", "p_boombox", "p_speaker_tower", "p_speaker_portable", "p_speaker_stage", "p_radio_retro", "p_speaker_pair", "p_speaker_shelf", "p_tv_vintage", "p_jukebox", "p_turntable", "p_gramophone", "p_radio_console", "p_soundbar", "p_studio_monitors",
   "photo_wall", "photo_big", "photo_easel", "photo_desk", "weather_panel", "goal_panel", "api_panel", "p_vending",
 ]);
 /** Distância máxima para usar um item quando os dois estão na área aberta (sem sala). */
@@ -1762,7 +1818,7 @@ function useItem(it: Item, x: number, y: number): boolean {
     nearItem(it, () => {
       kitchenSound(sound);
       setHolding(kind);
-      toast(`${HOLD_ITEMS[kind].emoji} ${HOLD_ITEMS[kind].label} na mão`);
+      toast(`${HOLD_ITEMS[kind].label} na mão`);
     });
   switch (it.type) {
     case "cleiton": {
@@ -1775,9 +1831,9 @@ function useItem(it: Item, x: number, y: number): boolean {
         "Cleiton: \"Sua opinião é muito importante para nós.\"",
       ];
       menu(x, y, "Ouvidoria · Cleiton", [
-        ["chat", "Fazer uma reclamação", () => nearItem(it, () => { notify("emote"); toast("🪳 Cleiton: \"Você tem 2 direitos: direito nenhum e nenhum direito.\""); })],
-        ["chat", "Pedir um protocolo", () => nearItem(it, () => { notify("emote"); toast("🪳 " + falas[Math.floor(Math.random() * falas.length)]); })],
-        ["plus", "Fazer um elogio", () => nearItem(it, () => { notify("emote"); toast("🪳 Cleiton ficou vermelho. Obrigado pelo elogio!"); })],
+        ["chat", "Fazer uma reclamação", () => nearItem(it, () => { notify("emote"); toast("Cleiton: \"Você tem 2 direitos: direito nenhum e nenhum direito.\""); })],
+        ["chat", "Pedir um protocolo", () => nearItem(it, () => { notify("emote"); toast(falas[Math.floor(Math.random() * falas.length)]); })],
+        ["plus", "Fazer um elogio", () => nearItem(it, () => { notify("emote"); toast("Cleiton ficou vermelho. Obrigado pelo elogio!"); })],
       ]);
       return true;
     }
@@ -1811,7 +1867,7 @@ function useItem(it: Item, x: number, y: number): boolean {
               setTimeout(() => {
                 kitchenSound("beep");
                 setHolding("marmita");
-                toast("🍱 Marmita pronta. Bom almoço!");
+                toast("Marmita pronta. Bom almoço!");
               }, 5000);
             }),
         ],
@@ -1831,6 +1887,16 @@ function useItem(it: Item, x: number, y: number): boolean {
     case "p_speaker_tower":
     case "p_speaker_portable":
     case "p_speaker_stage":
+    case "p_radio_retro":
+    case "p_speaker_pair":
+    case "p_speaker_shelf":
+    case "p_tv_vintage":
+    case "p_jukebox":
+    case "p_turntable":
+    case "p_gramophone":
+    case "p_radio_console":
+    case "p_soundbar":
+    case "p_studio_monitors":
       openRadioMenu(it, x, y);
       return true;
     case "photo_wall":
@@ -2069,7 +2135,7 @@ function renderTeam() {
             .map((a) => {
               const act = a.extra.activity;
               return `<div class="team-row" data-id="${a.info.id}"><span class="avatar" style="background:${lookColor(a.look)}">${esc(initials(a.info.name))}</span>
-              <div class="meta"><div class="nm">${esc(a.info.name)}</div><div class="st">${act?.app ? `<b>${esc(act.app)}</b>${act.title ? ` — ${esc(act.title)}` : ""}` : "Sem dados (app web ou versão antiga)"}</div><div class="t-s c3">${act?.app ? since(act.since) : ""}${act && act.share === false ? " · compartilhamento desligado" : ""}</div></div></div>`;
+              <div class="meta"><div class="nm">${esc(a.info.name)}</div><div class="st">${act?.app ? (browserTab(act.app, act.title ?? "") ? `<b>${esc(browserTab(act.app, act.title ?? "")!.browser)}</b> — ${esc(browserTab(act.app, act.title ?? "")!.tab)}` : `<b>${esc(act.app)}</b>${act.title ? ` — ${esc(act.title)}` : ""}`) : "Sem dados (app web ou versão antiga)"}</div><div class="t-s c3">${act?.app ? since(act.since) : ""}${act && act.share === false ? " · compartilhamento desligado" : ""}</div></div></div>`;
             })
             .join("")
         : `<div class="empty">Ninguém mais online.</div>`
@@ -2421,15 +2487,22 @@ function mountViewSwitch() {
   document.querySelector(".view-switch")?.remove();
   const el = document.createElement("div");
   el.className = "view-switch panel";
-  el.innerHTML = `<button data-m="escritorio" title="Modo escritório: o mapa (G)">${icon("building", 17)}<span>Escritório</span></button><button data-m="reuniao" title="Modo reunião: blocos em mosaico (G)">${icon("users", 17)}<span>Reunião</span></button><i class="vs-sep"></i><button data-v="iso" title="Visão isométrica 3D (V)">${icon("cube", 17)}<span>Isométrica</span></button><button data-v="aerea" title="Visão aérea 3D (V)">${icon("plan", 17)}<span>Aérea</span></button><button data-v="2d" title="Visão 2D, plana (V)">${icon("square", 17)}<span>2D</span></button>`;
+  el.innerHTML = `<button data-m="escritorio" title="Modo escritório: o mapa (G)">${icon("building", 17)}<span>Escritório</span></button><button data-m="reuniao" title="Modo reunião: blocos em mosaico (G)">${icon("users", 17)}<span>Reunião</span></button><i class="vs-sep"></i><button data-v="iso" title="Visão isométrica 3D (V)">${icon("cube", 17)}<span>Isométrica</span></button><button data-v="aerea" title="Visão aérea 3D (V)">${icon("plan", 17)}<span>Aérea</span></button><button data-v="2d" title="Visão 2D, plana (V)">${icon("square", 17)}<span>2D</span></button><i class="vs-sep"></i><button data-tags title="Mostrar ou ocultar o nome das salas (T)"><b class="tg-ic"></b><span>Títulos</span></button>`;
   const sync = () => {
     el.querySelectorAll<HTMLElement>("[data-v]").forEach((b) => b.classList.toggle("on", b.dataset.v === world.view));
     el.querySelectorAll<HTMLElement>("[data-m]").forEach((b) => b.classList.toggle("on", b.dataset.m === prefs.callMode));
     el.classList.toggle("meeting", prefs.callMode === "reuniao");
+    const tg = el.querySelector<HTMLElement>("[data-tags]");
+    if (tg) {
+      tg.classList.toggle("on", !prefs.zoneTags);
+      tg.title = prefs.zoneTags ? "Ocultar o nome das salas (T)" : "Mostrar o nome das salas (T)";
+      $(".tg-ic", tg).innerHTML = icon(prefs.zoneTags ? "eye" : "eye-off", 17);
+    }
   };
   el.addEventListener("click", (e) => {
     const m = (e.target as HTMLElement).closest<HTMLElement>("[data-m]");
     if (m) return setCallMode(m.dataset.m as CallMode);
+    if ((e.target as HTMLElement).closest("[data-tags]")) return toggleZoneTags();
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-v]");
     if (!b) return;
     setView(b.dataset.v as ViewMode);
@@ -2440,6 +2513,19 @@ function mountViewSwitch() {
   hud.appendChild(el);
 }
 let syncViewSwitch = () => {};
+/** Visão mais limpa: some com o nome das salas no mapa (fica salvo). */
+function toggleZoneTags() {
+  prefs.zoneTags = !prefs.zoneTags;
+  document.body.classList.toggle("hide-zone-tags", !prefs.zoneTags);
+  savePrefs();
+  syncViewSwitch();
+  toast(prefs.zoneTags ? "Nomes das salas visíveis" : "Nomes das salas ocultos");
+}
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "t" || e.ctrlKey || e.metaKey || e.altKey || !world?.me) return;
+  if ((e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
+  toggleZoneTags();
+});
 function setView(v: ViewMode) {
   world.setView(v);
   prefs.view = v;
@@ -2800,6 +2886,198 @@ function updateMeeting() {
     }
 }
 
+// ------------------------------------------------------------ gestão: expulsar, bloquear, sala de espera
+/** Identificador deste aparelho (o bloqueio da gestão usa ele, além do nome). */
+function deviceId() {
+  try {
+    let d = localStorage.getItem("verkz-device");
+    if (!d) {
+      d = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).replace(/[^\w-]/g, "");
+      localStorage.setItem("verkz-device", d);
+    }
+    return d;
+  } catch {
+    return "";
+  }
+}
+
+let waitingEl: HTMLDivElement | null = null;
+const entryCards = new Map<string, HTMLElement>();
+let gestaoState: { list: { device: string; name: string; at: number }[]; approval: boolean } = { list: [], approval: false };
+
+function kickPerson(id: string, ban: boolean) {
+  const name = world.others.get(id)?.info.name ?? "a pessoa";
+  modal(
+    ban ? "Tirar e bloquear" : "Tirar do escritório",
+    `<div class="note">${ban ? `<b>${esc(name)}</b> sai agora e não consegue entrar de novo até alguém da gestão desbloquear (Configurações › Escritório).` : `<b>${esc(name)}</b> sai agora. Pode entrar de novo depois.`}</div>`,
+    [
+      ["Cancelar", "ghost", () => {}],
+      [
+        ban ? "Tirar e bloquear" : "Tirar",
+        "danger",
+        () => {
+          net.send({ t: "kick", id, ban });
+          toast(ban ? `${name} saiu e foi bloqueado` : `${name} saiu do escritório`);
+        },
+      ],
+    ],
+  );
+}
+
+/** Cartão para a gestão: alguém quer entrar (sala de espera ligada). */
+function showEntryRequest(rid: string, name: string) {
+  entryCards.get(rid)?.remove();
+  const el = document.createElement("div");
+  el.className = "panel entry-card";
+  el.innerHTML = `<div class="entry-head">${icon("door-closed", 18)}<div><div class="t-m">Pedido de entrada</div><div class="t-s c3"></div></div></div><div class="entry-actions"><button class="btn ghost sm" data-no>Negar</button><button class="btn primary sm" data-ok>Deixar entrar</button></div>`;
+  $(".t-s", el).textContent = `${name} quer entrar no escritório`;
+  const answer = (ok: boolean) => {
+    net.send({ t: "admit", rid, ok });
+    el.remove();
+    entryCards.delete(rid);
+  };
+  $("[data-ok]", el).addEventListener("click", () => answer(true));
+  $("[data-no]", el).addEventListener("click", () => answer(false));
+  let stack = document.querySelector<HTMLElement>(".entry-stack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.className = "entry-stack";
+    hud.appendChild(stack);
+  }
+  stack.appendChild(el);
+  entryCards.set(rid, el);
+  blip("call");
+}
+
+/** Configurações › Escritório: aprovar entrada e lista de bloqueados. */
+function renderGestao() {
+  const box = document.querySelector<HTMLElement>("[data-gestao]");
+  if (!box) return;
+  const g = gestaoState;
+  box.innerHTML = `<label class="toggle-row"><span><b>Aprovar cada entrada</b><br><span class="t-s c3">Quem chega espera até alguém da gestão liberar. Sem ninguém da gestão online, entra direto.</span></span><input type="checkbox" data-approval ${g.approval ? "checked" : ""}></label>
+    <div class="label">Bloqueados</div>
+    ${g.list.length ? g.list.map((b, i) => `<div class="ban-row">${icon("ban", 15)}<span>${esc(b.name)}</span><span class="t-s c3">${new Date(b.at * 1000).toLocaleDateString("pt-BR")}</span><button type="button" class="btn ghost sm" data-unban="${i}">Desbloquear</button></div>`).join("") : '<div class="t-s c3">Ninguém bloqueado. Para bloquear, clique com o botão direito na pessoa.</div>'}`;
+  $<HTMLInputElement>("[data-approval]", box).addEventListener("change", (e) => net.send({ t: "gate", approval: (e.target as HTMLInputElement).checked }));
+  box.querySelectorAll<HTMLElement>("[data-unban]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const ban = g.list[Number(b.dataset.unban)];
+      if (ban) net.send({ t: "unban", device: ban.device, name: ban.name });
+    }),
+  );
+}
+
+// ------------------------------------------------------------ porta trancada (reunião importante)
+const doorPass = new Map<string, number>();
+let doorChip: HTMLDivElement | null = null;
+let lastKnock = 0;
+
+function zoneName(id: string) {
+  return world.layout?.zones.find((z) => z.id === id)?.name ?? "sala";
+}
+
+/** Salas trancadas: quem trancou precisa estar lá dentro (saiu, destranca sozinho). */
+function updateLocks() {
+  if (!world?.me) return;
+  const locked = new Set<string>();
+  const myZone = world.currentZone?.id ?? null;
+  const mine = world.me.extra?.lock as string | undefined;
+  if (mine) {
+    if (mine !== myZone) sendState({ lock: null });
+    else locked.add(mine);
+  }
+  for (const a of world.others.values()) {
+    const z = a.extra?.lock as string | undefined;
+    if (z && a.info.zone === z && (Number(a.extra?.level) || 0) === (world.level || 0)) locked.add(z);
+  }
+  const pass = new Set<string>();
+  if (myZone) pass.add(myZone);
+  if (isAdmin) for (const z of locked) pass.add(z);
+  for (const [z, until] of doorPass) if (until > Date.now()) pass.add(z);
+  world.lockedZones = locked;
+  world.lockPass = pass;
+  renderDoorChip(locked);
+}
+
+function renderDoorChip(locked: Set<string>) {
+  const zn = world.currentZone;
+  let html = "";
+  if (zn?.private) {
+    html = locked.has(zn.id)
+      ? `${icon("lock", 15)}<span>Porta trancada</span><button class="btn ghost sm" data-door="unlock">Destrancar</button>`
+      : `${icon("lock-open", 15)}<span>${esc(zn.name ?? "Sala")}</span><button class="btn ghost sm" data-door="lock">Trancar a porta</button>`;
+  } else {
+    const z = world.lockedDoorNear();
+    if (z) html = `${icon("lock", 15)}<span>Reunião em andamento</span><button class="btn primary sm" data-door="knock" data-zone="${esc(z)}">Bater na porta</button>`;
+  }
+  if (!html) {
+    doorChip?.remove();
+    doorChip = null;
+    return;
+  }
+  if (!doorChip) {
+    doorChip = document.createElement("div");
+    doorChip.className = "panel door-chip";
+    doorChip.addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLElement>("[data-door]");
+      if (b) doorAction(b.dataset.door!, b.dataset.zone);
+    });
+    hud.appendChild(doorChip);
+  }
+  if (doorChip.dataset.html !== html) {
+    doorChip.dataset.html = html;
+    doorChip.innerHTML = html;
+    doorChip.classList.toggle("locked", html.includes("Porta trancada") || html.includes("Reunião"));
+  }
+}
+
+function doorAction(act: string, zone?: string) {
+  const zn = world.currentZone;
+  if (act === "lock" && zn) {
+    sendState({ lock: zn.id });
+    toast("Porta trancada: só entra quem você deixar");
+  } else if (act === "unlock" && zn) {
+    if (world.me.extra?.lock === zn.id) sendState({ lock: null });
+    for (const [id, a] of world.others) if (a.extra?.lock === zn.id) net.send({ t: "to", to: id, msg: { kind: "door_unlock", zone: zn.id } });
+    toast("Porta destrancada");
+  } else if (act === "knock" && zone) {
+    if (Date.now() - lastKnock < 5000) return toast("Espere um pouco antes de bater de novo", true);
+    lastKnock = Date.now();
+    let n = 0;
+    for (const [id, a] of world.others)
+      if (a.info.zone === zone) {
+        net.send({ t: "to", to: id, msg: { kind: "knock", zone } });
+        n++;
+      }
+    toast(n ? "Você bateu na porta. Espere alguém abrir." : "Ninguém lá dentro para abrir", !n);
+  }
+}
+
+/** Alguém bateu na porta da sala onde estou: cartão para abrir. */
+function showKnock(from: string, name: string, zone: string) {
+  if (world.currentZone?.id !== zone) return;
+  const el = document.createElement("div");
+  el.className = "panel entry-card";
+  el.innerHTML = `<div class="entry-head">${icon("door-closed", 18)}<div><div class="t-m">Batendo na porta</div><div class="t-s c3"></div></div></div><div class="entry-actions"><button class="btn ghost sm" data-no>Agora não</button><button class="btn primary sm" data-ok>Abrir</button></div>`;
+  $(".t-s", el).textContent = `${name} quer entrar na ${zoneName(zone)}`;
+  $("[data-ok]", el).addEventListener("click", () => {
+    net.send({ t: "to", to: from, msg: { kind: "door_pass", zone } });
+    el.remove();
+  });
+  $("[data-no]", el).addEventListener("click", () => {
+    net.send({ t: "to", to: from, msg: { kind: "door_no", zone } });
+    el.remove();
+  });
+  let stack = document.querySelector<HTMLElement>(".entry-stack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.className = "entry-stack";
+    hud.appendChild(stack);
+  }
+  stack.appendChild(el);
+  setTimeout(() => el.remove(), 45_000);
+  blip("call");
+}
+
 // ------------------------------------------------------------ rádio (YouTube na sala)
 /** Todos os rádios ligados agora (o mais novo vale, se dois ligaram a mesma caixa). */
 function radioSources(): RadioSource[] {
@@ -2859,22 +3137,94 @@ function radioVolumeControl(it: Item, on: RadioSource, box: HTMLElement) {
   });
 }
 
+type RadioAct = "toggle" | "next" | "prev";
+const RADIO_ACT_LABEL: Record<RadioAct, string> = { toggle: "pausou/voltou o rádio", next: "pulou a música", prev: "voltou a música" };
+
+/** Na mesma sala da caixa (ou perto dela no corredor): pode usar os controles. */
+function nearRadio(it: Item, x: number, z: number) {
+  const rz = world.zoneAt(it.x, it.z);
+  const wz = world.zoneAt(x, z);
+  if (rz && wz && rz.id === wz.id) return true;
+  return Math.hypot(x - it.x, z - it.z) < 9;
+}
+
+/** Quem ligou o rádio aplica o controle no estado (vale para todos). */
+function applyRadioCtl(msg: { item: string; act: RadioAct; idx?: number; t?: number }) {
+  const mine = world.me?.extra?.radio as RadioState | undefined;
+  if (!mine || mine.item !== msg.item) return;
+  const now = Date.now();
+  const r: RadioState = { ...mine };
+  const t = Number.isFinite(msg.t) ? Math.max(0, Number(msg.t)) : r.paused ? r.pos ?? 0 : (now - r.at) / 1000;
+  const idx = Number.isInteger(msg.idx) && (msg.idx as number) >= 0 ? (msg.idx as number) : r.idx;
+  const restart = () => {
+    r.at = now;
+    r.ep = now;
+    delete r.paused;
+    delete r.pos;
+  };
+  if (msg.act === "toggle") {
+    if (r.paused) {
+      r.at = now - (r.pos ?? 0) * 1000;
+      delete r.paused;
+      delete r.pos;
+    } else {
+      r.paused = true;
+      r.pos = t;
+      if (r.list && idx != null) r.idx = idx;
+    }
+  } else if (msg.act === "next") {
+    if (r.sp) return;
+    if (r.list) r.idx = (idx ?? 0) + 1;
+    restart();
+  } else if (msg.act === "prev") {
+    if (r.sp) return;
+    // passou de 5 s: recomeça a música; senão volta para a anterior da playlist
+    if (r.list && t <= 5) r.idx = Math.max(0, (idx ?? 0) - 1);
+    else if (r.list && idx != null) r.idx = idx;
+    restart();
+  }
+  sendState({ radio: r });
+}
+
+/** Botões voltar / pausar / próxima (pílula do rádio e menu da caixa): quem ligou aplica, os outros pedem. */
+function radioControl(act: RadioAct, src?: RadioSource) {
+  const cur = src ?? radio?.current;
+  if (!cur) return;
+  if (cur.sp && act !== "toggle") return toast("No Spotify dá para pausar e tocar; pular música só pelo app do Spotify", true);
+  const pos = radio?.current?.item === cur.item ? radio.position() : {};
+  const msg = { kind: "radio_ctl", item: cur.item, act, ...pos };
+  if (cur.owner === myId) applyRadioCtl(msg);
+  else {
+    const it = world.layout?.items.find((i) => i.id === cur.item);
+    if (!it || !nearRadio(it, world.me.root.position.x, world.me.root.position.z)) return toast("Entre na sala da caixa de som para controlar a música", true);
+    net.send({ t: "to", to: cur.owner, msg });
+  }
+}
+
 let radioPill: HTMLDivElement | null = null;
 function startRadio() {
   if (radio) return;
   radio = new RadioPlayer();
   radio.master = soundPrefs.radio ?? 0.6;
   radio.onError = (msg) => toast(msg, true);
+  radio.onPaused = (p) => {
+    if (!radioPill) return;
+    radioPill.classList.toggle("paused", p);
+    const b = radioPill.querySelector<HTMLButtonElement>('[data-ctl="toggle"]');
+    if (b) b.innerHTML = icon(p ? "play" : "pause", 14);
+  };
   radio.onNow = (now) => {
     radioPill?.remove();
     radioPill = null;
     if (!now) return;
     radioPill = document.createElement("div");
     radioPill.className = "panel radio-pill";
-    radioPill.innerHTML = `${now.cover ? `<img class="cover" alt="">` : `<span class="cover ph">${icon("radio", 16)}</span>`}<span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><div class="meta"><div class="t-s c3">Rádio · ligado por ${esc(now.owner)}</div><div class="t-m"></div></div><input type="range" class="pill-vol" min="0" max="100" step="5" value="${Math.round((soundPrefs.radio ?? 0.6) * 100)}" title="Volume do rádio para mim" aria-label="Volume do rádio para mim"><button class="round" data-mute title="Silenciar para mim">${icon(radio!.muted ? "mic-off" : "volume", 15)}</button>`;
+    radioPill.innerHTML = `${now.cover ? `<img class="cover" alt="">` : `<span class="cover ph">${icon("radio", 16)}</span>`}<span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><div class="meta"><div class="t-s c3">Rádio · ligado por ${esc(now.owner)}</div><div class="t-m"></div></div><div class="pill-ctl"><button class="round" data-ctl="prev" title="Voltar (ou recomeçar)">${icon("prev", 14)}</button><button class="round play" data-ctl="toggle" title="Pausar / tocar para todos">${icon(radio!.paused ? "play" : "pause", 14)}</button><button class="round" data-ctl="next" title="Próxima música">${icon("next", 14)}</button></div><input type="range" class="pill-vol" min="0" max="100" step="5" value="${Math.round((soundPrefs.radio ?? 0.6) * 100)}" title="Volume do rádio para mim" aria-label="Volume do rádio para mim"><button class="round" data-mute title="Silenciar para mim">${icon(radio!.muted ? "mic-off" : "volume", 15)}</button>`;
     $(".t-m", radioPill).textContent = now.title;
     if (now.cover) radioPill.querySelector<HTMLImageElement>("img.cover")!.src = now.cover;
     radioPill.classList.toggle("muted", radio!.muted);
+    radioPill.classList.toggle("paused", radio!.paused);
+    radioPill.querySelectorAll<HTMLButtonElement>("[data-ctl]").forEach((b) => b.addEventListener("click", () => radioControl(b.dataset.ctl as RadioAct)));
     $<HTMLInputElement>(".pill-vol", radioPill).addEventListener("input", (e) => {
       const v = Number((e.target as HTMLInputElement).value) / 100;
       soundPrefs.radio = v;
@@ -2938,6 +3288,11 @@ function openRadioMenu(it: Item, x: number, y: number) {
           toast("Rádio desligado");
         }),
     ]);
+    items.push([on.paused ? "play" : "pause", on.paused ? "Tocar para todos" : "Pausar para todos", () => radioControl("toggle", on)]);
+    if (!on.sp) {
+      items.push(["next", "Próxima música", () => radioControl("next", on)]);
+      items.push(["prev", "Voltar / recomeçar", () => radioControl("prev", on)]);
+    }
     if (radio) items.push([radio.muted ? "volume" : "mic-off", radio.muted ? "Ouvir de novo" : "Silenciar só para mim", () => (radio!.muted = !radio!.muted)]);
   }
   menu(x, y, (DEFS[it.type]?.label ?? "Rádio") + (far ? " · vá até ela para mexer" : ""), items, on ? (box) => radioVolumeControl(it, on, box) : undefined);
@@ -2961,9 +3316,9 @@ function askRadioLink(it: Item) {
             return false;
           }
           atRadio(it, () => {
-            const r: RadioState = { item: it.id, url: url.trim().slice(0, 300), ...yt, at: Date.now() };
+            const r: RadioState = { item: it.id, url: url.trim().slice(0, 300), ...yt, at: Date.now(), ep: Date.now() };
             sendState({ radio: r });
-            toast("📻 Tocando no rádio da sala");
+            toast("Tocando no rádio da sala");
           });
         },
       ],
@@ -3154,6 +3509,8 @@ async function openSettings() {
         <div class="row2"><label class="field"><span class="label">Cidade do clima</span><input class="input" name="env_city" value="${esc(env.city ?? "Campo Grande")}"></label>
         <label class="field"><span class="label">Lat, Lon</span><input class="input" name="env_ll" value="${env.lat ?? -20.4697}, ${env.lon ?? -54.6201}"></label></div>
         ${sw("env_daynight", "Dia e noite pelo horário real", !!env.daynight)}
+        <div class="label">Gestão de entrada</div>
+        <div class="gestao" data-gestao><div class="t-s c3">Carregando...</div></div>
         <div class="label">Prédio</div>
         <div class="editor-actions"><button type="button" class="btn secondary sm" data-build="predio">${icon("wall", 15)} Aumentar o prédio</button><button type="button" class="btn secondary sm" data-build="salas">${icon("room", 15)} Adicionar salas</button></div>
       </section>`
@@ -3177,6 +3534,10 @@ async function openSettings() {
   );
   bg.querySelector(".modal")?.classList.add("settings-modal");
   mountBgPicker($("[data-bgs]", bg));
+  if (isAdmin) {
+    renderGestao();
+    net.send({ t: "bans" });
+  }
   bg.querySelectorAll<HTMLElement>("[data-fn]").forEach((b) =>
     b.addEventListener("click", () => {
       const f = FUNCS.flatMap((g) => g.items).find((x) => x.id === b.dataset.fn);

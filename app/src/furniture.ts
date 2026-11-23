@@ -315,6 +315,9 @@ function screenPanel(tex: THREE.Texture) {
   return group(box(0.5, 0.06, 0.34, M.dark), box(0.08, 0.72, 0.08, M.steel), frameBox, face);
 }
 
+/** Materiais das telas de computador (o mundo troca por telas animadas quando alguém senta na mesa). */
+export const SCREEN_MATS: THREE.Material[] = [M.screenA, M.screenB, M.screenC];
+
 export const DEFS: Record<string, Def> = {
   wall: {
     label: "Parede",
@@ -2265,6 +2268,210 @@ const NEW_DEFS: Record<string, Def> = {
         cyl(0.07, 0.07, 0.02, M.steel, 0, 1.5, 0.21, 10).rotateX(Math.PI / 2),
         box(0.5, 0.03, 0.02, M.neonToon, 0, 0.93, 0.215),
       ),
+  },
+  // Kenney Furniture Kit (CC0): modelos prontos de som. Sem o modelo, cai num desenho simples.
+  p_radio_retro: {
+    label: "Rádio retrô de mesa",
+    w: 0.55,
+    d: 0.4,
+    blocks: false,
+    interactive: true,
+    build: () => {
+      const r = model("kf_radio", 0.46, 0.2, { height: 0.34 });
+      const stand = cyl(0.16, 0.18, 0.56, M.woodDark, 0, 0, 0, 10);
+      if (!r) return group(stand, box(0.46, 0.3, 0.18, M.woodDark, 0, 0.56, 0), box(0.3, 0.16, 0.02, P.cream, 0, 0.63, 0.09));
+      r.position.y = 0.56;
+      return group(stand, r);
+    },
+  },
+  p_speaker_pair: {
+    label: "Par de caixas de som",
+    w: 1.1,
+    d: 0.4,
+    blocks: true,
+    interactive: true,
+    build: () => {
+      const mk = (x: number) => {
+        const m = model("kf_speaker", 0.3, 0.3, { height: 1.15 }) ?? group(box(0.28, 1.1, 0.28, M.woodDark), cyl(0.09, 0.09, 0.02, M.steel, 0, 0.75, 0.14, 12).rotateX(Math.PI / 2));
+        m.position.x = x;
+        return m;
+      };
+      return group(mk(-0.38), mk(0.38));
+    },
+  },
+  p_speaker_shelf: {
+    label: "Caixinhas de estante",
+    w: 0.9,
+    d: 0.4,
+    blocks: false,
+    interactive: true,
+    build: () => {
+      const mk = (x: number) => {
+        const m = model("kf_speaker_small", 0.26, 0.24, { height: 0.5 }) ?? group(box(0.24, 0.46, 0.22, M.woodDark), cyl(0.07, 0.07, 0.02, M.steel, 0, 0.28, 0.11, 10).rotateX(Math.PI / 2));
+        m.position.set(x, 0.62, 0);
+        return m;
+      };
+      return group(box(0.86, 0.06, 0.38, M.wood, 0, 0.56, 0), box(0.06, 0.56, 0.34, M.woodDark, -0.38, 0, 0), box(0.06, 0.56, 0.34, M.woodDark, 0.38, 0, 0), mk(-0.24), mk(0.24));
+    },
+  },
+  p_tv_vintage: {
+    label: "TV antiga com som",
+    w: 0.8,
+    d: 0.6,
+    blocks: true,
+    interactive: true,
+    build: () => {
+      const tv = model("kf_tv_vintage", 0.7, 0.5, { height: 0.55 });
+      const base = box(0.76, 0.5, 0.56, M.woodDark, 0, 0, 0);
+      if (!tv) return group(base, box(0.66, 0.5, 0.46, M.wood, 0, 0.5, 0), box(0.46, 0.34, 0.02, M.glass, -0.06, 0.58, 0.24));
+      tv.position.y = 0.5;
+      const ant = model("kf_tv_antenna", 0.36, 0.14, { height: 0.2 });
+      if (ant) ant.position.set(0, 1.0, -0.05);
+      return ant ? group(base, tv, ant) : group(base, tv);
+    },
+  },
+  p_jukebox: {
+    label: "Jukebox",
+    w: 0.9,
+    d: 0.6,
+    blocks: true,
+    interactive: true,
+    build: () => {
+      // corpo de madeira, arco em cima com faixa de luz e vitrine dos discos
+      const arch = cyl(0.42, 0.42, 0.5, M.woodDark, 0, 1.25, 0, 16);
+      arch.rotateX(Math.PI / 2);
+      arch.scale.set(1, 1, 1);
+      const glow = cyl(0.36, 0.36, 0.52, M.neonToon, 0, 1.25, 0, 16);
+      glow.rotateX(Math.PI / 2);
+      glow.scale.set(1, 0.98, 1);
+      return group(
+        box(0.84, 1.25, 0.5, M.woodDark, 0, 0, 0),
+        arch,
+        glow,
+        box(0.6, 0.36, 0.02, M.glass, 0, 0.88, 0.26),
+        box(0.5, 0.08, 0.02, P.gold, 0, 0.66, 0.26),
+        box(0.66, 0.42, 0.02, P.black, 0, 0.15, 0.26),
+        box(0.06, 1.2, 0.06, M.orange, -0.4, 0.02, 0.24),
+        box(0.06, 1.2, 0.06, M.orange, 0.4, 0.02, 0.24),
+        box(0.12, 0.05, 0.03, M.red, -0.2, 0.55, 0.26),
+        box(0.12, 0.05, 0.03, M.yellow, 0, 0.55, 0.26),
+        box(0.12, 0.05, 0.03, P.green, 0.2, 0.55, 0.26),
+      );
+    },
+  },
+  p_turntable: {
+    label: "Toca-discos (DJ)",
+    w: 1.2,
+    d: 0.6,
+    blocks: true,
+    interactive: true,
+    build: () => {
+      const deck = (x: number) =>
+        group(
+          box(0.42, 0.06, 0.42, P.metal, x, 0.92, 0),
+          cyl(0.17, 0.17, 0.015, P.black, x, 0.98, 0, 20),
+          cyl(0.05, 0.05, 0.02, M.red, x, 0.985, 0, 10),
+          box(0.02, 0.02, 0.22, P.metal, x + 0.16, 1.0, 0.02),
+        );
+      return group(
+        box(1.16, 0.9, 0.56, P.black, 0, 0, 0),
+        box(1.1, 0.04, 0.02, M.neonToon, 0, 0.6, 0.285),
+        deck(-0.34),
+        deck(0.34),
+        box(0.18, 0.05, 0.3, M.dark, 0, 0.93, 0),
+        cyl(0.012, 0.012, 0.03, P.cream, -0.04, 0.97, 0.05, 6),
+        cyl(0.012, 0.012, 0.03, P.cream, 0.04, 0.97, 0.05, 6),
+      );
+    },
+  },
+  p_gramophone: {
+    label: "Gramofone",
+    w: 0.6,
+    d: 0.6,
+    blocks: false,
+    interactive: true,
+    build: () => {
+      // caixa de madeira, disco e a corneta dourada
+      const horn = cyl(0.24, 0.02, 0.5, P.gold, 0, 0, 0, 14);
+      horn.rotateZ(-Math.PI / 3.2);
+      horn.position.set(0.12, 1.05, -0.02);
+      const neck = cyl(0.025, 0.025, 0.28, P.gold, -0.08, 0.72, -0.02, 6);
+      neck.rotateZ(-0.5);
+      return group(
+        cyl(0.16, 0.2, 0.5, M.woodDark, 0, 0, 0, 10),
+        box(0.42, 0.18, 0.42, M.wood, 0, 0.5, 0),
+        cyl(0.17, 0.17, 0.012, P.black, 0, 0.68, 0, 18),
+        neck,
+        horn,
+        cyl(0.03, 0.03, 0.05, P.gold, 0.21, 0.56, 0, 6).rotateZ(Math.PI / 2),
+      );
+    },
+  },
+  p_radio_console: {
+    label: "Rádio vitrola de chão",
+    w: 1.3,
+    d: 0.5,
+    blocks: true,
+    interactive: true,
+    build: () =>
+      group(
+        // móvel de pés palito com tela de tecido e dial
+        box(0.04, 0.22, 0.04, M.woodDark, -0.58, 0, -0.18),
+        box(0.04, 0.22, 0.04, M.woodDark, 0.58, 0, -0.18),
+        box(0.04, 0.22, 0.04, M.woodDark, -0.58, 0, 0.18),
+        box(0.04, 0.22, 0.04, M.woodDark, 0.58, 0, 0.18),
+        box(1.26, 0.52, 0.46, M.wood, 0, 0.22, 0),
+        box(0.5, 0.4, 0.02, P.fabric, -0.32, 0.28, 0.235),
+        box(0.5, 0.4, 0.02, P.fabric, 0.32, 0.28, 0.235),
+        box(0.12, 0.4, 0.02, M.woodDark, 0, 0.28, 0.236),
+        box(0.4, 0.06, 0.02, P.cream, 0.32, 0.66, 0.235),
+        box(0.01, 0.05, 0.022, M.red, 0.38, 0.665, 0.237),
+        box(1.2, 0.03, 0.42, M.woodDark, 0, 0.74, 0),
+      ),
+  },
+  p_soundbar: {
+    label: "Soundbar com subwoofer",
+    w: 1.3,
+    d: 0.5,
+    blocks: false,
+    interactive: true,
+    build: () =>
+      group(
+        // rack baixo com a barra de som e o subwoofer ao lado
+        box(1.0, 0.4, 0.42, M.woodDark, -0.14, 0, 0),
+        box(0.9, 0.08, 0.1, P.black, -0.14, 0.4, 0.08),
+        box(0.86, 0.04, 0.02, M.steel, -0.14, 0.42, 0.135),
+        box(0.06, 0.012, 0.02, M.neonToon, 0.24, 0.47, 0.13),
+        box(0.28, 0.42, 0.34, P.black, 0.5, 0, 0),
+        cyl(0.1, 0.1, 0.02, M.steel, 0.5, 0.22, 0.17, 14).rotateX(Math.PI / 2),
+      ),
+  },
+  p_studio_monitors: {
+    label: "Monitores de estúdio",
+    w: 1.4,
+    d: 0.7,
+    blocks: true,
+    interactive: true,
+    build: () => {
+      const mon = (x: number) =>
+        group(
+          box(0.26, 0.4, 0.28, P.black, x, 0.78, 0),
+          cyl(0.09, 0.09, 0.02, M.yellow, x, 0.9, 0.14, 14).rotateX(Math.PI / 2),
+          cyl(0.035, 0.035, 0.02, M.steel, x, 1.08, 0.14, 10).rotateX(Math.PI / 2),
+        );
+      return group(
+        // mesinha de som com mesa de mixagem
+        box(1.36, 0.05, 0.66, M.wood, 0, 0.73, 0),
+        box(0.05, 0.73, 0.05, P.metal, -0.62, 0, -0.28),
+        box(0.05, 0.73, 0.05, P.metal, 0.62, 0, -0.28),
+        box(0.05, 0.73, 0.05, P.metal, -0.62, 0, 0.28),
+        box(0.05, 0.73, 0.05, P.metal, 0.62, 0, 0.28),
+        mon(-0.5),
+        mon(0.5),
+        box(0.5, 0.06, 0.3, M.dark, 0, 0.78, 0.1),
+        box(0.42, 0.012, 0.02, M.neonToon, 0, 0.815, 0.0),
+      );
+    },
   },
   p_vending: {
     label: "Máquina de lanches",

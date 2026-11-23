@@ -197,24 +197,25 @@ export function kitchenSound(kind: "pour" | "beep" | "open") {
 export interface PadSound {
   id: string;
   name: string;
-  emoji: string;
+  /** ícone de traço (icons.ts) */
+  ic: string;
   /** Sons do usuário: áudio guardado no aparelho. */
   custom?: boolean;
 }
 
 export const PAD_SOUNDS: PadSound[] = [
-  { id: "aplausos", name: "Aplausos", emoji: "👏" },
-  { id: "buzina", name: "Buzina", emoji: "📯" },
-  { id: "badumtss", name: "Ba-dum-tss", emoji: "🥁" },
-  { id: "tada", name: "Tcharam", emoji: "🎉" },
-  { id: "vitoria", name: "Vitória", emoji: "🏆" },
-  { id: "errou", name: "Errou", emoji: "🎺" },
-  { id: "suspense", name: "Suspense", emoji: "🥁" },
-  { id: "sino", name: "Sino", emoji: "🔔" },
-  { id: "moeda", name: "Venda!", emoji: "💰" },
-  { id: "grilo", name: "Grilos", emoji: "🦗" },
-  { id: "sirene", name: "Sirene", emoji: "🚨" },
-  { id: "pop", name: "Pop", emoji: "🫧" },
+  { id: "aplausos", name: "Aplausos", ic: "sparkles" },
+  { id: "buzina", name: "Buzina", ic: "megaphone" },
+  { id: "badumtss", name: "Ba-dum-tss", ic: "drum" },
+  { id: "tada", name: "Tcharam", ic: "party-popper" },
+  { id: "vitoria", name: "Vitória", ic: "trophy" },
+  { id: "errou", name: "Errou", ic: "frown" },
+  { id: "suspense", name: "Suspense", ic: "drum" },
+  { id: "sino", name: "Sino", ic: "bell" },
+  { id: "moeda", name: "Venda!", ic: "coins" },
+  { id: "grilo", name: "Grilos", ic: "bug" },
+  { id: "sirene", name: "Sirene", ic: "siren" },
+  { id: "pop", name: "Pop", ic: "circle-dot" },
 ];
 
 function synth(id: string, out: Out) {
@@ -285,7 +286,7 @@ export async function listCustom(): Promise<PadSound[]> {
       cur.onsuccess = () => {
         const c = cur.result;
         if (!c) return res(out);
-        out.push({ id: String(c.key), name: c.value.name, emoji: "🎵", custom: true });
+        out.push({ id: String(c.key), name: c.value.name, ic: "music", custom: true });
         c.continue();
       };
       cur.onerror = () => res(out);

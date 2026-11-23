@@ -17,6 +17,13 @@ export interface RadioState {
   vol?: number;
   /** quando começou (ms, relógio de quem ligou) */
   at: number;
+  /** pausado para todos; `pos` = segundos em que parou */
+  paused?: boolean;
+  pos?: number;
+  /** música da playlist (0 = primeira) — muda com "próxima"/"anterior" */
+  idx?: number;
+  /** muda quando troca de link ou de música (recria o player) */
+  ep?: number;
 }
 
 /** Lê links do YouTube: watch?v=, youtu.be/, shorts/, music.youtube.com e playlists (list=). */
@@ -139,6 +146,8 @@ export class RadioPlayer {
   onError?: (msg: string) => void;
   /** Mudou o que está tocando para mim (para a interface mostrar). */
   onNow?: (now: { title: string; owner: string; key: string; cover?: string } | null) => void;
+  /** Pausaram/voltaram o rádio para todos (para o botão da interface). */
+  onPaused?: (paused: boolean) => void;
   current: RadioSource | null = null;
 
   constructor() {
@@ -155,7 +164,7 @@ export class RadioPlayer {
     let bestV = 0;
     let cur: RadioSource | null = null;
     let curV = 0;
-    const keyOf = (s: RadioSource) => `${s.item}|${s.vid ?? ""}|${s.list ?? ""}|${s.sp ?? ""}|${s.at}`;
+    const keyOf = (s: RadioSource) => `${s.item}|${s.vid ?? ""}|${s.list ?? ""}|${s.sp ?? ""}|${s.idx ?? ""}|${s.ep ?? s.at}`;
     for (const s of sources) {
       const v = audible(s);
       if (keyOf(s) === this.key) {
@@ -176,7 +185,10 @@ export class RadioPlayer {
     this.hasSource = !!best;
     this.wantVol = this.muted ? 0 : bestV * this.master;
     const key = best ? keyOf(best) : "";
-    if (key === this.key) return;
+    if (key === this.key) {
+      if (best) this.applyPlay(best);
+      return;
+    }
     // trocou de rádio (ou saiu de perto): só troca se o novo for audível
     if (!best) {
       // deixa o volume cair; para quando chegar a zero (fade)
@@ -220,7 +232,7 @@ export class RadioPlayer {
   private syncSpotify(force = false) {
     const c = this.sp;
     if (!c) return;
-    const want = this.wantVol > 0.08;
+    const want = this.wantVol > 0.08 && !this.current?.paused;
     if (want === this.spPlaying && !force) return;
     this.spPlaying = want;
     try {
@@ -235,18 +247,52 @@ export class RadioPlayer {
     if (s.sp) return this.startSpotify(s);
     const YT = await loadApi();
     const key = this.key;
-    const offset = Math.max(0, (Date.now() - s.at) / 1000);
-    const vars: any = { autoplay: 1, controls: 0, disablekb: 1, playsinline: 1, rel: 0, origin: location.origin };
+    const offset = s.paused ? Math.max(0, s.pos ?? 0) : Math.max(0, (Date.now() - s.at) / 1000);
+    const vars: any = { autoplay: s.paused ? 0 : 1, controls: 0, disablekb: 1, playsinline: 1, rel: 0, origin: location.origin };
+    // playlist: o player já nasce com ela (sem vídeo nenhum o YouTube responde "Invalid video id")
+    if (s.list) {
+      vars.listType = "playlist";
+      vars.list = s.list;
+      vars.loop = 1;
+      // "próxima"/"anterior": todos abrem na mesma música, no mesmo ponto
+      if (s.idx != null) {
+        vars.index = s.idx;
+        if (offset > 1) vars.start = Math.floor(offset);
+      }
+    }
     let skips = 0;
+    let reloaded = false;
+    /** Reserva: se a playlist não abriu pelos parâmetros, carrega pela API. */
+    const loadList = (p: any) => {
+      if (reloaded || !s.list) return;
+      reloaded = true;
+      try {
+        p.loadPlaylist({ list: s.list, listType: "playlist", index: s.idx ?? 0, startSeconds: s.idx != null ? Math.floor(offset) : 0 });
+      } catch {
+        /* player recriando */
+      }
+    };
     const onReady = (e: any) => {
       if (key !== this.key) return;
       const p = e.target;
       p.setVolume(Math.round(this.vol * 100));
       if (s.list) {
-        // playlist: carrega pela API (pelos parâmetros do player ela às vezes não abre);
-        // todo mundo começa da mesma música, no ponto em que a 1ª estaria
-        p.loadPlaylist({ list: s.list, listType: "playlist", index: 0, startSeconds: 0 });
         p.setLoop?.(true);
+        if (s.paused) {
+          this.announce();
+          return;
+        }
+        p.playVideo();
+        // 4 s sem tocar nem ter lista carregada: tenta pela API
+        setTimeout(() => {
+          if (key !== this.key) return;
+          try {
+            const pl = p.getPlaylist?.();
+            if (!pl?.length && p.getPlayerState?.() !== YT.PlayerState.PLAYING) loadList(p);
+          } catch {
+            /* player recriando */
+          }
+        }, 4000);
         this.announce();
         return;
       }
@@ -255,16 +301,21 @@ export class RadioPlayer {
         const dur = p.getDuration?.() || 0;
         p.seekTo(dur > 0 ? offset % dur : offset, true);
       }
-      p.playVideo();
+      if (s.paused) p.pauseVideo?.();
+      else p.playVideo();
       this.announce();
     };
     const onState = (e: any) => {
+      // pausado para todos: se o YouTube voltar a tocar sozinho, pausa de novo
+      if (e.data === YT.PlayerState.PLAYING && this.current?.paused && key === this.key) return e.target.pauseVideo?.();
       if (e.data === YT.PlayerState.ENDED && !s.list) e.target.seekTo(0, true), e.target.playVideo();
       if (e.data === YT.PlayerState.PLAYING) skips = 0;
       if (e.data === YT.PlayerState.PLAYING) this.announce();
     };
     const onErr = (e: any) => {
       const c = e?.data;
+      // playlist recusada pelos parâmetros ("Invalid video id" = erro 2): tenta carregar pela API
+      if (s.list && c === 2 && !reloaded) return loadList(e.target);
       // numa playlist, música que não toca fora do YouTube é pulada
       if (s.list && skips < 15 && (c === 101 || c === 150 || c === 152 || c === 100)) {
         skips++;
@@ -278,7 +329,9 @@ export class RadioPlayer {
             ? "Vídeo não encontrado ou privado."
             : c === 153
               ? "O YouTube recusou tocar aqui. Tente outra música."
-              : "Não consegui tocar esse link.",
+              : c === 2 && s.list
+                ? "O YouTube não abriu essa playlist. Ela precisa ser pública ou não listada (playlists \"Mix\" automáticas não tocam fora do YouTube)."
+                : "Não consegui tocar esse link.",
       );
     };
     this.destroy();
@@ -289,10 +342,54 @@ export class RadioPlayer {
       // player pequeno: o YouTube manda vídeo em qualidade baixa (só o som importa) e pesa menos
       width: 200,
       height: 200,
-      videoId: s.list ? undefined : s.vid,
+      // com playlist e vídeo no link (watch?v=..&list=..), começa nesse vídeo dentro da lista
+      ...(s.vid ? { videoId: s.vid } : {}),
       playerVars: vars,
       events: { onReady, onStateChange: onState, onError: onErr },
     });
+  }
+
+  /** Mesmo rádio, mas pausaram ou voltaram a tocar: aplica sem recriar o player. */
+  private applyPlay(s: RadioSource) {
+    const was = !!this.current?.paused;
+    this.current = s;
+    const now = !!s.paused;
+    if (was !== now) this.onPaused?.(now);
+    const p = this.player;
+    if (s.sp) return; // Spotify: syncSpotify() cuida
+    if (!p?.getPlayerState) return;
+    try {
+      const st = p.getPlayerState();
+      if (now) {
+        if (st !== 2) p.pauseVideo?.();
+      } else if (st === 2 || st === 5) {
+        // volta a tocar no ponto em que todos estão
+        const off = Math.max(0, (Date.now() - s.at) / 1000);
+        if (!s.list) {
+          const dur = p.getDuration?.() || 0;
+          p.seekTo?.(dur > 0 ? off % dur : off, true);
+        } else if (s.idx != null) p.seekTo?.(off, true);
+        p.playVideo?.();
+      }
+    } catch {
+      /* player recriando */
+    }
+  }
+
+  /** Onde estou na música (para os controles): índice da playlist e segundos. */
+  position(): { idx?: number; t?: number } {
+    try {
+      const p = this.player;
+      if (!p?.getCurrentTime) return {};
+      const idx = p.getPlaylistIndex?.();
+      return { idx: typeof idx === "number" && idx >= 0 ? idx : undefined, t: p.getCurrentTime() };
+    } catch {
+      return {};
+    }
+  }
+
+  get paused() {
+    return !!this.current?.paused;
   }
 
   private announce() {
@@ -343,7 +440,7 @@ export class RadioPlayer {
   private watchdog() {
     const p = this.player;
     const now = performance.now();
-    if (!p?.getPlayerState || now - this.lastCheck < 2000) return;
+    if (!p?.getPlayerState || now - this.lastCheck < 2000 || this.current?.paused) return;
     this.lastCheck = now;
     let st = -1;
     let t = 0;

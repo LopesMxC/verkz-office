@@ -11,8 +11,8 @@ echo  ===============================================
 echo.
 echo    [1] Windows   ^(compila aqui neste PC^)
 echo    [2] Mac       ^(compila no GitHub, nao precisa de Mac^)
-echo    [3] Linux     ^(compila no GitHub: .deb, .rpm e .AppImage^)
-echo    [4] Todos     ^(Mac e Linux vao para o GitHub enquanto o Windows compila aqui^)
+echo    [3] Linux     ^(compila aqui no WSL com Ubuntu 22.04: .deb, .rpm e .AppImage^)
+echo    [4] Todos     ^(Windows e Linux aqui; o Mac vai para o GitHub^)
 echo.
 choice /c 1234 /n /m "  Escolha 1, 2, 3 ou 4: "
 set "OPCAO=%errorlevel%"
@@ -29,13 +29,11 @@ if "%OPCAO%"=="4" (
 )
 if not defined FAZ_WIN if not defined FAZ_MAC if not defined FAZ_LINUX exit /b 0
 rem O que vai para o GitHub (um build so, com os sistemas pedidos)
+rem O Linux compila aqui no WSL (Ubuntu 22.04): pelo GitHub o app nao abria no Ubuntu 22.04
 set "FAZ_GH="
 set "PLATAFORMA="
 if defined FAZ_MAC set "FAZ_GH=1"
-if defined FAZ_LINUX set "FAZ_GH=1"
 if defined FAZ_MAC set "PLATAFORMA=mac"
-if defined FAZ_LINUX set "PLATAFORMA=linux"
-if defined FAZ_MAC if defined FAZ_LINUX set "PLATAFORMA=mac-linux"
 echo.
 
 rem ---------------------------------------------------------------
@@ -95,8 +93,8 @@ if defined FAZ_MAC (
   if errorlevel 1 goto :erro_mac
 )
 if defined FAZ_LINUX (
-  call :linux_baixar
-  if errorlevel 1 goto :erro_mac
+  call :linux_wsl
+  if errorlevel 1 goto :erro_linux
 )
 
 rem Arquivos da atualizacao automatica (sobem para verkzsystem.tech/apps/verkz-office/)
@@ -120,6 +118,14 @@ exit /b 0
 :erro
 echo.
 echo  [ERRO] A compilacao falhou. Role a janela para cima para ver o motivo.
+echo  Dica: rode de novo; se persistir, mande o texto do erro para o Claude.
+pause
+exit /b 1
+
+:erro_linux
+echo.
+echo  [ERRO] O Linux nao compilou no WSL. Role a janela para cima para ver o motivo.
+if exist "instaladores\*.exe" echo  O instalador do Windows esta em: %CD%\instaladores
 echo  Dica: rode de novo; se persistir, mande o texto do erro para o Claude.
 pause
 exit /b 1
@@ -422,7 +428,43 @@ set "GH_ESPEROU=1"
 exit /b 0
 
 rem ---------------------------------------------------------------
-rem Linux pelo GitHub: baixa o .deb, o .rpm e o .AppImage
+rem Linux no WSL (Ubuntu 22.04 / GLIBC 2.35): o app abre no Ubuntu 22.04 ou mais novo
+rem ---------------------------------------------------------------
+:linux_wsl
+echo.
+set "WSL_UTF8=1"
+set "DISTRO=Ubuntu-22.04"
+where wsl >nul 2>nul
+if errorlevel 1 (
+  echo [ERRO] O WSL nao esta disponivel neste Windows. Abra o PowerShell como administrador e rode: wsl --install
+  exit /b 1
+)
+wsl -l -q 2>nul | findstr /i /x "%DISTRO%" >nul 2>&1
+if errorlevel 1 (
+  echo [!] A distro %DISTRO% nao esta instalada no WSL. Instalando agora...
+  wsl --install -d %DISTRO%
+  echo.
+  echo  Quando terminar de criar o usuario e a senha no Ubuntu, feche a janela dele
+  echo  e rode o compilador.bat de novo ^(opcao 3^).
+  pause
+  exit /b 1
+)
+echo [..] Linux: compilando no WSL ^(%DISTRO%^). A primeira vez instala o que falta e leva de 10 a 20 minutos...
+wsl -d %DISTRO% -- bash -c "tr -d '\r' < compilador-linux.sh > /tmp/verkz-linux.sh && bash /tmp/verkz-linux.sh --wsl"
+if errorlevel 1 exit /b 1
+if not exist "instaladores\*.AppImage" (
+  echo [ERRO] O WSL terminou, mas o .AppImage nao apareceu em instaladores.
+  exit /b 1
+)
+if not exist "instaladores\*.AppImage.sig" (
+  echo [ERRO] O AppImage saiu SEM assinatura ^(.AppImage.sig^).
+  exit /b 1
+)
+echo [ok] Instaladores do Linux prontos e assinados ^(.deb, .rpm e .AppImage^).
+exit /b 0
+
+rem ---------------------------------------------------------------
+rem Linux pelo GitHub (antigo, nao usado): baixa o .deb, o .rpm e o .AppImage
 rem ---------------------------------------------------------------
 :linux_baixar
 echo.

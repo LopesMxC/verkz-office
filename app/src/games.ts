@@ -5,6 +5,7 @@
  * (mensagens diretas pelo servidor, `{t:"to"}`). O convidado só manda o que faz (raquete, tacada).
  * Também dá para treinar sozinho (no pingue-pongue o outro lado é o computador).
  */
+import { icon } from "./icons";
 
 export type GameKind = "pong" | "pool";
 export type Role = "host" | "guest" | "solo";
@@ -45,7 +46,7 @@ export class GameSession {
     this.el = document.createElement("div");
     this.el.className = "modal-bg game-bg" + (o.kind === "pool" ? " pool" : "");
     this.el.innerHTML = `<div class="panel modal game-modal">
-      <div class="panel-head"><div class="t-m">${o.kind === "pong" ? "Pingue-pongue" : "Sinuca"}</div><button class="x-btn" data-x aria-label="Sair">✕</button></div>
+      <div class="panel-head"><div class="t-m">${o.kind === "pong" ? "Pingue-pongue" : "Sinuca"}</div><button class="x-btn" data-x aria-label="Sair">${icon("x", 16)}</button></div>
       <div class="game-score"></div>
       <canvas width="${W}" height="${H}"></canvas>
       <div class="note game-help"></div>
