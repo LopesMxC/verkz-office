@@ -160,6 +160,9 @@ export interface GfxOptions {
   scale: number;
 }
 
+/** Destino de um clique no mapa: ponto do chão ou uma cadeira para sentar. */
+export type WalkPlan = { x: number; z: number; seat: Item | null };
+
 export const SEATS: Record<string, number> = { chair: 0.55, office_chair: 0.55, wood_chair: 0.55, exec_chair: 0.55, stool: 0.5, armchair: 0.8, armchair_plain: 0.8, chair_c: 0.55, chair_b_wood: 0.55, stool_wood: 0.5, k_chair_a: 0.55, k_chair_b: 0.55, p_gamer_chair: 0.55, p_bench: 0.8 };
 
 export class Avatar {
@@ -588,6 +591,8 @@ export class World {
   onZoneChange?: (z: Zone | null) => void;
   onFrame?: () => void;
   onFloorClick?: (p: THREE.Vector3, ev: MouseEvent) => boolean; // true = consumido (editor)
+  /** Pede confirmação antes de andar até onde a pessoa clicou (o menu "Ir até lá?" fica na interface). */
+  onWalkRequest?: (plan: WalkPlan, x: number, y: number) => void;
   /** Botão direito / clique em um personagem. */
   onAvatarMenu?: (id: string, x: number, y: number, isMe: boolean) => void;
   onAvatarClick?: (id: string, x: number, y: number) => void;
@@ -1506,6 +1511,33 @@ export class World {
     this.onSit?.(true);
   }
 
+  /** Anda até o destino confirmado (cadeira: senta ao chegar; no mapa geral: volta a câmera e vai correndo). */
+  walkPlan(plan: WalkPlan) {
+    this.panOffset.set(0, 0, 0); // a câmera volta a seguir o personagem
+    const wasOverview = this.overview;
+    if (wasOverview) this.setOverview(false);
+    if (plan.seat) this.walkTo(plan.seat.x, plan.seat.z);
+    else this.walkTo(plan.x, plan.z);
+    if (wasOverview) this.runPath = this.path.length > 0;
+  }
+
+  /** Volta para onde eu estava antes de a conexão cair (sem levar para a entrada ou para a sala do cargo). */
+  restoreMe(p: { x: number; z: number; dir: number; sitting: boolean; level: number }) {
+    if (p.level !== this.level) this.setLevel(p.level, p.x, p.z);
+    const seat = p.sitting ? this.seatNear(new THREE.Vector3(p.x, 0, p.z)) : null;
+    if (seat) this.sitAt(seat);
+    else {
+      this.me.root.position.set(p.x, 0, p.z);
+      this.me.targetDir = p.dir;
+      this.me.body.rotation.y = p.dir;
+      this.unstick();
+    }
+    this.path = [];
+    this.walkGoal = null;
+    this.camTarget.copy(this.me.root.position);
+    this.lastState = ""; // manda a posição de novo para o servidor (sessão nova não sabe onde estou)
+  }
+
   /** Coloca o meu personagem sentado nessa cadeira (ao entrar no escritório). */
   sitAt(seat: Item) {
     this.me.root.position.set(seat.x, 0, seat.z);
@@ -1682,25 +1714,18 @@ export class World {
     el.addEventListener("pointerup", endDrag);
     el.addEventListener("pointercancel", endDrag);
 
-    /** Leva o personagem até o ponto (cadeira, lugar do chão ou, no mapa, volta a câmera e vai correndo). */
+    /**
+     * Clique no mapa: não anda direto, pede confirmação ("Ir até lá?"). Vários cliques só mudam o
+     * destino da mesma pergunta. Sem quem pergunte (onWalkRequest), anda direto.
+     */
     const goTo = (e: MouseEvent, p: THREE.Vector3) => {
       if (!this.inputEnabled) return;
-      this.panOffset.set(0, 0, 0); // a câmera volta a seguir o personagem
       const obj = this.pickItem(e);
       const it = obj && this.layout.items.find((i) => i.id === obj.userData.itemId);
-      // clicou em cima da cadeira (o ponto do chão fica atrás dela na visão diagonal): vai direto sentar
-      if (it && SEATS[it.type]) {
-        if (this.overview) this.setOverview(false);
-        this.walkTo(it.x, it.z);
-        return;
-      }
-      if (this.overview) {
-        this.setOverview(false);
-        this.walkTo(p.x, p.z);
-        this.runPath = this.path.length > 0;
-        return;
-      }
-      this.walkTo(p.x, p.z);
+      // clicou em cima da cadeira (o ponto do chão fica atrás dela na visão diagonal): o destino é sentar
+      const plan: WalkPlan = { x: p.x, z: p.z, seat: it && SEATS[it.type] ? it : this.seatNear(p) };
+      if (this.onWalkRequest) this.onWalkRequest(plan, e.clientX, e.clientY);
+      else this.walkPlan(plan);
     };
 
     el.addEventListener("click", (e) => {
@@ -1721,23 +1746,13 @@ export class World {
         const obj = this.pickItem(e);
         const it = obj && this.layout.items.find((i) => i.id === obj.userData.itemId);
         if (it && DEFS[it.type]?.interactive && this.onItemClick?.(it, e.clientX, e.clientY)) return;
-        // um clique numa cadeira já basta: vai até ela e senta (no chão continuam os dois cliques)
-        if (it && SEATS[it.type]) {
-          goTo(e, p);
-          return;
-        }
       }
-      // no toque, um toque já leva até o lugar; no mouse é com dois cliques (abaixo)
-      if (lastPointer === "touch" && !this.editing) goTo(e, p);
+      // qualquer clique no chão ou numa cadeira abre a confirmação de ir até lá
+      if (!this.editing) goTo(e, p);
     });
     el.addEventListener("dblclick", (e) => {
-      if ((e.target as HTMLElement) !== el || this.editing || lastPointer === "touch") return;
-      const p = this.pickFloor(e);
-      if (!p) return;
-      const av = this.pickAvatar(e);
-      if (av && av !== this.me?.info.id) return; // dois cliques numa pessoa: o menu dela já abriu
-      e.preventDefault();
-      goTo(e, p);
+      // o clique simples já abriu a confirmação; dois cliques não fazem nada a mais
+      if ((e.target as HTMLElement) === el) e.preventDefault();
     });
     // ---- toque: pinça para zoom e toque longo numa pessoa para abrir o menu
     const touches = new Map<number, { x: number; y: number }>();

@@ -203,7 +203,7 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             if sink.send(Message::Text(m.into())).await.is_err() {
                 break;
@@ -227,7 +227,8 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
         match (parsed, &my_id) {
             (ClientMsg::Join { key, name, color, look, admin_key }, None) => {
                 let is_admin = !st.cfg.admin_key.is_empty() && admin_key == st.cfg.admin_key;
-                if key != st.cfg.office_key {
+                // sem espaço sobrando (copiar e colar a chave)
+                if key.trim() != st.cfg.office_key.trim() {
                     let _ = tx.send(json!({"t":"error","msg":"Chave do escritório inválida"}).to_string());
                     break;
                 }
@@ -416,7 +417,12 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
         st.broadcast(&json!({"t":"peer_leave","id":id}), None).await;
         info!("saiu: {id}");
     }
-    writer.abort();
+    // deixa sair o que ainda estava na fila (ex.: "Chave do escritório inválida") antes de fechar;
+    // antes o abort() cortava a mensagem e o app ficava reconectando sem mostrar o erro
+    drop(tx);
+    if tokio::time::timeout(std::time::Duration::from_secs(2), &mut writer).await.is_err() {
+        writer.abort();
+    }
 }
 
 /// "0.4" / "v3.1" / "0.4.0" → (0, 4, 0). Aceita o que for digitado no painel de versões.

@@ -354,3 +354,19 @@ Identity no LiveKit = id do peer no servidor.
   inclinação; o personagem desliza até o centro do assento. Vale para os outros também (vem de extra.sit).
   Produção: verkz-office-server:0.15.1 (83938dae5687) na stack 4, feita de FROM d5c8a2899c2c + diff do world.ts
   aplicado por `apply.mjs` (a imagem node:slim não tem git/patch). Estágio web = bc594c5d6d54 (fonte com cadeiras).
+- **23/11 ~09:50 — 0.15.2 e 0.15.3 (stack 4 em 0.15.3):**
+  - Personagem "andando sozinho": cada reconexão do WebSocket (oscilação, notebook acordando, servidor reiniciando)
+    refazia o `welcome` → nascia na entrada e ia para a cadeira da sala do cargo. Agora `world.restoreMe` mantém
+    posição/andar/sentado e manda a posição de novo.
+  - Clique no mapa pede confirmação ("Ir até lá?" / "Sentar nesta cadeira?") via `world.onWalkRequest` + `walkPlan`;
+    vários cliques só trocam o destino; dois cliques não andam mais direto.
+  - net.ts: "Sair" com reconexão pendente entrava de novo (connect() zerava closedByUser) → `open()` interno e timer
+    cancelado no close; conexão muda 50 s sem nada do servidor é refeita.
+  - Dock: refeito só quando muda e com um clique delegado (antes o clique se perdia enquanto o LiveKit reconectava).
+  - nearItem cancela se o personagem parou de andar (a ação não dispara depois sozinha). G não age no editor.
+  - Chave: campo sem maiúscula automática/autocorreção e com trim (o servidor aceita só `verkz1` exato).
+  - Setinha ao lado do microfone e da câmera no dock (`dev-mic`/`dev-cam`): aparelho, saída de som, redução de ruído,
+    áudio 3D; câmera, qualidade, fundo rápido, espelhar.
+  - NÃO publicado (pedido do Lopes): server/src/main.rs com a mensagem "Chave do escritório inválida" garantida
+    (esperar o writer antes de fechar) e chave com trim. Entra no próximo build do servidor (Rust).
+  - Estágio web da 0.15.3: fonte = base bc594c5d6d54 + diffs (procure no log); base usada: bc594c5d6d54.

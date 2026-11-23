@@ -715,3 +715,22 @@ body.meet-mode #stage canvas, body.meet-mode .labels { visibility: hidden; }
 .fn-txt b { font-size: 13px; font-weight: 600; }
 .fn-txt small { font-size: 12px; color: var(--text-2); }
 .fn-row kbd { flex: none; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border-strong); font: 600 11px/1.4 inherit; font-family: inherit; color: var(--text-2); }
+
+/* ---------- setinha do microfone/câmera no dock */
+.dock .split { display: flex; align-items: center; gap: 0; }
+.dock .icon-btn.caret { width: 22px; min-width: 22px; padding: 0; margin-left: -2px; border-radius: 8px; color: var(--text-2); }
+.dock .icon-btn.caret:hover, .dock .icon-btn.caret.active { color: var(--text); background: var(--raised); }
+.popover.dev-pop { width: 340px; gap: 8px; max-height: 70vh; overflow-y: auto; }
+.popover.dev-pop.dev-mic { transform: translateX(-50%); margin-left: -150px; }
+.popover.dev-pop.dev-cam { transform: translateX(-50%); margin-left: -90px; }
+.dev-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+.dev-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 0; border-radius: 8px; background: none; color: var(--text); font: 500 13px/1.3 inherit; font-family: inherit; text-align: left; cursor: pointer; }
+.dev-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-item:hover { background: var(--raised); }
+.dev-item.on { color: var(--accent); }
+.dev-seg { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.dev-seg button { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: none; color: var(--text-2); font: 600 12px/1 inherit; font-family: inherit; cursor: pointer; }
+.dev-seg button.on { border-color: var(--accent); color: var(--accent); }
+.dev-sws { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 4px; }
+.dev-sw { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 2px; font-size: 13px; cursor: pointer; }
+.dev-sw input { accent-color: var(--accent); width: 16px; height: 16px; }

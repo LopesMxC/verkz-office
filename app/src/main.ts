@@ -154,7 +154,7 @@ function showLogin(error = "") {
         <label class="field"><span class="label">Seu cargo</span><select class="input" name="role" required>
           <option value="" disabled ${prefs.role ? "" : "selected"}>Escolha o seu cargo</option>
           ${ROLES.map((r) => `<option ${prefs.role === r ? "selected" : ""}>${r}</option>`).join("")}</select></label>
-        <label class="field"><span class="label">Chave do escritório</span><input class="input" name="key" type="password" required value="${esc(prefs.key)}"></label>
+        <label class="field"><span class="label">Chave do escritório</span><input class="input" name="key" type="password" required autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" value="${esc(prefs.key)}"></label>
         <div>
           <button type="button" class="server-toggle ${serverOpen ? "open" : ""}" data-server>${icon("chevron-right", 14)} Servidor: ${esc(prefs.server.replace(/^wss?:\/\//, "").replace(/\/ws$/, ""))}</button>
           <label class="field ${serverOpen ? "" : "hidden"}" style="margin-top:10px" data-server-field><input class="input" name="server" value="${esc(prefs.server)}"></label>
@@ -181,7 +181,8 @@ function showLogin(error = "") {
     e.preventDefault();
     const f = new FormData(e.target as HTMLFormElement);
     prefs.name = String(f.get("name")).trim();
-    prefs.key = String(f.get("key"));
+    // sem espaço sobrando (copiar e colar) — o celular também não põe maiúscula sozinho no campo
+    prefs.key = String(f.get("key") ?? "").trim();
     prefs.role = String(f.get("role") ?? "");
     prefs.server = String(f.get("server")).trim();
     savePrefs();
@@ -273,6 +274,12 @@ function start() {
       renderDock();
       renderTop();
     };
+    // clique no mapa: pergunta antes de ir (vários cliques só trocam o destino da mesma pergunta)
+    world.onWalkRequest = (plan, x, y) =>
+      menu(x + 16, y + 16, plan.seat ? "Sentar nesta cadeira?" : "Ir até lá?", [
+        ["map", plan.seat ? "Sim, sentar" : "Sim, ir até lá", () => world.walkPlan(plan)],
+        ["x", "Cancelar", () => {}],
+      ]);
     editor = new Editor(world, hud, (layout) => net.send({ t: "layout_save", layout }), toast);
     editor.onClose = () => {
       world.editing = false;
@@ -319,7 +326,7 @@ function start() {
     setInterval(applyEnv, 10 * 60_000);
   }
 
-  net = new Net(prefs.server, () => ({ t: "join", key: prefs.key, name: prefs.name, color: lookColor(prefs.look), look: prefs.look, admin_key: prefs.adminKey }));
+  net = new Net(prefs.server, () => ({ t: "join", key: prefs.key.trim(), name: prefs.name, color: lookColor(prefs.look), look: prefs.look, admin_key: prefs.adminKey.trim() }));
   net.on("error", (m) => {
     net.close();
     showLogin(m.msg);
@@ -333,6 +340,8 @@ function start() {
     await Promise.race([modelsReady, new Promise((r) => setTimeout(r, 15_000))]);
     myId = m.id;
     isAdmin = !!m.admin;
+    // reconexão (internet oscilou, servidor reiniciou): guarda onde eu estava para não "teleportar"
+    const prev = world.me ? { x: world.me.root.position.x, z: world.me.root.position.z, dir: world.me.targetDir, sitting: world.me.sitting, level: world.level } : null;
     for (const id of [...world.others.keys()]) world.removePeer(id);
     world.setLayout(m.layout as Layout);
     // nasce perto da entrada, com um pequeno desvio para não ficar em cima de ninguém
@@ -341,7 +350,8 @@ function start() {
     world.spawnMe(me);
     // nasce sentado numa cadeira livre da sala do seu cargo
     for (const p of m.peers) world.addPeer(p);
-    goToRoleRoom(true);
+    if (prev) world.restoreMe(prev);
+    else goToRoleRoom(true);
     sendState({ role: prefs.role || null, level: world.level || null });
     world.refreshLevelVisibility();
     applyEnv();
@@ -533,20 +543,21 @@ function renderDock() {
     // celular: só o essencial no dock; o resto fica no "Mais"
     const anyOpen = popover === "more" || (leftOpen && !editor?.active) || ["meetings", "apps", "team"].includes(rightPanel ?? "");
     document.body.classList.toggle("sheet-open", !!popover || (leftOpen && !editor?.active) || !!rightPanel || !!editor?.active);
-    dock.innerHTML = [
+    setDock(dock, [
       b("mic", media?.micOn ? "mic" : "mic-off", media?.micOn ? "Desligar microfone" : "Ligar microfone", media?.micOn ? "" : "off"),
       b("cam", media?.camOn ? "video" : "video-off", media?.camOn ? "Desligar câmera" : "Ligar câmera", media?.camOn ? "active" : "off"),
       b("emote", "smile", "Emotes", popover === "emote" ? "active" : ""),
       b("chat", "chat", "Chat", rightPanel === "chat" ? "active" : "", unread ? `<span class="badge">${unread > 9 ? "9+" : unread}</span>` : ""),
       b("map", "map", "Mapa", world?.overview ? "active" : ""),
       b("more", "menu", "Mais", anyOpen ? "active" : ""),
-    ].join("");
-    dock.querySelectorAll<HTMLElement>("[data-id]").forEach((el) => el.addEventListener("click", () => dockAction(el.dataset.id!)));
+    ].join(""));
     return;
   }
-  dock.innerHTML = [
-    b("mic", media?.micOn ? "mic" : "mic-off", media?.micOn ? "Desligar microfone (M)" : "Ligar microfone (M)", media?.micOn ? "" : "off"),
-    b("cam", media?.camOn ? "video" : "video-off", media?.camOn ? "Desligar câmera" : "Ligar câmera", media?.camOn ? "active" : "off"),
+  const caret = (id: string, tip: string) =>
+    `<button class="icon-btn caret ${popover === id ? "active" : ""}" data-id="${id}" data-tip="${tip}" aria-label="${tip}">${icon("chevron-up", 14, 2.4)}</button>`;
+  setDock(dock, [
+    `<span class="split">${b("mic", media?.micOn ? "mic" : "mic-off", media?.micOn ? "Desligar microfone (M)" : "Ligar microfone (M)", media?.micOn ? "" : "off")}${caret("dev-mic", "Microfone e som")}</span>`,
+    `<span class="split">${b("cam", media?.camOn ? "video" : "video-off", media?.camOn ? "Desligar câmera" : "Ligar câmera", media?.camOn ? "active" : "off")}${caret("dev-cam", "Câmera e fundo")}</span>`,
     canShareScreen ? b("screen", "screen", media?.screenOn ? "Parar de compartilhar" : "Compartilhar tela", media?.screenOn ? "active" : "") : "",
     b("rec", "record", recorder?.active ? "Parar gravação" : "Gravar reunião", recorder?.active ? "rec-on" : ""),
     `<span class="divider"></span>`,
@@ -565,8 +576,24 @@ function renderDock() {
     b("settings", "settings", "Configurações"),
     `<span class="divider"></span>`,
     b("exit", "log-out", "Sair"),
-  ].join("");
-  dock.querySelectorAll<HTMLElement>("[data-id]").forEach((el) => el.addEventListener("click", () => dockAction(el.dataset.id!)));
+  ].join(""));
+}
+
+/**
+ * Só troca o dock quando algo mudou, com um clique só para todos os botões. Antes ele era refeito a
+ * cada mudança do áudio/vídeo (várias por segundo enquanto o LiveKit reconecta) e o clique se perdia.
+ */
+function setDock(dock: HTMLElement, html: string) {
+  if (!dock.dataset.bound) {
+    dock.dataset.bound = "1";
+    dock.addEventListener("click", (e) => {
+      const el = (e.target as HTMLElement).closest<HTMLElement>("[data-id]");
+      if (el && dock.contains(el)) dockAction(el.dataset.id!);
+    });
+  }
+  if (dock.dataset.html === html) return;
+  dock.dataset.html = html;
+  dock.innerHTML = html;
 }
 
 async function dockAction(id: string) {
@@ -638,6 +665,8 @@ async function dockAction(id: string) {
       break;
     case "emote":
     case "pad":
+    case "dev-mic":
+    case "dev-cam":
       togglePopover(id);
       break;
     case "team":
@@ -1536,7 +1565,7 @@ function modal(title: string, body: string, actions: [string, string, () => void
 }
 
 // ------------------------------------------------------------ emotes e soundpad
-let popover: "emote" | "pad" | "more" | null = null;
+let popover: "emote" | "pad" | "more" | "dev-mic" | "dev-cam" | null = null;
 function togglePopover(id: string) {
   document.querySelector(".popover")?.remove();
   popover = popover === id ? null : (id as typeof popover);
@@ -1547,6 +1576,11 @@ function togglePopover(id: string) {
   hud.appendChild(el);
   if (popover === "more") {
     renderMore(el);
+    return;
+  }
+  if (popover === "dev-mic" || popover === "dev-cam") {
+    el.classList.add("dev-pop", popover);
+    renderDevPop(el, popover);
     return;
   }
   if (popover === "emote") {
@@ -1643,7 +1677,8 @@ function nearItem(it: Item, then: () => void) {
     if (Math.hypot(p.x - it.x, p.z - it.z) < 2.2) {
       clearInterval(iv);
       then();
-    } else if (Date.now() - t0 > 12_000) clearInterval(iv);
+      // parou de andar (desistiu, foi para outro lado pelo teclado): cancela, senão a ação disparava depois sozinha
+    } else if (Date.now() - t0 > 12_000 || (!world.walking && Date.now() - t0 > 800)) clearInterval(iv);
   }, 200);
 }
 
@@ -2397,6 +2432,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key.toLowerCase() !== "g" || e.ctrlKey || e.metaKey || e.altKey || !world?.me) return;
   const t = e.target as HTMLElement;
   if (t.closest("input, textarea, select, [contenteditable]") || overlay.innerHTML || document.querySelector(".modal-bg")) return;
+  if (editor?.active) return; // editando o escritório: G não esconde o mapa
   setCallMode(prefs.callMode === "reuniao" ? "escritorio" : "reuniao");
 });
 // no modo reunião o mapa fica atrás dos blocos: as setas e WASD não andam com o personagem
@@ -2480,6 +2516,93 @@ function funcsHtml() {
       )
       .join("")}</div>`,
   ).join("");
+}
+
+// ------------------------------------------------------------ setinha do microfone/câmera no dock
+/** Menu rápido ao lado do botão: escolher o aparelho e os ajustes principais sem abrir as Configurações. */
+async function renderDevPop(el: HTMLElement, kind: "dev-mic" | "dev-cam") {
+  const mp = prefs.media;
+  const devs = await media.listDevices();
+  if (!document.body.contains(el)) return;
+  const list = (title: string, items: MediaDeviceInfo[], cur: string | undefined, key: string, fallback: string) =>
+    `<div class="label">${title}</div><div class="dev-list">${
+      items.length
+        ? items
+            .map((d, i) => {
+              const on = (cur ?? "default") === d.deviceId || (!cur && i === 0);
+              return `<button type="button" class="dev-item ${on ? "on" : ""}" data-k="${key}" data-v="${esc(d.deviceId)}"><span>${esc(d.label || `${fallback} ${i + 1}`)}</span>${on ? icon("check", 15, 2.4) : ""}</button>`;
+            })
+            .join("")
+        : `<div class="note">Nenhum aparelho encontrado.</div>`
+    }</div>`;
+  const sw = (k: string, label: string, on: boolean) =>
+    `<label class="dev-sw"><span>${label}</span><input type="checkbox" data-sw="${k}" ${on ? "checked" : ""}></label>`;
+  if (kind === "dev-mic") {
+    el.innerHTML = `${list("Microfone", devs.mics, mp.micId, "micId", "Microfone")}${list("Saída de som", devs.speakers, mp.speakerId, "speakerId", "Alto-falante")}
+      <div class="dev-sws">${sw("noiseSuppression", "Redução de ruído", mp.noiseSuppression)}${sw("spatial", "Áudio 3D", mp.spatial)}</div>
+      <button type="button" class="btn ghost sm" data-more>${icon("settings", 15)} Mais ajustes</button>`;
+  } else {
+    const bg = prefs.camBg;
+    const bgKey = bg.kind === "image" ? (bg.img?.startsWith("preset:") ? bg.img : "custom") : bg.kind;
+    const bgs: [string, string, CamBg][] = [
+      ["none", "Sem fundo", { kind: "none" }],
+      ["blur", "Desfocar", { kind: "blur" }],
+      ["preset:verkz", "VERKZ", { kind: "image", img: "preset:verkz" }],
+      ["preset:escritorio", "Escritório", { kind: "image", img: "preset:escritorio" }],
+    ];
+    el.innerHTML = `${list("Câmera", devs.cams, mp.camId, "camId", "Câmera")}
+      <div class="label">Qualidade</div><div class="dev-seg">${(["360", "720"] as const).map((q) => `<button type="button" class="${mp.camQuality === q ? "on" : ""}" data-q="${q}">${q === "360" ? "Leve (360p)" : "HD (720p)"}</button>`).join("")}</div>
+      <div class="label">Fundo</div><div class="dev-seg">${bgs.map(([k, n]) => `<button type="button" class="${bgKey === k ? "on" : ""}" data-bg="${k}">${n}</button>`).join("")}</div>
+      <div class="dev-sws">${sw("mirror", "Espelhar minha câmera", mp.mirror)}</div>
+      <button type="button" class="btn ghost sm" data-more>${icon("settings", 15)} Mais fundos e ajustes</button>`;
+    el.querySelectorAll<HTMLElement>("[data-q]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        mp.camQuality = b.dataset.q as "360" | "720";
+        savePrefs();
+        // aplica religando a câmera (a resolução só muda ao abrir de novo)
+        if (media.camOn) {
+          await media.setCam(false);
+          await media.setCam(true);
+        }
+        renderDevPop(el, kind);
+      }),
+    );
+    el.querySelectorAll<HTMLElement>("[data-bg]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        const pick = bgs.find(([k]) => k === b.dataset.bg)![2];
+        prefs.camBg = pick;
+        savePrefs();
+        if (pick.kind !== "none" && !(await camBgSupported())) toast("Este computador não suporta fundo de câmera.", true);
+        else await media.setCamBg(pick);
+        renderDevPop(el, kind);
+      }),
+    );
+  }
+  el.querySelectorAll<HTMLElement>("[data-k]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      (mp as any)[b.dataset.k!] = b.dataset.v;
+      savePrefs();
+      await media.applyDevices();
+      renderDevPop(el, kind);
+    }),
+  );
+  el.querySelectorAll<HTMLInputElement>("[data-sw]").forEach((c) =>
+    c.addEventListener("change", async () => {
+      const k = c.dataset.sw!;
+      (mp as any)[k] = c.checked;
+      savePrefs();
+      if (k === "spatial") media.setSpatial(c.checked);
+      if (k === "noiseSuppression" && media.micOn) {
+        await media.setMic(false);
+        await media.setMic(true);
+      }
+      if (k === "mirror") world.me?.bubble.querySelector("video")?.classList.toggle("mirror", c.checked);
+    }),
+  );
+  el.querySelector("[data-more]")?.addEventListener("click", () => {
+    togglePopover(kind);
+    openSettings();
+  });
 }
 
 // ------------------------------------------------------------ fundo da câmera
@@ -2972,7 +3095,7 @@ async function openSettings() {
         <div class="pc-row"><span class="label">Versão</span><span>${esc(String(ver))}</span></div>
         ${isNative ? `${sw("autoUpdate", "Procurar atualizações automaticamente", prefs.autoUpdate, "Verifica ao abrir, a cada 30 minutos e quando o computador volta do descanso.")}
         <button type="button" class="btn secondary sm" data-check>Procurar atualização agora</button>` : ""}
-        <label class="field"><span class="label">Chave de gestão</span><input class="input" name="adminKey" type="password" value="${esc(prefs.adminKey)}" placeholder="Só para a gestão"></label>
+        <label class="field"><span class="label">Chave de gestão</span><input class="input" name="adminKey" type="password" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" value="${esc(prefs.adminKey)}" placeholder="Só para a gestão"></label>
         <div class="note">${isAdmin ? "Você está conectado como gestão." : "Com a chave de gestão você vê a atividade da equipe e configura o escritório. Vale ao entrar de novo."}</div>
       </section>
     </form></div>`,
