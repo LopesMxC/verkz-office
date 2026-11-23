@@ -40,6 +40,8 @@ interface Prefs {
   weatherFx: boolean;
   /** Mostrar o nome das salas no mapa. */
   zoneTags: boolean;
+  /** câmera volta para o personagem depois de arrastar o mapa */
+  camFollow: boolean;
   media: MediaPrefs;
   sound: SoundPrefs;
   role: string;
@@ -86,6 +88,7 @@ function loadPrefs(): Prefs {
     shareAgendaTitles: p.shareAgendaTitles ?? false,
     weatherFx: p.weatherFx ?? true,
     zoneTags: p.zoneTags ?? true,
+    camFollow: p.camFollow ?? true,
     media: { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio", spatial: true, ...(p.media ?? {}) },
     sound: { ...soundPrefs, ...(p.sound ?? {}) },
     role: p.role ?? "",
@@ -259,6 +262,7 @@ function start() {
     world.onOverviewChange = () => renderDock();
     world.setView(prefs.view);
     document.body.classList.toggle("hide-zone-tags", !prefs.zoneTags);
+    world.followCam = prefs.camFollow;
     mountViewSwitch();
     if (prefs.callMode === "reuniao") openMeeting();
     world.onEnterMyRoom = () => doorChime();
@@ -739,10 +743,13 @@ window.addEventListener("keydown", (e) => {
     dockAction("map");
   }
   if (e.key === "Escape") closeFloating();
-  if (!e.ctrlKey && !e.altKey && /^[0-9]$/.test(e.key)) {
-    const i = e.key === "0" ? 9 : Number(e.key) - 1;
+  if (!e.ctrlKey && !e.altKey && /^Digit[0-9]$/.test(e.code)) {
+    const d = Number(e.code.slice(5));
+    // 1–0: os 10 primeiros; Shift+1–5: os novos
+    const i = e.shiftKey ? (d >= 1 && d <= 5 ? 9 + d : -1) : d === 0 ? 9 : d - 1;
     if (EMOTES[i]) doEmote(EMOTES[i][0]);
   }
+  if ((e.key === "c" || e.key === "C") && !e.ctrlKey && !e.metaKey && !e.altKey && world?.me) world.recenter();
   if (e.key === "Enter") {
     openRight("chat");
     renderDock();
@@ -1660,7 +1667,8 @@ function togglePopover(id: string) {
     return;
   }
   if (popover === "emote") {
-    el.innerHTML = `<div class="label">Emotes · teclas 1–0</div><div class="emote-grid">${EMOTES.map(([id, emo, label], i) => `<button data-e="${id}" title="${esc(label)} (${(i + 1) % 10})"><span>${icon(emo, 22, 1.8)}</span><small>${esc(label)}</small></button>`).join("")}</div>`;
+    const key = (i: number) => (i < 10 ? String((i + 1) % 10) : `Shift+${i - 9}`);
+    el.innerHTML = `<div class="section-head"><span class="label">Emotes</span><span class="t-s c3">1–0 e Shift+1–5</span></div><div class="emote-grid">${EMOTES.map(([id, emo, label, color], i) => `<button data-e="${id}" style="--emo:${color}" title="${esc(label)} (${key(i)})"><b class="emo-ic">${icon(emo, 20, 1.9)}</b><small>${esc(label)}</small><kbd>${key(i)}</kbd></button>`).join("")}</div>`;
     el.querySelectorAll<HTMLElement>("[data-e]").forEach((b) => b.addEventListener("click", () => doEmote(b.dataset.e!)));
   } else renderPad(el);
 }
@@ -2487,7 +2495,7 @@ function mountViewSwitch() {
   document.querySelector(".view-switch")?.remove();
   const el = document.createElement("div");
   el.className = "view-switch panel";
-  el.innerHTML = `<button data-m="escritorio" title="Modo escritório: o mapa (G)">${icon("building", 17)}<span>Escritório</span></button><button data-m="reuniao" title="Modo reunião: blocos em mosaico (G)">${icon("users", 17)}<span>Reunião</span></button><i class="vs-sep"></i><button data-v="iso" title="Visão isométrica 3D (V)">${icon("cube", 17)}<span>Isométrica</span></button><button data-v="aerea" title="Visão aérea 3D (V)">${icon("plan", 17)}<span>Aérea</span></button><button data-v="2d" title="Visão 2D, plana (V)">${icon("square", 17)}<span>2D</span></button><i class="vs-sep"></i><button data-tags title="Mostrar ou ocultar o nome das salas (T)"><b class="tg-ic"></b><span>Títulos</span></button>`;
+  el.innerHTML = `<button data-m="escritorio" title="Modo escritório: o mapa (G)">${icon("building", 17)}<span>Escritório</span></button><button data-m="reuniao" title="Modo reunião: blocos em mosaico (G)">${icon("users", 17)}<span>Reunião</span></button><i class="vs-sep"></i><button data-v="iso" title="Visão isométrica 3D (V)">${icon("cube", 17)}<span>Isométrica</span></button><button data-v="aerea" title="Visão aérea 3D (V)">${icon("plan", 17)}<span>Aérea</span></button><button data-v="2d" title="Visão 2D, plana (V)">${icon("square", 17)}<span>2D</span></button><i class="vs-sep"></i><button data-tags title="Mostrar ou ocultar o nome das salas (T)"><b class="tg-ic"></b><span>Títulos</span></button><button data-center title="Centralizar no meu personagem (C)">${icon("locate-fixed", 17)}<span>Centralizar</span></button>`;
   const sync = () => {
     el.querySelectorAll<HTMLElement>("[data-v]").forEach((b) => b.classList.toggle("on", b.dataset.v === world.view));
     el.querySelectorAll<HTMLElement>("[data-m]").forEach((b) => b.classList.toggle("on", b.dataset.m === prefs.callMode));
@@ -2503,6 +2511,7 @@ function mountViewSwitch() {
     const m = (e.target as HTMLElement).closest<HTMLElement>("[data-m]");
     if (m) return setCallMode(m.dataset.m as CallMode);
     if ((e.target as HTMLElement).closest("[data-tags]")) return toggleZoneTags();
+    if ((e.target as HTMLElement).closest("[data-center]")) return world.recenter();
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-v]");
     if (!b) return;
     setView(b.dataset.v as ViewMode);
@@ -3496,6 +3505,7 @@ async function openSettings() {
         ${sw("gfx_shadows", "Sombras", prefs.gfx.shadows, "Sombra dos móveis e das pessoas (no 2D não tem sombra).")}
         ${sw("gfx_outline", "Contorno nas bordas", prefs.gfx.outline, "As linhas que desenham as bordas. Desligar deixa mais leve.")}
         ${sw("zoneTags", "Mostrar o nome das salas no mapa", prefs.zoneTags)}
+        ${sw("camFollow", "Câmera segue o personagem", prefs.camFollow, "Depois de arrastar o mapa, a câmera volta para você sozinha. Tecla C centraliza na hora.")}
         ${sw("weatherFx", "Efeitos de clima (chuva, neve, folhas)", prefs.weatherFx, "Desligue em computadores mais fracos.")}
         ${sw("eventSkin", "Usar a skin das datas especiais", prefs.look.eventSkin !== false, "Gorro no Natal, chapéu de bruxa no Halloween...")}
       </section>
@@ -3611,6 +3621,8 @@ function saveSettings(bg: HTMLElement) {
   prefs.shareMusic = c("shareMusic");
   prefs.weatherFx = c("weatherFx");
   prefs.zoneTags = c("zoneTags");
+  prefs.camFollow = c("camFollow");
+  world.followCam = prefs.camFollow;
   document.body.classList.toggle("hide-zone-tags", !prefs.zoneTags);
   const st = v("style") as GraphicStyle;
   if (st && st !== prefs.style) {

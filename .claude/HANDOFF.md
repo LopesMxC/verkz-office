@@ -421,3 +421,11 @@ Identity no LiveKit = id do peer no servidor.
   e devolve os instaladores). O GitHub ficou só para o Mac.
 - Deploy 0.17.0: web = etapa web da 0.16.3 (ab92c2a0ab30) + diffs; Rust = etapa build da 0.16.0 (08def30a335b) + main.rs com diff,
   cargo --offline; GLBs baixados no build do GitHub (Xiul109/SiSHoDit @49a5c6a).
+
+## App 0.6.7 / servidor 0.17.2
+- Emotes: 15 (EMOTES = [id, ícone, nome, cor]). Teclas 1–0 e Shift+1–5. Pose com entrada/saída suave (fator e), giro na dança,
+  partículas: ícones de traço (CSS2D, .emote-fx) e cubinhos (confete, vapor, chamas, gotas). Limite de 60 partículas por pessoa.
+- Câmera: world.followCam (prefs.camFollow, padrão ligado). Depois de arrastar o mapa volta sozinha em 2,5 s ou quando anda;
+  focusOn segura 4 s. world.recenter() = tecla C e botão "Centralizar" no seletor de visão.
+- Deploy 0.17.2: web a partir da etapa web da 0.17.0 (08b814c2244a) + diffs; final FROM 0.17.1.
+- Build do Mac no GitHub falhou por falta de máquina Mac no GitHub (não é erro de código): rodar de novo.

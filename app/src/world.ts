@@ -18,18 +18,36 @@ import { foliageMaterials } from "./models";
 import { PoolSim, POOL_W, POOL_H, PM, PR } from "./games";
 
 /** Emotes: nome → ícone (traço, sem emoji) e animação. */
-export const EMOTES: [string, string, string][] = [
-  ["acenar", "hand", "Acenar"],
-  ["joinha", "thumbs-up", "Joinha"],
-  ["palmas", "sparkles", "Palmas"],
-  ["rir", "laugh", "Rir"],
-  ["coracao", "heart", "Coração"],
-  ["danca", "music", "Dançar"],
-  ["pular", "party-popper", "Comemorar"],
-  ["pensar", "lightbulb", "Pensar"],
-  ["cafe", "coffee", "Pausa"],
-  ["fogo", "flame", "Mandou bem"],
+export const EMOTES: [string, string, string, string][] = [
+  // id, ícone, nome, cor do selo
+  ["acenar", "hand", "Acenar", "#C8F501"],
+  ["joinha", "thumbs-up", "Joinha", "#5ec8ff"],
+  ["palmas", "sparkles", "Palmas", "#ffd35c"],
+  ["rir", "laugh", "Rir", "#ffd35c"],
+  ["coracao", "heart", "Coração", "#ff7aa8"],
+  ["danca", "music", "Dançar", "#8a6cc9"],
+  ["pular", "party-popper", "Comemorar", "#C8F501"],
+  ["pensar", "lightbulb", "Pensar", "#ffd35c"],
+  ["cafe", "coffee", "Pausa", "#d9a46c"],
+  ["fogo", "flame", "Mandou bem", "#ff8a3d"],
+  ["surpresa", "zap", "Surpresa", "#5ec8ff"],
+  ["triste", "frown", "Triste", "#8f9bb3"],
+  ["dormir", "moon", "Dormir", "#a48ce0"],
+  ["sim", "check", "Concordo", "#27ae60"],
+  ["nao", "x", "Discordo", "#ff5a65"],
 ];
+/** Duração de cada emote (s). */
+const EMOTE_DUR: Record<string, number> = { danca: 4.2, pular: 2.8, pensar: 3.2, dormir: 3.6, triste: 3.2, rir: 2.8, cafe: 3.2 };
+const FX_MATS = new Map<string, THREE.MeshBasicMaterial>();
+function fxMat(c: string) {
+  let m = FX_MATS.get(c);
+  if (!m) {
+    m = new THREE.MeshBasicMaterial({ color: c, toneMapped: false });
+    m.userData.shared = true;
+    FX_MATS.set(c, m);
+  }
+  return m;
+}
 
 /** Itens que o personagem pode segurar (cozinha). */
 export const HOLD_ITEMS: Record<string, { label: string; ic: string; status: string }> = {
@@ -419,7 +437,9 @@ export class Avatar {
   extra: any = {};
   emoteEl: HTMLDivElement;
   activityEl: HTMLDivElement;
-  private emote: { name: string; until: number } | null = null;
+  private emote: { name: string; until: number; start: number; dur: number; nextFx: number; n: number } | null = null;
+  /** Partículas dos emotes: ícones de traço (DOM) e cubinhos (confete, vapor, chamas, gotas). */
+  private fx: { o: THREE.Object3D; v: THREE.Vector3; age: number; life: number; g: number; spin: number; el?: HTMLElement }[] = [];
   private talkPhase = Math.random() * 10;
   /** Jogando sinuca (extra.pool): mirando ou esperando a vez, força e hora da última tacada. */
   pool: { aim: boolean; pow: number; shotAt: number } | null = null;
@@ -585,12 +605,162 @@ export class Avatar {
   playEmote(name: string) {
     const e = EMOTES.find((x) => x[0] === name);
     if (!e) return;
-    this.emote = { name, until: performance.now() + 2600 };
-    this.emoteEl.innerHTML = icon(e[1], 26, 2.2);
+    const dur = EMOTE_DUR[name] ?? 2.6;
+    const now = performance.now();
+    this.emote = { name, start: now, dur, until: now + dur * 1000, nextFx: 0, n: 0 };
+    this.emoteEl.innerHTML = icon(e[1], 24, 2.2);
+    this.emoteEl.style.setProperty("--emo", e[3]);
+    this.emoteEl.style.animationDuration = `${dur}s`;
     this.emoteEl.classList.remove("hidden");
     this.emoteEl.classList.remove("pop");
     void this.emoteEl.offsetWidth;
     this.emoteEl.classList.add("pop");
+  }
+
+  /** Partículas de cada emote, soltas no tempo certo. */
+  private emoteFx(k: string, tt: number) {
+    const em = this.emote!;
+    if (tt < em.nextFx) return;
+    const every = (s: number) => {
+      em.nextFx = tt + s;
+    };
+    const once = (at: number, f: () => void) => {
+      if (tt < at) {
+        em.nextFx = at;
+        return;
+      }
+      f();
+      em.nextFx = 999;
+    };
+    switch (k) {
+      case "acenar":
+        return once(0.3, () => this.emitIcon("sparkles", "#C8F501", 2));
+      case "joinha":
+        return once(0.35, () => {
+          this.emitIcon("sparkles", "#5ec8ff", 2);
+          this.emitCubes(10, ["#5ec8ff", "#C8F501", "#ffffff"], 2.2);
+        });
+      case "palmas":
+        this.emitIcon("sparkles", "#ffd35c", 1);
+        return every(0.35);
+      case "rir":
+        this.emitIcon("laugh", "#ffd35c", 1);
+        return every(0.6);
+      case "coracao":
+        this.emitIcon("heart", "#ff7aa8", 1, true);
+        return every(0.3);
+      case "danca":
+        this.emitIcon("music", Math.random() > 0.5 ? "#a48ce0" : "#C8F501", 1);
+        return every(0.42);
+      case "pular":
+        this.emitCubes(26, ["#C8F501", "#ff7aa8", "#5ec8ff", "#ffd35c", "#ffffff"], 3.2);
+        return every(1.35);
+      case "pensar":
+        return once(1.7, () => {
+          this.emitIcon("lightbulb", "#ffd35c", 1, true, 1.2);
+          this.emitCubes(8, ["#ffd35c", "#ffffff"], 1.6);
+        });
+      case "cafe":
+        this.emitSteam(["#ffffff", "#e8e2d6"], 0.35);
+        return every(0.25);
+      case "fogo":
+        this.emitSteam(["#ff8a3d", "#ffd35c", "#ff5a65"], 0.9, true);
+        if (tt < 0.15) this.emitIcon("flame", "#ff8a3d", 1, true);
+        return every(0.12);
+      case "surpresa":
+        return once(0.1, () => {
+          this.emitIcon("zap", "#5ec8ff", 1, true, 0.9);
+          this.emitCubes(10, ["#5ec8ff", "#ffffff"], 2.4);
+        });
+      case "triste":
+        this.emitDrop();
+        return every(0.28 + Math.random() * 0.2);
+      case "dormir":
+        this.emitText("z", "#a48ce0");
+        return every(0.75);
+      case "sim":
+        return once(0.3, () => this.emitIcon("check", "#27ae60", 1, true));
+      case "nao":
+        return once(0.3, () => this.emitIcon("x", "#ff5a65", 1, true));
+    }
+  }
+
+  private addFx(o: THREE.Object3D, v: THREE.Vector3, life: number, g = 0, spin = 0, el?: HTMLElement) {
+    this.root.add(o);
+    this.fx.push({ o, v, age: 0, life, g, spin, el });
+    // limite para não pesar com muita gente usando emote ao mesmo tempo
+    while (this.fx.length > 60) this.killFx(this.fx.shift()!);
+  }
+  private killFx(p: { o: THREE.Object3D; el?: HTMLElement }) {
+    p.o.removeFromParent();
+    p.el?.remove();
+  }
+  /** Ícone de traço subindo e sumindo (corações, notas, ideia...). */
+  private emitIcon(ic: string, color: string, n = 1, big = false, life = 1.5) {
+    for (let i = 0; i < n; i++) {
+      const el = document.createElement("div");
+      el.className = "emote-fx" + (big ? " big" : "");
+      el.style.color = color;
+      el.innerHTML = `<i>${icon(ic, big ? 22 : 15, 2.4)}</i>`;
+      const o = new CSS2DObject(el);
+      o.position.set((Math.random() - 0.5) * 0.7, 1.75 + Math.random() * 0.2, (Math.random() - 0.5) * 0.3);
+      this.addFx(o, new THREE.Vector3((Math.random() - 0.5) * 0.35, big ? 0.55 : 0.85 + Math.random() * 0.35, 0), life, 0, 0, el);
+    }
+  }
+  private emitText(txt: string, color: string) {
+    const el = document.createElement("div");
+    el.className = "emote-fx zz";
+    el.style.color = color;
+    el.innerHTML = "<i></i>";
+    el.firstElementChild!.textContent = txt;
+    const o = new CSS2DObject(el);
+    o.position.set(0.2, 1.7, 0);
+    this.addFx(o, new THREE.Vector3(0.25, 0.5, 0), 2.2, 0, 0, el);
+  }
+  /** Confete em cubinhos (voxel, como o resto do mundo). */
+  private emitCubes(n: number, colors: string[], speed: number) {
+    for (let i = 0; i < n; i++) {
+      const m = new THREE.Mesh(geo.box(0.06, 0.06, 0.06), fxMat(colors[i % colors.length]));
+      m.position.set((Math.random() - 0.5) * 0.3, 1.6, (Math.random() - 0.5) * 0.3);
+      const a = Math.random() * Math.PI * 2;
+      const v = new THREE.Vector3(Math.cos(a) * speed * 0.35, speed * (0.6 + Math.random() * 0.5), Math.sin(a) * speed * 0.35);
+      this.addFx(m, v, 1.4 + Math.random() * 0.4, -7, (Math.random() - 0.5) * 14);
+    }
+  }
+  /** Vapor (café) ou chamas (mandou bem): sobe devagar e some. */
+  private emitSteam(colors: string[], speed: number, fromHand = false) {
+    for (let i = 0; i < 2; i++) {
+      const m = new THREE.Mesh(geo.box(0.05, 0.05, 0.05), fxMat(colors[Math.floor(Math.random() * colors.length)]));
+      m.position.set(0.25 + (Math.random() - 0.5) * 0.1, fromHand ? 1.75 : 1.25, 0.15 + (Math.random() - 0.5) * 0.1);
+      this.addFx(m, new THREE.Vector3((Math.random() - 0.5) * 0.15, speed * (0.7 + Math.random() * 0.5), 0), 0.9, 0, 3);
+    }
+  }
+  /** Gota de chuva da nuvem de tristeza. */
+  private emitDrop() {
+    const m = new THREE.Mesh(geo.box(0.035, 0.08, 0.035), fxMat("#5ec8ff"));
+    m.position.set((Math.random() - 0.5) * 0.5, 2.15, (Math.random() - 0.5) * 0.3);
+    this.addFx(m, new THREE.Vector3(0, -0.6, 0), 0.75, -4);
+  }
+  private updateFx(dt: number) {
+    if (!this.fx.length) return;
+    for (let i = this.fx.length - 1; i >= 0; i--) {
+      const p = this.fx[i];
+      p.age += dt;
+      if (p.age >= p.life) {
+        this.killFx(p);
+        this.fx.splice(i, 1);
+        continue;
+      }
+      p.v.y += p.g * dt;
+      p.o.position.addScaledVector(p.v, dt);
+      if (p.spin) p.o.rotation.y += p.spin * dt;
+      const k = p.age / p.life;
+      const fade = 1 - k * k;
+      if (p.el) {
+        p.el.style.opacity = String(fade);
+        p.el.style.setProperty("--s", String(0.6 + Math.min(1, p.age * 6) * 0.5));
+      } else p.o.scale.setScalar(Math.max(0.2, fade));
+    }
   }
 
   setLook(look: any) {
@@ -728,37 +898,120 @@ export class Avatar {
       this.emote = null;
       this.emoteEl.classList.add("hidden");
     }
+    this.updateFx(dt);
     if (this.emote) {
       const k = this.emote.name;
+      const tt = (now - this.emote.start) / 1000;
+      const dur = this.emote.dur;
+      const ss = (x: number) => {
+        const v = THREE.MathUtils.clamp(x, 0, 1);
+        return v * v * (3 - 2 * v);
+      };
+      // entra e sai suave (sem "pular" de pose)
+      const e = ss(tt / 0.25) * ss((dur - tt) / 0.35);
+      const P = (o: THREE.Object3D, x: number, y: number, z: number) => o.rotation.set(o.rotation.x + (x - o.rotation.x) * e, o.rotation.y + (y - o.rotation.y) * e, o.rotation.z + (z - o.rotation.z) * e);
+      const seated = this.sitT > 0.5;
+      const lift = (y: number) => {
+        if (!seated) this.body.position.y += y * e;
+      };
+      const legs = (l: number, r: number) => {
+        if (seated) return;
+        P(c.legL, l, 0, 0);
+        P(c.legR, r, 0, 0);
+      };
+      this.emoteFx(k, tt);
       if (k === "acenar") {
-        c.armR.rotation.set(0, 0, 2.6 + Math.sin(t * 14) * 0.35);
-      } else if (k === "joinha" || k === "fogo") {
-        c.armR.rotation.set(-1.4, 0, 0);
+        P(c.armR, 0, 0, 2.5 + Math.sin(t * 12) * 0.38);
+        P(c.armL, 0, 0, -0.15);
+        P(c.head, 0, 0.15, -0.12);
+        P(c.root, 0, 0, Math.sin(t * 6) * 0.06);
+      } else if (k === "joinha") {
+        const pump = tt < 0.6 ? Math.sin((tt / 0.6) * Math.PI) * 0.5 : 0;
+        P(c.armR, -1.5 - pump, 0, 0.15);
+        P(c.armL, -0.2, 0, -0.1);
+        P(c.head, Math.sin(t * 8) * 0.1, 0, 0.08);
+        lift(tt < 0.4 ? Math.sin((tt / 0.4) * Math.PI) * 0.12 : 0);
       } else if (k === "palmas") {
-        const s = Math.abs(Math.sin(t * 12)) * 0.5;
-        c.armL.rotation.set(-1.3, 0, -0.5 + s);
-        c.armR.rotation.set(-1.3, 0, 0.5 - s);
+        const s = Math.abs(Math.sin(t * 11));
+        P(c.armL, -1.35, 0, -0.6 + s * 0.5);
+        P(c.armR, -1.35, 0, 0.6 - s * 0.5);
+        P(c.head, -0.12, 0, 0);
+        lift(s * 0.04);
       } else if (k === "rir") {
-        c.head.rotation.set(-0.25 + Math.sin(t * 18) * 0.08, 0, 0);
-        this.body.position.y = Math.abs(Math.sin(t * 18)) * 0.03;
-        if (mouth) mouth.scale.y = mouthH * 3;
+        const sh = Math.sin(t * 17);
+        P(c.root, -0.2 + sh * 0.04, 0, 0);
+        P(c.head, -0.32 + sh * 0.06, 0, Math.sin(t * 5) * 0.1);
+        P(c.armL, -0.7, 0, -0.45 + sh * 0.08);
+        P(c.armR, -0.7, 0, 0.45 - sh * 0.08);
+        lift(Math.abs(sh) * 0.04);
+        if (mouth) mouth.scale.y = mouthH * (1 + 2.5 * e);
       } else if (k === "coracao") {
-        c.armL.rotation.set(-2.4, 0, -0.4);
-        c.armR.rotation.set(-2.4, 0, 0.4);
+        P(c.armL, -2.65, 0, -0.55);
+        P(c.armR, -2.65, 0, 0.55);
+        P(c.root, 0, 0, Math.sin(t * 3) * 0.07);
+        P(c.head, -0.1, 0, Math.sin(t * 3) * 0.12);
       } else if (k === "danca") {
-        c.root.rotation.y = Math.sin(t * 8) * 0.5;
-        c.armL.rotation.set(0, 0, -2.2 + Math.sin(t * 8) * 0.6);
-        c.armR.rotation.set(0, 0, 2.2 + Math.sin(t * 8) * 0.6);
-        this.body.position.y = Math.abs(Math.sin(t * 8)) * 0.08;
+        const bt = t * 7;
+        legs(Math.sin(bt) * 0.55, -Math.sin(bt) * 0.55);
+        P(c.armL, -1.2 + Math.sin(bt) * 0.9, 0, -0.35);
+        P(c.armR, -1.2 - Math.sin(bt) * 0.9, 0, 0.35);
+        P(c.head, Math.sin(bt * 2) * 0.08, 0, Math.sin(bt) * 0.15);
+        // giro no meio da dança
+        const spin = tt > 1.8 && tt < 2.5 ? ss((tt - 1.8) / 0.7) * Math.PI * 2 : 0;
+        P(c.root, 0, Math.sin(bt / 2) * 0.5 + spin, Math.sin(bt) * 0.08);
+        lift(Math.abs(Math.sin(bt)) * 0.09);
       } else if (k === "pular") {
-        this.body.position.y = Math.abs(Math.sin(t * 7)) * 0.35;
-        c.armL.rotation.set(0, 0, -2.8);
-        c.armR.rotation.set(0, 0, 2.8);
+        const ph = (tt % 0.9) / 0.9;
+        const air = 4 * ph * (1 - ph);
+        lift(air * 0.6);
+        legs(-0.7 * air, -0.7 * air);
+        P(c.armL, 0, 0, -2.8 + air * 0.3);
+        P(c.armR, 0, 0, 2.8 - air * 0.3);
+        P(c.head, -0.2, 0, 0);
       } else if (k === "pensar") {
-        c.armR.rotation.set(-2.0, 0, 0.6);
-        c.head.rotation.set(0, 0, 0.18);
+        const idea = tt > 1.7;
+        P(c.armR, idea ? -2.9 : -2.15, 0, idea ? 0.15 : 0.7);
+        P(c.armL, idea ? -0.2 : -0.95, 0, idea ? -0.1 : 0.75);
+        P(c.head, idea ? -0.2 : 0.1, idea ? 0 : Math.sin(t * 1.5) * 0.25, idea ? 0 : 0.2);
+        if (idea) lift(Math.max(0, Math.sin((tt - 1.7) * 6)) * 0.08);
       } else if (k === "cafe") {
-        c.armR.rotation.set(-1.9, 0, 0.2);
+        const sip = Math.max(0, Math.sin(tt * 2.2 - 1));
+        P(c.armR, -1.5 - sip * 0.9, 0, 0.25);
+        P(c.armL, -0.5, 0, -0.1);
+        P(c.head, -sip * 0.3, 0, 0);
+      } else if (k === "fogo") {
+        const up = Math.sin(t * 10) > 0;
+        P(c.armR, up ? -3.0 : -2.3, 0, 0.1);
+        P(c.armL, -0.4, 0, -0.25);
+        P(c.head, -0.15, 0, 0);
+        lift(up ? 0.06 : 0);
+      } else if (k === "surpresa") {
+        const jump = tt < 0.5 ? Math.sin((tt / 0.5) * Math.PI) : 0;
+        lift(jump * 0.3);
+        P(c.root, -0.25, 0, 0);
+        P(c.armL, -0.3, 0, -2.3);
+        P(c.armR, -0.3, 0, 2.3);
+        P(c.head, -0.28, 0, 0);
+        if (mouth) mouth.scale.y = mouthH * (1 + 2.5 * e);
+      } else if (k === "triste") {
+        P(c.head, 0.5, 0, Math.sin(t * 1.2) * 0.08);
+        P(c.root, 0.16, 0, 0);
+        P(c.armL, 0.12, 0, -0.04);
+        P(c.armR, 0.12, 0, 0.04);
+        lift(-0.03);
+      } else if (k === "dormir") {
+        P(c.head, 0.55 + Math.sin(t * 1.6) * 0.08, 0, 0.25);
+        P(c.root, 0.08, 0, 0.05);
+        P(c.armL, 0.05, 0, -0.02);
+        P(c.armR, 0.05, 0, 0.02);
+        lift(Math.sin(t * 1.6) * 0.015);
+      } else if (k === "sim") {
+        P(c.head, Math.sin(t * 9) * 0.28, 0, 0);
+        P(c.armR, -0.4, 0, 0.1);
+      } else if (k === "nao") {
+        P(c.head, 0, Math.sin(t * 9) * 0.5, 0);
+        P(c.armL, -1.25, 0, -0.75);
+        P(c.armR, -1.25, 0, 0.75);
       }
     } else if (this.pool && this.cueObj && !this.moving) {
       this.poolPose(c, t);
@@ -828,6 +1081,14 @@ export class World {
   camTarget = new THREE.Vector3();
   /** Quanto a pessoa arrastou o mapa para longe do personagem (zera ao andar). */
   panOffset = new THREE.Vector3();
+  /** A câmera volta sozinha para o personagem depois de arrastar o mapa (ou assim que ele anda). */
+  followCam = true;
+  private panAt = 0;
+  /** Centraliza a câmera no personagem agora. */
+  recenter() {
+    this.panOffset.set(0, 0, 0);
+    this.panAt = 0;
+  }
   keys = new Set<string>();
   path: THREE.Vector3[] = [];
   onMove?: (x: number, z: number, dir: number, moving: boolean, zone: Zone | null) => void;
@@ -1969,6 +2230,7 @@ export class World {
   focusOn(x: number, z: number) {
     const base = this.overview ? new THREE.Vector3() : this.me?.root.position.clone() ?? new THREE.Vector3();
     this.panOffset.set(x - base.x, 0, z - base.z);
+    this.panAt = performance.now() + 4000; // ver a pessoa/sala com calma antes de voltar
   }
 
   /** Arrasta o mapa: move a câmera na hora, sem sair muito do prédio. */
@@ -1980,6 +2242,7 @@ export class World {
     const tz = lim(this.camTarget.z + dz, d / 2);
     this.panOffset.set(tx - base.x, 0, tz - base.z);
     this.camTarget.set(tx, this.camTarget.y, tz);
+    this.panAt = performance.now();
   }
 
   walkTo(x: number, z: number) {
@@ -2660,7 +2923,12 @@ export class World {
     // câmera segue com suavidade
     // (somado ao deslocamento de quando a pessoa arrasta o mapa)
     const base = this.overview ? new THREE.Vector3(0, 0, 0) : pos.clone();
-    this.camTarget.lerp(base.add(this.panOffset), Math.min(1, dt * 4));
+    // segue o personagem: depois de arrastar o mapa, volta sozinha (2,5 s parado ou na hora que ele anda)
+    if (this.followCam && !this.overview && this.panOffset.lengthSq() > 0 && (moving || performance.now() - this.panAt > 2500)) {
+      this.panOffset.multiplyScalar(Math.max(0, 1 - dt * (moving ? 4 : 2.5)));
+      if (this.panOffset.lengthSq() < 0.0004) this.panOffset.set(0, 0, 0);
+    }
+    this.camTarget.lerp(base.add(this.panOffset), Math.min(1, dt * (moving ? 6 : 4)));
     // vista isométrica (diagonal, como The Sims) ou aérea (direto de cima)
     if (this.view === "aerea") this.camera.position.set(this.camTarget.x, 40, this.camTarget.z);
     // 2D: quase de cima, com uma leve inclinação para ainda ver o rosto das pessoas

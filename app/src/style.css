@@ -353,9 +353,19 @@ kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px s
 .cam-ph span { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .cam-ph small { font-size: 10.5px; color: var(--text-2); }
 .bubble video { width: 100%; height: 100%; object-fit: cover; display: block; }
-.emote-pop { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: #0D0D0D; color: #C8F501; border: 1.5px solid #C8F501; line-height: 1; filter: drop-shadow(0 4px 6px rgba(0,0,0,.5)); }
-.emote-pop.pop { animation: emote-pop 2.6s ease-out forwards; }
-@keyframes emote-pop { 0% { transform: translateY(8px) scale(.3); opacity: 0 } 12% { transform: translateY(-4px) scale(1.25); opacity: 1 } 22% { transform: scale(1) } 80% { opacity: 1 } 100% { transform: translateY(-26px); opacity: 0 } }
+.emote-pop { --emo: #C8F501; position: relative; display: grid; place-items: center; width: 46px; height: 46px; border-radius: 50%; background: #0D0D0D; color: var(--emo); border: 2px solid var(--emo); line-height: 1; box-shadow: 0 6px 14px rgba(0,0,0,.45), 0 0 0 0 var(--emo); }
+.emote-pop::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--emo); opacity: 0; }
+.emote-pop.pop { animation: emote-pop 2.6s cubic-bezier(.2,.9,.3,1.2) forwards; }
+.emote-pop.pop::after { animation: emote-ring 1s ease-out 2; }
+.emote-pop.pop .ico { animation: emote-ic .9s ease-in-out infinite alternate; }
+@keyframes emote-pop { 0% { transform: translateY(10px) scale(.2) rotate(-20deg); opacity: 0 } 10% { transform: translateY(-6px) scale(1.2) rotate(6deg); opacity: 1 } 18% { transform: translateY(0) scale(1) rotate(0) } 85% { transform: translateY(-6px) scale(1); opacity: 1 } 100% { transform: translateY(-24px) scale(.8); opacity: 0 } }
+@keyframes emote-ring { 0% { transform: scale(1); opacity: .8 } 100% { transform: scale(1.8); opacity: 0 } }
+@keyframes emote-ic { from { transform: rotate(-8deg) scale(1) } to { transform: rotate(8deg) scale(1.12) } }
+.emote-fx { pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0,0,0,.55)); }
+.emote-fx i { display: block; transform: scale(var(--s, 1)); transition: transform .1s; }
+.emote-fx.big i { animation: fx-wobble .6s ease-in-out infinite alternate; }
+.emote-fx.zz i { font: 800 18px/1 var(--font, sans-serif); font-style: italic; }
+@keyframes fx-wobble { from { rotate: -10deg } to { rotate: 10deg } }
 .activity-tag { font-size: 10.5px; font-weight: 600; color: var(--text-2); background: rgba(13,13,13,.78); border: 1px solid var(--border); padding: 1px 8px; border-radius: 999px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .ctx-menu, .person-card { position: fixed; z-index: 60; min-width: 210px; padding: 6px; box-shadow: var(--shadow); animation: pop-in .12s ease-out; }
@@ -376,6 +386,11 @@ kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px s
 .emote-grid button, .pad { position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border: 1px solid var(--border); background: var(--raised); border-radius: var(--r-md); cursor: pointer; }
 .emote-grid button:hover, .pad:hover { border-color: var(--accent); }
 .emote-grid span, .pad span { font-size: 22px; line-height: 26px; }
+.emote-grid button { --emo: var(--accent); gap: 4px; padding-bottom: 6px; transition: transform .12s, border-color .12s, background .12s; }
+.emote-grid button:hover { border-color: var(--emo); background: color-mix(in srgb, var(--emo) 10%, var(--raised)); transform: translateY(-2px); }
+.emote-grid button:hover .emo-ic { animation: emote-ic .45s ease-in-out infinite alternate; }
+.emote-grid .emo-ic { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; color: var(--emo); background: color-mix(in srgb, var(--emo) 15%, transparent); }
+.emote-grid kbd { font: 600 9px/1 inherit; color: var(--muted); background: none; border: 0; padding: 0; }
 .emote-grid small, .pad small { font-size: 10.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .pad i { position: absolute; top: 2px; right: 6px; font-style: normal; color: var(--muted); }
 .pad i:hover { color: var(--danger); }
