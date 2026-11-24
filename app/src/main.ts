@@ -10,7 +10,7 @@ import { sealEl } from "./logo";
 import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, isHostedWeb, NowPlaying, openTarget, Shortcut, activeApp, ytm, YtmState, appVersion, checkUpdate, UpdateInfo } from "./integrations";
 import type { Item, Layout, Zone } from "./furniture";
 import { DEFS, PHOTO_TYPES, imageToDataUrl, findItemAnyLevel, levelIds, levelName, levelView } from "./furniture";
-import { soundPrefs, SoundPrefs, notify, approachChime, doorChime, toggleSound, doorSound, preloadDoorSounds, elevatorDing, elevatorMusic, footstep, kitchenSound, PAD_SOUNDS, listCustom, addCustom, removeCustom, playPad, PadSound } from "./sound";
+import { soundPrefs, SoundPrefs, notify, approachChime, doorChime, toggleSound, doorSound, preloadDoorSounds, elevatorDing, elevatorMusic, footstep, kitchenSound, PAD_SOUNDS, listCustom, removeCustom, playPad, PadSound, sharedPad, SharedSound, prepareClip, localRaw } from "./sound";
 import { GameSession, GameKind, PoolPose, PoolTable, POOL_W, POOL_H, PM } from "./games";
 import { CAM_BG_PRESETS, presetImage, fileToBg, camBgSupported, type CamBg } from "./cambg";
 import { RadioPlayer, RadioSource, RadioState, parseRadioLink } from "./radio";
@@ -42,6 +42,8 @@ interface Prefs {
   zoneTags: boolean;
   /** câmera volta para o personagem depois de arrastar o mapa */
   camFollow: boolean;
+  /** tempo máximo (5–10 s) dos sons que eu adiciono ao soundpad */
+  padLen: number;
   media: MediaPrefs;
   sound: SoundPrefs;
   role: string;
@@ -89,6 +91,7 @@ function loadPrefs(): Prefs {
     weatherFx: p.weatherFx ?? true,
     zoneTags: p.zoneTags ?? true,
     camFollow: p.camFollow ?? true,
+    padLen: Number(p.padLen) >= 5 && Number(p.padLen) <= 10 ? Number(p.padLen) : 8,
     media: { noiseSuppression: true, micOnJoin: true, mirror: true, camQuality: "360", range: "medio", spatial: true, ...(p.media ?? {}) },
     sound: { ...soundPrefs, ...(p.sound ?? {}) },
     role: p.role ?? "",
@@ -363,6 +366,8 @@ function start() {
   });
   net.on("knock_office", (m) => showEntryRequest(String(m.rid), String(m.name)));
   net.on("knock_done", (m) => entryCards.get(String(m.rid))?.remove());
+  // alguém subiu/removeu um som ou a gestão mudou o tempo máximo
+  net.on("sounds", (m) => applySharedPad(m));
   net.on("bans", (m) => {
     gestaoState = { list: m.list ?? [], approval: !!m.approval };
     renderGestao();
@@ -374,6 +379,8 @@ function start() {
   net.on("welcome", async (m) => {
     waitingEl?.remove();
     waitingEl = null;
+    applySharedPad(m.sounds);
+    setTimeout(migrateLocalSounds, 4000);
     // não deixa a entrada travada se algum modelo 3D demorar (ele aparece em caixa simples)
     await Promise.race([modelsReady, new Promise((r) => setTimeout(r, 15_000))]);
     myId = m.id;
@@ -1670,7 +1677,10 @@ function togglePopover(id: string) {
     const key = (i: number) => (i < 10 ? String((i + 1) % 10) : `Shift+${i - 9}`);
     el.innerHTML = `<div class="section-head"><span class="label">Emotes</span><span class="t-s c3">1–0 e Shift+1–5</span></div><div class="emote-grid">${EMOTES.map(([id, emo, label, color], i) => `<button data-e="${id}" style="--emo:${color}" title="${esc(label)} (${key(i)})"><b class="emo-ic">${icon(emo, 20, 1.9)}</b><small>${esc(label)}</small><kbd>${key(i)}</kbd></button>`).join("")}</div>`;
     el.querySelectorAll<HTMLElement>("[data-e]").forEach((b) => b.addEventListener("click", () => doEmote(b.dataset.e!)));
-  } else renderPad(el);
+  } else {
+    el.classList.add("pad-pop");
+    renderPad(el);
+  }
 }
 
 let lastEmote = 0;
@@ -1681,20 +1691,94 @@ function doEmote(id: string) {
   net.send({ t: "fx", data: { emote: id } });
 }
 
+// ------------------------------------------------------------ soundpad compartilhado
+/** Ids dos sons que eu subi (para mostrar o "remover" só para quem adicionou; a gestão remove qualquer um). */
+function mySounds(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem("verkz-my-sounds") ?? "[]");
+  } catch {
+    return [];
+  }
+}
+function setMySounds(ids: string[]) {
+  try {
+    localStorage.setItem("verkz-my-sounds", JSON.stringify(ids.slice(-500)));
+  } catch {
+    /* armazenamento cheio */
+  }
+}
+
+function applySharedPad(v: any) {
+  if (!v) return;
+  sharedPad.list = Array.isArray(v.list) ? v.list : [];
+  sharedPad.max = 10;
+  sharedPad.base = httpBase();
+  sharedPad.key = prefs.key;
+  const el = document.querySelector<HTMLElement>(".popover.pad-pop");
+  if (popover === "pad" && el) renderPad(el);
+}
+
+/** Sobe um som para o escritório (cortado no tempo máximo). */
+async function uploadSound(name: string, data: ArrayBuffer, maxSec = prefs.padLen) {
+  const clip = await prepareClip(data, Math.min(10, Math.max(5, maxSec)));
+  const q = new URLSearchParams({ name: name.slice(0, 24), by: prefs.name, device: deviceId(), dur: clip.dur.toFixed(2) });
+  const r = await api(`/api/sounds?${q}`, { method: "POST", body: clip.wav, headers: { "Content-Type": "audio/wav" } });
+  if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? "Não consegui subir o som");
+  const { id } = await r.json();
+  setMySounds([...mySounds(), id]);
+  return clip;
+}
+
+/** Sons que estavam só neste aparelho (versões antigas) sobem uma vez para o escritório. */
+async function migrateLocalSounds() {
+  try {
+    if (localStorage.getItem("verkz-pad-migrated")) return;
+    const local = await Promise.race([listCustom(), new Promise<PadSound[]>((r) => setTimeout(() => r([]), 1500))]);
+    let n = 0;
+    for (const s of local) {
+      const raw = await localRaw(s.id);
+      if (!raw) continue;
+      try {
+        await uploadSound(raw.name, raw.data, 10);
+        await removeCustom(s.id);
+        n++;
+      } catch {
+        /* tenta de novo na próxima vez */
+        return;
+      }
+    }
+    localStorage.setItem("verkz-pad-migrated", "1");
+    if (n) toast(`${n} som(ns) seu(s) agora aparecem para todo o escritório`);
+  } catch {
+    /* sem armazenamento local */
+  }
+}
+
 async function renderPad(el: HTMLElement) {
-  // se o banco local demorar (aba antiga segurando o IndexedDB), abre com os sons prontos mesmo
-  const custom = await Promise.race([listCustom(), new Promise<PadSound[]>((r) => setTimeout(() => r([]), 1500))]);
-  const btn = (s: PadSound, rm = false) => `<button class="pad" data-p="${esc(s.id)}"><span>${icon(s.ic ?? "volume", 22, 1.8)}</span><small>${esc(s.name)}</small>${rm ? `<i data-rm="${esc(s.id)}" title="Remover">×</i>` : ""}</button>`;
+  const mine = new Set(mySounds());
+  const shared = [...sharedPad.list].sort((a, b) => b.at - a.at);
+  const sbtn = (s: SharedSound) => {
+    const canRm = isAdmin || mine.has(s.id);
+    return `<button class="pad shared" data-p="s:${esc(s.id)}" title="${esc(s.name)} — por ${esc(s.by || "alguém")} (${s.dur.toFixed(1)} s)"><span>${icon("music", 20, 1.8)}</span><small>${esc(s.name)}</small><em>${esc(s.by || "")}</em>${canRm ? `<i data-rm="${esc(s.id)}" title="Remover do escritório">${icon("x", 11, 2.4)}</i>` : ""}</button>`;
+  };
+  const btn = (s: PadSound) => `<button class="pad" data-p="${esc(s.id)}"><span>${icon(s.ic ?? "volume", 20, 1.8)}</span><small>${esc(s.name)}</small></button>`;
   el.innerHTML = `<div class="section-head"><span class="label">Soundpad</span><span class="t-s c3">Quem está perto ouve</span></div>
-    <div class="pad-grid">${PAD_SOUNDS.map((s) => btn(s)).join("")}${custom.map((s) => btn(s, true)).join("")}
-      <label class="pad add" title="Adicionar som (mp3/wav até 3 MB)">${icon("plus", 18)}<small>Adicionar</small><input type="file" accept="audio/*" hidden></label></div>
+    <div class="pad-sec">Do escritório · todos veem</div>
+    <div class="pad-grid">${shared.map(sbtn).join("")}
+      <label class="pad add" title="Adicionar som para todo o escritório (corta em ${prefs.padLen} s)">${icon("plus", 18)}<small>Adicionar</small><em>até ${prefs.padLen} s</em><input type="file" accept="audio/*" hidden></label></div>
+    <div class="pad-max">${icon("clock", 15)}<span class="t-s">Tempo máximo do som que você adicionar</span>${[5, 6, 7, 8, 9, 10].map((n) => `<button type="button" class="chip${n === prefs.padLen ? " on" : ""}" data-max="${n}">${n} s</button>`).join("")}</div>
+    <div class="pad-sec">Sons do app</div>
+    <div class="pad-grid">${PAD_SOUNDS.map(btn).join("")}</div>
     <label class="slider-row"><span class="t-s">Volume</span><input type="range" min="0" max="1" step="0.05" value="${soundPrefs.soundpad}"></label>`;
   el.querySelectorAll<HTMLElement>("[data-p]").forEach((b) =>
     b.addEventListener("click", async (e) => {
       const rm = (e.target as HTMLElement).closest("[data-rm]") as HTMLElement | null;
       if (rm) {
-        await removeCustom(rm.dataset.rm!);
-        renderPad(el);
+        e.stopPropagation();
+        const id = rm.dataset.rm!;
+        const r = await api(`/api/sounds/${encodeURIComponent(id)}?device=${encodeURIComponent(deviceId())}`, { method: "DELETE", headers: isAdmin ? { "x-admin-key": prefs.adminKey.trim() } : {} });
+        if (!r.ok) toast((await r.json().catch(() => null))?.error ?? "Não consegui remover", true);
+        else setMySounds(mySounds().filter((x) => x !== id));
         return;
       }
       try {
@@ -1702,23 +1786,37 @@ async function renderPad(el: HTMLElement) {
       } catch {
         /* sem sala de áudio: toca só local */
       }
-      playPad(b.dataset.p!);
+      playPad(b.dataset.p!).catch((err) => toast(String((err as Error).message ?? err), true));
+    }),
+  );
+  el.querySelectorAll<HTMLElement>("[data-max]").forEach((b) =>
+    b.addEventListener("click", () => {
+      prefs.padLen = Number(b.dataset.max);
+      savePrefs();
+      renderPad(el);
     }),
   );
   el.querySelector<HTMLInputElement>('input[type="file"]')?.addEventListener("change", async (e) => {
-    const f = (e.target as HTMLInputElement).files?.[0];
+    const input = e.target as HTMLInputElement;
+    const f = input.files?.[0];
+    input.value = "";
     if (!f) return;
+    if (f.size > 25_000_000) return toast("Arquivo grande demais (até 25 MB; só os primeiros segundos são usados)", true);
+    const add = el.querySelector<HTMLElement>(".pad.add");
+    add?.classList.add("busy");
     try {
-      await addCustom(f);
-      renderPad(el);
+      const clip = await uploadSound(f.name.replace(/\.[^.]+$/, ""), await f.arrayBuffer());
+      toast(clip.cut ? `Som adicionado para todos (cortado em ${prefs.padLen} s)` : "Som adicionado para todo o escritório");
     } catch (err) {
       toast(String((err as Error).message ?? err), true);
+    } finally {
+      add?.classList.remove("busy");
     }
   });
   el.querySelector<HTMLInputElement>('input[type="range"]')?.addEventListener("input", (e) => {
     soundPrefs.soundpad = Number((e.target as HTMLInputElement).value);
     prefs.sound = { ...soundPrefs };
-  if (radio) radio.master = soundPrefs.radio;
+    if (radio) radio.master = soundPrefs.radio;
     savePrefs();
   });
 }
@@ -2613,7 +2711,7 @@ const FUNCS: { group: string; items: Func[] }[] = [
     group: "Diversão",
     items: [
       { id: "emote", ic: "smile", name: "Emotes", desc: "Acenar, joinha, palmas, dançar... Teclas 1 a 0 usam direto.", key: "E", run: () => togglePopover("emote") },
-      { id: "pad", ic: "volume", name: "Soundpad", desc: "Sons para quem está perto. Dá para subir os seus (até 3 MB).", run: () => togglePopover("pad") },
+      { id: "pad", ic: "volume", name: "Soundpad", desc: "Sons para quem está perto. O que alguém adiciona aparece para todo o escritório (até 10 s).", run: () => togglePopover("pad") },
       { id: "radio", ic: "radio", name: "Rádio / caixa de som", desc: "Clique na caixa e cole um link do YouTube, YouTube Music ou Spotify." },
       { id: "games", ic: "gamepad", name: "Sinuca e pingue-pongue", desc: "Clique na mesa para jogar ou convidar alguém." },
       { id: "kitchen", ic: "home", name: "Cozinha", desc: "Café, água, geladeira e micro-ondas: clique para pegar." },

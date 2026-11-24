@@ -267,7 +267,99 @@ function synth(id: string, out: Out) {
   }
 }
 
-// sons do usuário (guardados no IndexedDB)
+// ------------------------------------------------------------------ soundpad compartilhado
+/** Som que alguém do escritório subiu (fica no servidor, todo mundo vê). */
+export interface SharedSound {
+  id: string;
+  name: string;
+  by: string;
+  at: number;
+  dur: number;
+}
+/** Lista do escritório, tempo máximo (s) e onde buscar o áudio. */
+export const sharedPad = { list: [] as SharedSound[], max: 10, base: "", key: "" };
+
+/**
+ * Prepara o som para subir: decodifica, corta no tempo máximo (com fade de 0,15 s no fim),
+ * mistura em mono e reamostra em 22,05 kHz. Sai um WAV pequeno (10 s ≈ 440 KB).
+ */
+export async function prepareClip(data: ArrayBuffer, maxSec: number): Promise<{ wav: Blob; dur: number; cut: boolean }> {
+  const { ctx } = audio();
+  let src: AudioBuffer;
+  try {
+    src = await ctx.decodeAudioData(data.slice(0));
+  } catch {
+    throw new Error("Não consegui ler esse áudio (use mp3, wav, ogg ou m4a)");
+  }
+  // pula o silêncio do começo (muito áudio baixado vem com meio segundo mudo)
+  const ch0 = src.getChannelData(0);
+  let start = 0;
+  while (start < ch0.length && Math.abs(ch0[start]) < 0.01) start++;
+  const startSec = start >= ch0.length ? 0 : Math.max(0, start / src.sampleRate - 0.02);
+  const avail = src.duration - startSec;
+  const dur = Math.min(avail, maxSec);
+  const cut = avail > maxSec + 0.05;
+  const rate = 22050;
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(dur * rate)), rate);
+  const node = off.createBufferSource();
+  node.buffer = src;
+  const g = off.createGain();
+  if (cut) {
+    g.gain.setValueAtTime(1, Math.max(0, dur - 0.15));
+    g.gain.linearRampToValueAtTime(0, dur);
+  }
+  node.connect(g).connect(off.destination);
+  node.start(0, startSec, dur);
+  const out = await off.startRendering();
+  return { wav: toWav(out.getChannelData(0), rate), dur: out.duration, cut };
+}
+
+function toWav(pcm: Float32Array, rate: number): Blob {
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const v = new DataView(buf);
+  const w = (o: number, t: string) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, "RIFF");
+  v.setUint32(4, 36 + pcm.length * 2, true);
+  w(8, "WAVE");
+  w(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  w(36, "data");
+  v.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+async function sharedBuffer(id: string) {
+  const k = "s:" + id;
+  if (decoded.has(k)) return decoded.get(k)!;
+  const r = await fetch(`${sharedPad.base}/api/sounds/${encodeURIComponent(id)}?key=${encodeURIComponent(sharedPad.key)}`);
+  if (!r.ok) throw new Error("Esse som não está mais no escritório");
+  const buf = await audio().ctx.decodeAudioData(await r.arrayBuffer());
+  decoded.set(k, buf);
+  return buf;
+}
+
+/** Áudio de um som que só existia neste aparelho (para subir para o escritório). */
+export async function localRaw(id: string): Promise<{ name: string; data: ArrayBuffer } | null> {
+  try {
+    const db = await idb();
+    return await new Promise((res) => {
+      const r = db.transaction("sons").objectStore("sons").get(id);
+      r.onsuccess = () => res(r.result ?? null);
+      r.onerror = () => res(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+// sons antigos do usuário (guardados só no aparelho; sobem para o escritório na primeira vez)
 const DB = "verkz-office-sounds";
 function idb(): Promise<IDBDatabase> {
   return new Promise((res, rej) => {
@@ -335,12 +427,15 @@ export async function playPad(id: string) {
   const bus = ctx.createGain();
   bus.connect(padOut!);
   bus.connect(padLocal!);
-  if (id.startsWith("custom-")) {
+  if (id.startsWith("s:") || id.startsWith("custom-")) {
     const s = ctx.createBufferSource();
-    s.buffer = await customBuffer(id);
+    s.buffer = id.startsWith("s:") ? await sharedBuffer(id.slice(2)) : await customBuffer(id);
     s.connect(bus);
+    // nunca passa do tempo máximo do escritório
+    const len = Math.min(s.buffer.duration, sharedPad.max);
     s.start();
-    return s.buffer.duration;
+    s.stop(ctx.currentTime + len);
+    return len;
   }
   synth(id, bus);
   return 2;

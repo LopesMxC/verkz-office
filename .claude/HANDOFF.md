@@ -429,3 +429,12 @@ Identity no LiveKit = id do peer no servidor.
   focusOn segura 4 s. world.recenter() = tecla C e botão "Centralizar" no seletor de visão.
 - Deploy 0.17.2: web a partir da etapa web da 0.17.0 (08b814c2244a) + diffs; final FROM 0.17.1.
 - Build do Mac no GitHub falhou por falta de máquina Mac no GitHub (não é erro de código): rodar de novo.
+
+## App 0.6.8 / servidor 0.18.0 — soundpad compartilhado
+- Servidor: server/src/sounds.rs. POST /api/sounds?name&by&device&dur (corpo: WAV pronto, até 2 MB), GET /api/sounds/{id}?key=,
+  DELETE /api/sounds/{id}?device= (quem subiu, pelo aparelho) ou com header x-admin-key (gestão). Lista em data/sounds/index.json,
+  áudio em data/sounds/{id}.audio. Avisa todos com {"t":"sounds",list,max:10}; o welcome traz "sounds". Sem limite de quantidade.
+- App: sound.ts prepareClip() decodifica, pula silêncio inicial, corta no tempo escolhido (5–10 s, fade de 0,15 s), mono 22,05 kHz, WAV.
+  Quem adiciona escolhe o tempo (prefs.padLen, padrão 8 s) — não é configuração da gestão. Ids "s:<uuid>" tocam do servidor (cache).
+  O X de remover aparece para quem subiu (ids em localStorage "verkz-my-sounds") e para a gestão.
+  Sons antigos do IndexedDB sobem sozinhos uma vez (flag "verkz-pad-migrated").

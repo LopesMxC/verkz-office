@@ -30,6 +30,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{info, warn};
 
 mod rec;
+mod sounds;
 
 #[derive(Clone)]
 struct Config {
@@ -85,6 +86,8 @@ pub(crate) struct AppState {
     gestao: Mutex<Gestao>,
     /// Pedidos de entrada esperando a gestão (sala de espera).
     pending: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    /// Uma escrita por vez na lista do soundpad compartilhado.
+    sounds_lock: Mutex<()>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -357,6 +360,7 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                     "history": *st.history.lock().await,
                     "admin": is_admin,
                     "integrations": { "spotify_client_id": st.cfg.spotify_client_id },
+                    "sounds": sounds::view(&st).await,
                     "livekit": {
                         "url": st.cfg.livekit_url,
                         "token": livekit_token(&st.cfg, &id, &peer.name),
@@ -739,6 +743,7 @@ async fn main() {
     let state = Arc::new(AppState {
         gestao: Mutex::new(gestao),
         pending: Mutex::new(HashMap::new()),
+        sounds_lock: Mutex::new(()),
         cfg,
         conns: Mutex::new(HashMap::new()),
         layout: RwLock::new(layout),
@@ -756,6 +761,8 @@ async fn main() {
         .route("/api/rec/{id}/retry", post(rec::retry))
         .route("/api/rec/{id}/file", get(rec::file))
         .route("/api/rec/{id}/notes", get(rec::notes))
+        .route("/api/sounds", post(sounds::add).layer(DefaultBodyLimit::max(sounds::MAX_BYTES + 1024)))
+        .route("/api/sounds/{id}", get(sounds::file).delete(sounds::remove))
         .route("/health", get(|| async { "ok" }))
         .route("/api/fetch", get(proxy_fetch))
         .route("/api/update/{target}/{arch}/{current}", get(update_proxy))

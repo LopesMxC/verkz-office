@@ -833,3 +833,16 @@ body.meet-mode #stage canvas, body.meet-mode .labels { visibility: hidden; }
 @keyframes st-waves { 0% { box-shadow: 0 0 0 0 rgba(230,126,34,.6); } 100% { box-shadow: 0 0 0 7px rgba(230,126,34,0); } }
 @keyframes st-halo { 50% { box-shadow: 0 0 10px 2px rgba(138,108,201,.7); } }
 @media (prefers-reduced-motion: reduce) { .nameplate .status, .nameplate .status .sk, .activity-tag .ak { animation: none !important; } }
+/* 0.6.8 — soundpad compartilhado */
+.pad-pop { width: 440px; max-height: min(70vh, 620px); overflow-y: auto; }
+.pad-sec { font-size: 11px; font-weight: 600; color: var(--text-2); margin: 10px 0 6px; }
+.pad em { font-style: normal; font-size: 9.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.pad.shared i[data-rm] { position: absolute; top: 3px; right: 3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: var(--text-2); background: #1a1a1a; opacity: 0; transition: opacity .12s; }
+.pad.shared:hover i[data-rm] { opacity: 1; }
+.pad.shared i[data-rm]:hover { color: var(--danger); }
+.pad.add { border-style: dashed; color: var(--accent); }
+.pad.add.busy { opacity: .5; pointer-events: none; animation: k-pulse 1s ease-in-out infinite; }
+.pad-max { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; color: var(--text-2); }
+.pad-max .t-s { margin-right: 4px; }
+.pad-max .chip { padding: 3px 9px; border-radius: 99px; border: 1px solid var(--border); background: var(--raised); color: var(--text); font-size: 11px; font-weight: 600; cursor: pointer; }
+.pad-max .chip.on { background: var(--accent); border-color: var(--accent); color: #0D0D0D; }
