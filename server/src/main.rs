@@ -44,6 +44,8 @@ struct Config {
     data_dir: PathBuf,
     gemini_key: String,
     gemini_model: String,
+    /// Sidecar de transcrição (NVIDIA Parakeet). Vazio = só Gemini.
+    asr_url: String,
     /// Client ID do app do Spotify (developer.spotify.com): vai para o app, cada pessoa só clica em "Conectar".
     spotify_client_id: String,
 }
@@ -88,6 +90,8 @@ pub(crate) struct AppState {
     pending: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
     /// Uma escrita por vez na lista do soundpad compartilhado.
     sounds_lock: Mutex<()>,
+    /// Quem foi tirado há pouco (aparelho ou nome em minúsculas -> até quando): impede voltar sozinho por reconexão automática.
+    kicked: Mutex<HashMap<String, u64>>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -179,6 +183,30 @@ pub(crate) fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
 
+/// Derruba o participante da sala de áudio/vídeo (LiveKit), para quem foi tirado não continuar na chamada.
+async fn livekit_remove(cfg: &Config, identity: &str) {
+    let t = now();
+    let claims = serde_json::json!({
+        "iss": cfg.livekit_api_key, "sub": "verkz-office-server", "nbf": t.saturating_sub(10), "exp": t + 60,
+        "video": {"room": cfg.livekit_room, "roomAdmin": true}
+    });
+    let Ok(key) = EncodingKey::from_secret(cfg.livekit_api_secret.as_bytes()) else { return };
+    let Ok(tok) = encode(&Header::default(), &claims, &key) else { return };
+    let base = cfg.livekit_url.replacen("wss://", "https://", 1).replacen("ws://", "http://", 1);
+    let url = format!("{}/twirp/livekit.RoomService/RemoveParticipant", base.trim_end_matches('/'));
+    let res = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(tok)
+        .timeout(std::time::Duration::from_secs(5))
+        .json(&serde_json::json!({"room": cfg.livekit_room, "identity": identity}))
+        .send()
+        .await;
+    match res {
+        Ok(r) => info!("livekit: removeu {identity} ({})", r.status()),
+        Err(e) => info!("livekit: não consegui remover {identity}: {e}"),
+    }
+}
+
 fn livekit_token(cfg: &Config, identity: &str, name: &str) -> String {
     let t = now();
     let claims = LkClaims {
@@ -258,10 +286,13 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
+    let closed = Arc::new(tokio::sync::Notify::new());
+    let closed_w = closed.clone();
     let mut writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             if m == CLOSE_SIGNAL {
                 let _ = sink.send(Message::Close(None)).await;
+                closed_w.notify_one();
                 break;
             }
             if sink.send(Message::Text(m.into())).await.is_err() {
@@ -272,7 +303,10 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
 
     let mut my_id: Option<String> = None;
 
-    while let Some(Ok(msg)) = stream.next().await {
+    loop {
+        // expulso: o escritor avisa e a conexão encerra aqui mesmo, sem esperar o aparelho responder
+        let next = tokio::select! { n = stream.next() => n, _ = closed.notified() => None };
+        let Some(Ok(msg)) = next else { break };
         let text = match msg {
             Message::Text(t) => t.to_string(),
             Message::Close(_) => break,
@@ -293,6 +327,17 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                 }
                 let name: String = name.trim().chars().take(32).collect();
                 let device: String = device.trim().chars().take(64).collect();
+                // acabou de ser tirado pela gestão: espera um pouco antes de poder voltar
+                if !is_admin {
+                    let lname = name.to_lowercase();
+                    let mut k = st.kicked.lock().await;
+                    k.retain(|_, until| *until > now());
+                    if (!device.is_empty() && k.contains_key(&device)) || k.contains_key(&lname) {
+                        drop(k);
+                        let _ = tx.send(json!({"t":"error","msg":"A gestão tirou você do escritório. Tente entrar de novo em instantes."}).to_string());
+                        break;
+                    }
+                }
                 // bloqueado pela gestão (pelo aparelho ou pelo nome)
                 if !is_admin {
                     let lname = name.to_lowercase();
@@ -515,7 +560,9 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                     continue;
                 }
                 let mut banned = None;
+                let mut gone = None;
                 if let Some(c) = st.conns.lock().await.get(&target) {
+                    gone = Some((c.device.clone(), c.peer.name.to_lowercase()));
                     if ban {
                         banned = Some(Ban { device: c.device.clone(), name: c.peer.name.clone(), at: now() });
                     }
@@ -523,6 +570,17 @@ async fn handle_socket(socket: WebSocket, st: Shared) {
                     let _ = c.tx.send(json!({"t":"kicked","msg":msg}).to_string());
                     let _ = c.tx.send(CLOSE_SIGNAL.to_string());
                 }
+                // sai já da lista de presença (não espera o aparelho fechar) e da chamada de áudio/vídeo
+                if st.conns.lock().await.remove(&target).is_some() {
+                    st.broadcast(&json!({"t":"peer_leave","id":target}), None).await;
+                }
+                if let Some((dev, lname)) = gone {
+                    let until = now() + 60;
+                    let mut k = st.kicked.lock().await;
+                    if !dev.is_empty() { k.insert(dev, until); }
+                    k.insert(lname, until);
+                }
+                livekit_remove(&st.cfg, &target).await;
                 if let Some(b) = banned {
                     st.gestao.lock().await.bans.push(b);
                     st.save_gestao().await;
@@ -715,6 +773,7 @@ async fn main() {
         data_dir: PathBuf::from(env("DATA_DIR", "./data")),
         gemini_key: env("GEMINI_API_KEY", "").trim().to_string(),
         gemini_model: env("GEMINI_MODEL", "gemini-flash-latest"),
+        asr_url: env("ASR_URL", "").trim().trim_end_matches('/').to_string(),
     };
     tokio::fs::create_dir_all(&cfg.data_dir).await.ok();
 
@@ -744,6 +803,7 @@ async fn main() {
         gestao: Mutex::new(gestao),
         pending: Mutex::new(HashMap::new()),
         sounds_lock: Mutex::new(()),
+        kicked: Mutex::new(HashMap::new()),
         cfg,
         conns: Mutex::new(HashMap::new()),
         layout: RwLock::new(layout),
@@ -778,6 +838,12 @@ async fn main() {
         app
     };
 
+    // o navegador sempre confere se a página mudou (os arquivos têm hash no nome, então a conferência é barata)
+    let app = app.layer(axum::middleware::map_response(|mut r: axum::response::Response| async move {
+        r.headers_mut().insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-cache"));
+        r
+    }));
+
     let addr: SocketAddr = env("BIND", "0.0.0.0:8080").parse().unwrap();
     info!("VERKZ Office ouvindo em {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -787,6 +853,11 @@ async fn main() {
 
 /// Confere se uma edição feita por quem não é da gestão mexeu só nos móveis.
 /// Prédio (tamanho, andares, piso, clima), salas e paredes (e o elevador) são só da gestão.
+fn is_wall_swap(a: &Value, b: &Value) -> bool {
+    let wall = |v: &Value| matches!(v["type"].as_str(), Some("wall") | Some("window_wall"));
+    wall(a) && wall(b) && a["x"] == b["x"] && a["z"] == b["z"] && a["rot"] == b["rot"]
+}
+
 fn check_furniture_edit(old: &Value, new: &Value) -> Result<(), String> {
     if old["size"] != new["size"] || old["zones"] != new["zones"] || old["spawn"] != new["spawn"] || old["env"] != new["env"] {
         return Err("Só a gestão pode mudar o prédio e as salas.".into());
@@ -802,6 +873,8 @@ fn check_furniture_edit(old: &Value, new: &Value) -> Result<(), String> {
     for (id, it) in &a {
         match b.get(id) {
             Some(n) if n == it => {}
+            // trocar janela por parede lisa (e voltar) é liberado: o lugar e o giro não mudam
+            Some(n) if is_wall_swap(it, n) => {}
             Some(n) if locked(it) || locked(n) => return Err("Só a gestão pode mexer em paredes.".into()),
             None if locked(it) => return Err("Só a gestão pode apagar paredes.".into()),
             _ => {}

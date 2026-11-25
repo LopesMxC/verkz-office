@@ -7,14 +7,14 @@ import { CharacterPreview, openCreator } from "./creator";
 import { Look, lookColor, normalizeLook, randomLook } from "./avatar";
 import { icon } from "./icons";
 import { sealEl } from "./logo";
-import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, isHostedWeb, NowPlaying, openTarget, Shortcut, activeApp, ytm, YtmState, appVersion, checkUpdate, UpdateInfo } from "./integrations";
+import { AgendaItem, DEFAULT_SHORTCUTS, integrations, isNative, isHostedWeb, NowPlaying, openTarget, Shortcut, activeApp, ytm, YtmState, appVersion, checkUpdate, UpdateInfo, WEB_VERSION } from "./integrations";
 import type { Item, Layout, Zone } from "./furniture";
-import { DEFS, PHOTO_TYPES, imageToDataUrl, findItemAnyLevel, levelIds, levelName, levelView } from "./furniture";
+import { DEFS, ROLES, PHOTO_TYPES, isSpeakerType, imageToDataUrl, findItemAnyLevel, levelIds, levelName, levelView } from "./furniture";
 import { soundPrefs, SoundPrefs, notify, approachChime, doorChime, toggleSound, doorSound, preloadDoorSounds, elevatorDing, elevatorMusic, footstep, kitchenSound, PAD_SOUNDS, listCustom, removeCustom, playPad, PadSound, sharedPad, SharedSound, prepareClip, localRaw } from "./sound";
 import { GameSession, GameKind, PoolPose, PoolTable, POOL_W, POOL_H, PM } from "./games";
 import { CAM_BG_PRESETS, presetImage, fileToBg, camBgSupported, type CamBg } from "./cambg";
 import { RadioPlayer, RadioSource, RadioState, parseRadioLink } from "./radio";
-import { EnvConfig, WEATHERS, SEASONS, HOLIDAYS, seasonByDate, weatherFromCode, resolveHoliday, Weather, Season } from "./env";
+import { EnvConfig, WEATHERS, SEASONS, HOLIDAYS, seasonByDate, weatherFromCode, rotatingWeather, resolveHoliday, Weather, Season } from "./env";
 import { DEFAULT_GOAL, DEFAULT_CUSTOM, GoalCfg, CustomCfg, financeData, weatherData, customValue, weatherText, fmtBRL, fmtNum, refreshWidgets } from "./widgets";
 import { loadModels, modelProgress } from "./models";
 import { Recorder } from "./recorder";
@@ -66,8 +66,6 @@ interface Prefs {
 }
 type CallMode = "escritorio" | "reuniao";
 
-/** Cargos da equipe: cada um tem a sua sala no mapa (zona com `role`). */
-const ROLES = ["SDR", "Closer", "Editor", "Gestor", "Head", "CEO"];
 const PREFS_KEY = "verkz-office:prefs";
 function loadPrefs(): Prefs {
   let p: Partial<Prefs> = {};
@@ -170,6 +168,7 @@ function showLogin(error = "") {
         </div>
         <div class="err">${esc(error)}</div>
         <button class="btn primary block">Entrar no escritório</button>
+        ${WEB_VERSION ? `<div class="t-s c3 ver-tag">Versão ${esc(WEB_VERSION)}</div>` : ""}
       </form>
     </div>`;
   const pv = new CharacterPreview($<HTMLCanvasElement>(".char-row canvas", overlay), prefs.look, 2);
@@ -251,7 +250,7 @@ function start() {
       if (soundPrefs.approach) approachChime();
     };
     media.onLocalState = (patch) => sendState(patch);
-    world.onSit = (on) => sendState({ sit: on || null });
+    world.onSit = (on, y) => sendState({ sit: on ? (y && y !== 0.46 ? y : true) : null });
     media.onToggle = (_w, on) => toggleSound(on);
     // som real de porta, mais baixo conforme a distância
     const doorVol = (dist: number) => Math.max(0, 1 - dist / 9);
@@ -324,7 +323,7 @@ function start() {
     world.onZoneChange = onZoneChange;
     world.start();
     // ?debug expõe o mundo no console (útil para testes e capturas)
-    if (new URLSearchParams(location.search).has("debug")) (window as any).__office = { world, media };
+    if (new URLSearchParams(location.search).has("debug")) (window as any).__office = { world, media, editor };
     setInterval(renderPeople, 1000);
     setInterval(updateLocks, 400);
     startIntegrations();
@@ -335,7 +334,7 @@ function start() {
       pushStatus();
       if (rightPanel === "apps") renderApps();
     }).catch(() => {});
-    setInterval(applyEnv, 10 * 60_000);
+    setInterval(applyEnv, 60_000); // clima rotativo troca no mesmo minuto para todo mundo
   }
 
   net = new Net(prefs.server, () => ({ t: "join", key: prefs.key.trim(), name: prefs.name, color: lookColor(prefs.look), look: prefs.look, admin_key: prefs.adminKey.trim(), device: deviceId() }));
@@ -346,8 +345,18 @@ function start() {
     showLogin(m.msg);
   });
   // a gestão tirou a pessoa do escritório: não reconecta sozinho
-  net.on("kicked", (m) => {
+  net.on("kicked", async (m) => {
+    // sai de verdade: fecha reunião/gravação, derruba áudio e vídeo (LiveKit) e limpa o mapa
     net.close();
+    try {
+      closeMeeting();
+      if (recorder.active) await toggleRecording();
+    } catch { /* segue saindo */ }
+    try {
+      await media.disconnect();
+    } catch { /* já caiu */ }
+    for (const pid of [...world.others.keys()]) world.removePeer(pid);
+    renderPeople();
     showLogin(m.msg);
   });
   // sala de espera: a gestão precisa liberar a entrada
@@ -1884,7 +1893,7 @@ function sameRoomAs(it: Item) {
 }
 
 function onItemClick(it: Item, x: number, y: number): boolean {
-  if (!ROOM_ITEMS.has(it.type) || sameRoomAs(it)) return useItem(it, x, y);
+  if (!(ROOM_ITEMS.has(it.type) || isSpeakerType(it.type)) || sameRoomAs(it)) return useItem(it, x, y);
   // de outro cômodo: só dá para ir até lá (chegando, o menu abre)
   const z = world.zoneAt(it.x, it.z);
   const label = DEFS[it.type]?.label ?? "Item";
@@ -1920,6 +1929,10 @@ function goToItem(it: Item, then: () => void) {
 }
 
 function useItem(it: Item, x: number, y: number): boolean {
+  if (isSpeakerType(it.type)) {
+    openRadioMenu(it, x, y);
+    return true;
+  }
   const take = (kind: string, sound: "pour" | "open" = "pour") => () =>
     nearItem(it, () => {
       kitchenSound(sound);
@@ -2180,13 +2193,12 @@ async function applyEnv() {
   if (!world?.env || !world.layout) return;
   const cfg: EnvConfig = world.layout.env ?? {};
   world.env.enabled = prefs.weatherFx;
-  let weather: Weather = "sol";
-  if (cfg.weather && cfg.weather !== "auto") weather = cfg.weather;
-  else {
+  const season: Season = cfg.season && cfg.season !== "auto" ? cfg.season : seasonByDate();
+  let weather: Weather = rotatingWeather(Date.now(), season);
+  if (cfg.weather === "real") {
     const w = await weatherData(cfg.lat, cfg.lon, cfg.city).catch(() => null);
     if (w) weather = weatherFromCode(w.code);
-  }
-  const season: Season = cfg.season && cfg.season !== "auto" ? cfg.season : seasonByDate();
+  } else if (cfg.weather && cfg.weather !== "auto") weather = cfg.weather;
   const holiday = resolveHoliday(cfg);
   const h = new Date().getHours() + new Date().getMinutes() / 60;
   const night = cfg.daynight ? (h >= 19 || h < 5 ? 1 : h >= 18 ? h - 18 : h < 6 ? 6 - h : 0) : 0;
@@ -3354,6 +3366,7 @@ function startRadio() {
     const mine = world.me.extra?.radio as RadioState | undefined;
     if (mine && srcs.some((s) => s.item === mine.item && s.owner !== myId)) sendState({ radio: null });
     radio.update(srcs, radioAudible);
+    world.playingItems = new Set(srcs.filter((s) => !s.paused).map((s) => s.item));
   }, 500);
 }
 
@@ -3611,7 +3624,7 @@ async function openSettings() {
         isAdmin
           ? `<section data-sec="4" hidden>
         <div class="note">Vale para todo o escritório.</div>
-        <div class="row2"><label class="field"><span class="label">Clima</span><select class="input" name="env_weather"><option value="auto">Automático (clima real)</option>${WEATHERS.map(([k, l]) => `<option value="${k}" ${env.weather === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <div class="row2"><label class="field"><span class="label">Clima</span><select class="input" name="env_weather"><option value="auto">Rotativo (muda sozinho)</option><option value="real" ${env.weather === "real" ? "selected" : ""}>Clima real da cidade</option>${WEATHERS.map(([k, l]) => `<option value="${k}" ${env.weather === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
         <label class="field"><span class="label">Estação</span><select class="input" name="env_season"><option value="auto">Pela data</option>${SEASONS.map(([k, l]) => `<option value="${k}" ${env.season === k ? "selected" : ""}>${l}</option>`).join("")}</select></label></div>
         <label class="field"><span class="label">Data especial</span><select class="input" name="env_holiday"><option value="auto">Automática pelo calendário</option><option value="nenhum" ${env.holiday === "nenhum" ? "selected" : ""}>Nenhuma</option>${Object.values(HOLIDAYS).map((h) => `<option value="${h.id}" ${env.holiday === h.id ? "selected" : ""}>${esc(h.name)}</option>`).join("")}</select></label>
         <div class="row2"><label class="field"><span class="label">Cidade do clima</span><input class="input" name="env_city" value="${esc(env.city ?? "Campo Grande")}"></label>
@@ -3784,10 +3797,16 @@ else showLogin();
 
 
 // ------------------------------------------------------------ sala do cargo
+/** Sofás e poltronas não servem de lugar de trabalho ao entrar. */
+const SEAT_SOFT = /sofa|couch|lounge|poltrona|namorados|chaise|puf|armchair|bench|banco_|lng_/;
 /** Sala do meu cargo e uma cadeira livre nela. */
 function roleSeat() {
   // um cargo pode ter mais de uma sala (ex.: duas salas de gestão): vale a primeira com mesa livre
-  const zones = world.layout?.zones.filter((z) => z.role && z.role === prefs.role) ?? [];
+  const norm = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const rn = norm(prefs.role || "");
+  // 1) salas marcadas com o cargo; 2) sem marcação: sala cujo nome cita o cargo (ex.: "Sala dos Closers")
+  let zones = world.layout?.zones.filter((z) => z.role && z.role === prefs.role) ?? [];
+  if (!zones.length && rn) zones = world.layout?.zones.filter((z) => norm(z.name).includes(rn.replace(/s$/, ""))) ?? [];
   if (!zones.length) return null;
   const taken = (x: number, z: number) => [...world.others.values()].some((a) => Math.hypot(a.target.x - x, a.target.z - z) < 0.5);
   // a cadeira atrás da mesa (giratória) primeiro, depois qualquer uma; sala mais vazia antes
@@ -3795,7 +3814,7 @@ function roleSeat() {
   for (const pref of ["exec_chair", "office_chair", ""])
     for (const zn of zones) {
       const inside = (x: number, z: number) => Math.abs(x - zn.x) <= zn.w / 2 && Math.abs(z - zn.z) <= zn.d / 2;
-      const seat = world.layout.items.find((i) => SEATS[i.type] && (!pref || i.type === pref) && inside(i.x, i.z) && !taken(i.x, i.z));
+      const seat = world.layout.items.find((i) => SEATS[i.type] && !SEAT_SOFT.test(i.type) && (!pref || i.type === pref) && inside(i.x, i.z) && !taken(i.x, i.z));
       if (seat) return { zone: zn, seat };
     }
   return { zone: zones[0], seat: null };

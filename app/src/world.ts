@@ -1,11 +1,12 @@
 import { geo, disposeTree } from "./geo";
+import { REG as PACK } from "../pack";
 import * as THREE from "three";
 import { CSS2DObject, CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPixelatedPass } from "three/addons/postprocessing/RenderPixelatedPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { buildItem, buildWall, SCREEN_MATS, DEFS, doorJamb, levelView, MOUNT_Y, WALL_MOUNT, footprint, Item, Layout, WALL_CUT, WALL_H, WALL_T, WALL_TYPES, wallRects, wallSegment, WallLinks, Zone } from "./furniture";
+import { setOfficeStyle, officeStyle, buildItem, buildWall, SCREEN_MATS, DEFS, doorJamb, levelView, MOUNT_Y, WALL_MOUNT, footprint, Item, Layout, WALL_CUT, WALL_H, WALL_T, WALL_TYPES, wallRects, wallSegment, WallLinks, Zone } from "./furniture";
 
 /** Largura do vão das portas duplas (as duas folhas juntas), em metros. */
 const DOOR_W = 1.3;
@@ -122,8 +123,10 @@ export class ScreenFx {
       const g = cv.getContext("2d")!;
       const tex = new THREE.CanvasTexture(cv);
       tex.magFilter = THREE.NearestFilter;
-      tex.minFilter = THREE.NearestFilter;
-      tex.generateMipmaps = false;
+      // de perto fica pixelado; de longe suaviza (com "nearest" a tela cintilava a cada quadro)
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.generateMipmaps = true;
+      tex.anisotropy = 4;
       tex.colorSpace = THREE.SRGBColorSpace;
       const mat = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
       mat.userData.shared = true;
@@ -414,6 +417,25 @@ export type WalkPlan = { x: number; z: number; seat: Item | null };
 
 export const SEATS: Record<string, number> = { chair: 0.55, office_chair: 0.55, wood_chair: 0.55, exec_chair: 0.55, stool: 0.5, armchair: 0.8, armchair_plain: 0.8, chair_c: 0.55, chair_b_wood: 0.55, stool_wood: 0.5, k_chair_a: 0.55, k_chair_b: 0.55, p_gamer_chair: 0.55, p_bench: 0.8 };
 
+/** Altura do assento por móvel (m); quem não está aqui usa SEAT_Y. */
+export const SEAT_H: Record<string, number> = {};
+// cadeiras, bancos, sofás e poltronas do pacote novo: todos dá para sentar
+for (const p of PACK) {
+  const chair = p.cat === "Cadeiras e bancos";
+  const lounge = (p.cat === "Sofás e lounge" && /^pk_lng_(sofa|canto|poltrona|namorados|banco|chaise|pufe|puff)/.test(p.id)) || /mesa_sofa/.test(p.id);
+  if (!chair && !lounge) continue;
+  const big = (p.w ?? 0) >= 1;
+  SEATS[p.id] = big ? 1 : 0.6;
+  if (/bar_|prancheta/.test(p.id)) SEAT_H[p.id] = 0.78;
+  else if (lounge) SEAT_H[p.id] = 0.42;
+}
+
+// sofás e poltronas do catálogo antigo
+for (const k of ["sofa", "sofa_plain", "p_sofa_l", "p_lounge"]) {
+  SEATS[k] = 1;
+  SEAT_H[k] = 0.42;
+}
+
 export class Avatar {
   root = new THREE.Group();
   body = new THREE.Group();
@@ -453,6 +475,8 @@ export class Avatar {
   /** Para sons de passo dos outros: posição anterior e ritmo. */
   /** Sentado numa cadeira (o meu vem do mundo, o dos outros vem da rede em extra.sit). */
   sitting = false;
+  /** Altura do assento em que estou/está sentado (m). */
+  seatY = SEAT_Y;
   /** 0 = em pé, 1 = sentado: anda aos poucos para o gesto de sentar/levantar ser animado. */
   sitT = 0;
   private hipY = -1;
@@ -531,7 +555,10 @@ export class Avatar {
       }
     }
     this.label.classList.toggle("cam-on", !!this.extra.cam);
-    if (!this.isMe) this.sitting = !!this.extra.sit;
+    if (!this.isMe) {
+      this.sitting = !!this.extra.sit;
+      this.seatY = typeof this.extra.sit === "number" && this.extra.sit > 0.2 ? this.extra.sit : SEAT_Y;
+    }
     this.setPool(this.extra.pool ?? null);
   }
 
@@ -874,7 +901,7 @@ export class Avatar {
         this.body.position.y = by;
       }
       const standY = this.body.position.y;
-      const sitY = SEAT_Y - this.hipY + 0.04;
+      const sitY = this.seatY - this.hipY + 0.04;
       // no meio do gesto o corpo dobra um pouco para a frente (como quem senta de verdade)
       const lean = Math.sin(e * Math.PI) * 0.22;
       this.body.position.y = standY + (sitY - standY) * e;
@@ -1144,7 +1171,7 @@ export class World {
   /** Cadeira de que acabei de levantar: não senta de novo nela até sair de perto. */
   private leftSeat: string | null = null;
   /** Sentei / levantei (para avisar os outros). */
-  onSit?: (on: boolean) => void;
+  onSit?: (on: boolean, y?: number) => void;
   /** Alguém entrou na sala onde eu estou. */
   onEnterMyRoom?: (id: string) => void;
   private wallLinks = new Map<string, WallLinks>();
@@ -1152,12 +1179,14 @@ export class World {
   /** Salas com a porta trancada (reunião importante) e as que eu posso abrir mesmo assim. */
   /** Telas dos computadores: animam quando alguém senta na mesa. */
   private screenFx = new ScreenFx();
-  private screens: { mesh: THREE.Mesh; orig: THREE.Material; dim: THREE.Material; x: number; z: number }[] = [];
+  private screens: { mesh: THREE.Mesh; orig: THREE.Material; dim: THREE.Material; x: number; z: number; kind?: AppKind | null; pend?: AppKind | null; since?: number }[] = [];
   private screenScan = 0;
   private screenTick = 0;
   private screenItems = -1;
   private dimMats = new Map<THREE.Material, THREE.Material>();
   lockedZones = new Set<string>();
+  /** Seu Zé tem a chave: ao montar a rota dele, porta trancada não conta como parede. */
+  ignoreLocks = false;
   lockPass = new Set<string>();
   private doorLocked(zone: string) {
     return this.lockedZones.has(zone) && !this.lockPass.has(zone);
@@ -1285,10 +1314,14 @@ export class World {
       fm.map?.dispose();
     }
 
+    setOfficeStyle(layout.style);
     const { w, d } = layout.size;
     const floorTex = this.makeFloorTexture(layout);
+    // o piso termina no eixo das paredes externas (sem faixa sobrando do lado de fora)
+    floorTex.repeat.set(w / (w + 1), d / (d + 1));
+    floorTex.offset.set(0.5 / (w + 1), 0.5 / (d + 1));
     this.floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(w + 1, d + 1),
+      new THREE.PlaneGeometry(w, d),
       toon("#ffffff", { map: floorTex }),
     );
     this.floor.rotation.x = -Math.PI / 2;
@@ -1455,13 +1488,8 @@ export class World {
       }
       g.restore();
     };
-    recolor(0, 0, W, H, layout.floorColor);
     const toPx = (x: number, z: number) => [Math.round((x + (w + 1) / 2) * px), Math.round((z + (d + 1) / 2) * px)];
-    for (const zn of layout.zones) {
-      const [x0, y0] = toPx(zn.x - zn.w / 2, zn.z - zn.d / 2);
-      const zw = Math.round(zn.w * px);
-      const zh = Math.round(zn.d * px);
-      const floor = zn.floor ?? (zn.private ? "carpete-azul" : "ceramica");
+      const paint = (floor: string, x0: number, y0: number, zw: number, zh: number) => {
       const CARPET: Record<string, [string, string, string, string]> = {
         "carpete-azul": ["#7d86c2", "#8790cb", "#737cb8", "#6870ab"],
         "carpete-verde": ["#7fae8c", "#8aba96", "#74a282", "#679676"],
@@ -1522,6 +1550,61 @@ export class World {
         g.fillStyle = "#93928e";
         for (let y = 64; y < zh; y += 64) g.fillRect(x0, y0 + y, zw, 1);
         for (let x = 64; x < zw; x += 64) g.fillRect(x0 + x, y0, 1, zh);
+      } else if (floor === "madeira-clara") {
+        for (let y = 0, row = 0; y < zh; y += 8, row++) {
+          let x = -((row * 31) % 80);
+          while (x < zw) {
+            const len = 56 + Math.floor(r() * 40);
+            g.fillStyle = ["#e9cfa6", "#e3c698", "#edd5b0", "#dfc193"][Math.floor(r() * 4)];
+            g.fillRect(x0 + Math.max(0, x), y0 + y, Math.min(len, zw - Math.max(0, x)), 7);
+            g.fillStyle = "#c9a876";
+            g.fillRect(x0 + Math.max(0, x), y0 + y + 7, Math.min(len, zw - Math.max(0, x)), 1);
+            x += len;
+            if (x < zw) g.fillRect(x0 + x - 1, y0 + y, 1, 7);
+          }
+        }
+      } else if (floor === "espinha") {
+        // espinha de peixe: tacos de 16 x 4 px alternando a direção
+        g.fillStyle = "#8a6038";
+        g.fillRect(x0, y0, zw, zh);
+        const tones = ["#b98557", "#c08d5e", "#a97a4d", "#c4935f"];
+        for (let by = 0; by < zh; by += 16)
+          for (let bx = 0; bx < zw; bx += 16) {
+            const flip = ((bx + by) / 16) % 2 === 0;
+            for (let k = 0; k < 4; k++) {
+              g.fillStyle = tones[Math.floor(r() * 4)];
+              if (flip) g.fillRect(x0 + bx, y0 + by + k * 4, Math.min(16, zw - bx), Math.min(3, zh - by - k * 4));
+              else g.fillRect(x0 + bx + k * 4, y0 + by, Math.min(3, zw - bx - k * 4), Math.min(16, zh - by));
+            }
+          }
+      } else if (floor === "xadrez") {
+        for (let y = 0; y < zh; y += 32)
+          for (let x = 0; x < zw; x += 32) {
+            g.fillStyle = (x / 32 + y / 32) % 2 ? "#23252c" : "#f1efe8";
+            g.fillRect(x0 + x, y0 + y, Math.min(32, zw - x), Math.min(32, zh - y));
+          }
+      } else if (floor === "marmore") {
+        g.fillStyle = "#ebe9e4";
+        g.fillRect(x0, y0, zw, zh);
+        for (let k = 0; k < (zw * zh) / 220; k++) {
+          g.fillStyle = r() > 0.5 ? "#d7d4cd" : "#c9c6bf";
+          const vx = x0 + Math.floor(r() * zw);
+          const vy = y0 + Math.floor(r() * zh);
+          for (let s = 0; s < 6 + Math.floor(r() * 8); s++) g.fillRect(vx + s, vy + Math.floor(s * 0.6), 1, 1);
+        }
+        g.fillStyle = "#cfccc4";
+        for (let y = 0; y < zh; y += 32) g.fillRect(x0, y0 + y, zw, 1);
+        for (let x = 0; x < zw; x += 32) g.fillRect(x0 + x, y0, 1, zh);
+      } else if (floor === "ardosia") {
+        g.fillStyle = "#3b3f48";
+        g.fillRect(x0, y0, zw, zh);
+        for (let y = 0; y < zh; y += 32)
+          for (let x = 0; x < zw; x += 32) {
+            g.fillStyle = ["#444852", "#3d414a", "#484c57"][Math.floor(r() * 3)];
+            g.fillRect(x0 + x + 1, y0 + y + 1, Math.min(30, zw - x), Math.min(30, zh - y));
+            g.fillStyle = "#555a66";
+            g.fillRect(x0 + x + 3, y0 + y + 3, 5, 1);
+          }
       } else {
         // cerâmica xadrez cinza
         for (let y = 0; y < zh; y += 16)
@@ -1532,6 +1615,14 @@ export class World {
             g.fillRect(x0 + x + 2, y0 + y + 2, 3, 1);
           }
       }
+      };
+    if (layout.style?.floor) paint(layout.style.floor, 0, 0, W, H);
+    recolor(0, 0, W, H, layout.floorColor);
+    for (const zn of layout.zones) {
+      const [x0, y0] = toPx(zn.x - zn.w / 2, zn.z - zn.d / 2);
+      const zw = Math.round(zn.w * px);
+      const zh = Math.round(zn.d * px);
+      paint(zn.floor ?? (zn.private ? "carpete-azul" : "ceramica"), x0, y0, zw, zh);
       // área aberta sem cor própria segue a cor do piso do salão
       recolor(x0, y0, zw, zh, zn.floorColor ?? (zn.private ? undefined : layout.floorColor));
     }
@@ -1658,8 +1749,13 @@ export class World {
     const walls = new Set(this.layout.items.filter((i) => WALL_TYPES.has(i.type)).map((i) => this.wallKey(i.x, i.z)));
     const has = (x: number, z: number) => walls.has(`${x},${z}`);
     const { d } = this.layout.size;
-    const wood = new THREE.MeshToonMaterial({ color: 0x9a6b45 });
-    const woodDark = new THREE.MeshToonMaterial({ color: 0x6f4a2e });
+    const DOORS: Record<string, { panel: number; inset: number; glass?: boolean }> = {
+      madeira: { panel: 0x9a6b45, inset: 0x6f4a2e },
+      branca: { panel: 0xf1eee6, inset: 0xdad6cb },
+      escura: { panel: 0x2e3139, inset: 0x1f2128 },
+      verde: { panel: 0xc8f501, inset: 0x9fc400 },
+      vidro: { panel: 0xa9dcf2, inset: 0x2e3139, glass: true },
+    };
     const metal = new THREE.MeshToonMaterial({ color: 0xd9d4c8 });
     const seen = new Set<string>(); // um vão entre duas salas vira uma porta só
     for (const zn of this.layout.zones) {
@@ -1735,6 +1831,9 @@ export class World {
             if (tall) frame.add(wallSegment(open + 0.12, WALL_H - h, h, false));
             const leafW = open / 2 - 0.01;
             const tt = (WALL_T + 0.06) / 2;
+            const ds = DOORS[zn.door ?? officeStyle().door ?? "madeira"] ?? DOORS.madeira;
+            const wood = ds.glass ? new THREE.MeshToonMaterial({ color: ds.panel, transparent: true, opacity: 0.45 }) : new THREE.MeshToonMaterial({ color: ds.panel });
+            const woodDark = new THREE.MeshToonMaterial({ color: ds.inset });
             // cadeado vermelho dos dois lados (aparece com a porta trancada)
             const lockMark = new THREE.Group();
             const lockRed = new THREE.MeshToonMaterial({ color: 0xc0392b });
@@ -1766,10 +1865,11 @@ export class World {
               panel.position.set(0, h / 2, 0);
               panel.castShadow = true;
               // duas almofadas (detalhe de porta de madeira)
-              const insetTop = new THREE.Mesh(geo.box(leafW * 0.62, h * 0.32, 0.075), woodDark);
-              insetTop.position.set(0, h * 0.7, 0);
-              const insetLow = new THREE.Mesh(geo.box(leafW * 0.62, h * 0.24, 0.075), woodDark);
-              insetLow.position.set(0, h * 0.28, 0);
+              // vidro: no lugar das almofadas, uma barra no meio e um rodapé escuros; as outras: almofadas
+              const insetTop = new THREE.Mesh(ds.glass ? geo.box(leafW, 0.06, 0.075) : geo.box(leafW * 0.62, h * 0.32, 0.075), woodDark);
+              insetTop.position.set(0, ds.glass ? h * 0.55 : h * 0.7, 0);
+              const insetLow = new THREE.Mesh(ds.glass ? geo.box(leafW, h * 0.2, 0.075) : geo.box(leafW * 0.62, h * 0.24, 0.075), woodDark);
+              insetLow.position.set(0, ds.glass ? h * 0.1 : h * 0.28, 0);
               const handle = new THREE.Mesh(geo.box(0.05, 0.16, 0.12), metal);
               handle.position.set(-side * (leafW / 2 - 0.08), Math.min(1.0, h * 0.55), 0);
               leaf.add(panel, insetTop, insetLow, handle);
@@ -1813,6 +1913,18 @@ export class World {
   }
 
   /** Alguém sentado perto da tela: ela liga e mostra o app que a pessoa usa; sem ninguém, fica em espera. */
+  /** Animação dos itens do pacote novo (câmera varre, impressora imprime, LED pisca...). */
+  /** Itens ligados à força (caixa de som tocando): item id -> true. Definido pelo app a cada passada do rádio. */
+  playingItems: Set<string> = new Set();
+  private updatePack() {
+    const nowMs = performance.now();
+    const t = nowMs / 1000;
+    for (const o of this.itemGroup.children) {
+      const u = o.userData;
+      if (u.ptick && o.children[0]) u.ptick(o.children[0], t, nowMs < u.pon || this.playingItems.has(u.itemId));
+    }
+  }
+
   private updateScreens() {
     const now = performance.now();
     if (now - this.screenTick < 125) return;
@@ -1831,13 +1943,26 @@ export class World {
       seated.push({ x: a.root.position.x, z: a.root.position.z, kind: act?.app ? appKind(act.app, act.title) : "work" });
     }
     for (const sc of this.screens) {
-      let kind: AppKind | null = null;
-      for (const p of seated)
-        if (Math.hypot(p.x - sc.x, p.z - sc.z) < 1.35) {
-          kind = p.kind;
-          break;
+      let seen: AppKind | null = null;
+      let best = 1.15; // só a tela de quem está sentado ali (antes pegava as mesas vizinhas)
+      for (const p of seated) {
+        const dd = Math.hypot(p.x - sc.x, p.z - sc.z);
+        if (dd < best) {
+          best = dd;
+          seen = p.kind;
         }
-      const want = kind ? this.screenFx.get(kind) : sc.dim;
+      }
+      // o app só troca depois de 2,5 s estável: o título da janela muda toda hora e a tela ficava piscando
+      if (sc.kind === undefined || seen === null || sc.kind === null) {
+        sc.kind = seen;
+        sc.pend = seen;
+      } else if (seen !== sc.kind) {
+        if (sc.pend !== seen) {
+          sc.pend = seen;
+          sc.since = now;
+        } else if (now - (sc.since ?? now) > 2500) sc.kind = seen;
+      } else sc.pend = seen;
+      const want = sc.kind ? this.screenFx.get(sc.kind) : sc.dim;
       if (sc.mesh.material !== want) sc.mesh.material = want;
     }
     this.screenFx.tick();
@@ -1853,7 +1978,7 @@ export class World {
       if (dr.lockMark) dr.lockMark.visible = locked;
       // trancada: só abre para quem está do lado de dentro (ou tem passe)
       const human = people.some((p) => Math.hypot(p.x - dr.x, p.z - dr.z) < 1.6 && (!locked || this.zoneAt(p.x, p.z)?.id === dr.zone || (p === this.me?.root.position && !this.doorLocked(dr.zone))));
-      const near = human || (!locked && !!ze && Math.hypot(ze.x - dr.x, ze.z - dr.z) < 1.6);
+      const near = human || (!!ze && Math.hypot(ze.x - dr.x, ze.z - dr.z) < 1.6); // o Seu Zé abre até porta trancada
       // porta aberta só pelo Seu Zé: som bem baixinho (ele passa o dia abrindo porta)
       if (near && dr.open < 0.05 && !dr.sounding) dr.npc = !human;
       const target = near ? 1 : 0;
@@ -1884,7 +2009,7 @@ export class World {
     const tag = document.createElement("div");
     tag.className = "zone-tag" + (z.private ? " private" : "");
     tag.innerHTML = (z.private ? icon("lock", 11, 2.4) : "") + "<span></span>";
-    tag.querySelector("span")!.textContent = z.name;
+    tag.querySelector("span")!.textContent = z.role ? `${z.name} · ${z.role}` : z.name;
     const lbl = new CSS2DObject(tag);
     lbl.position.set(-z.w / 2 + 0.3, 0.05, -z.d / 2 + 0.4);
     lbl.center.set(0, 0);
@@ -1982,7 +2107,7 @@ export class World {
     for (const b of this.doorBlockers) {
       if (x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1) return true;
     }
-    if (this.lockedZones.size)
+    if (this.lockedZones.size && !this.ignoreLocks)
       for (const dr of this.doors) {
         const b = dr.rect;
         if (b && this.doorLocked(dr.zone) && x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1) return true;
@@ -2114,11 +2239,12 @@ export class World {
     this.me.sitting = true;
     this.me.targetDir = -(seat.rot * Math.PI) / 180;
     this.seatId = seat.id;
+    this.me.seatY = SEAT_H[seat.type] ?? SEAT_Y;
     this.seatHold = fromKeys;
     this.leftSeat = null;
     this.path = [];
     this.walkGoal = null;
-    this.onSit?.(true);
+    this.onSit?.(true, this.me.seatY);
   }
 
   /** Anda até o destino confirmado (cadeira: senta ao chegar; no mapa geral: volta a câmera e vai correndo). */
@@ -2156,8 +2282,9 @@ export class World {
     this.me.sitting = true;
     this.me.sitT = 1;
     this.seatId = seat.id;
+    this.me.seatY = SEAT_H[seat.type] ?? SEAT_Y;
     this.path = [];
-    this.onSit?.(true);
+    this.onSit?.(true, this.me.seatY);
   }
 
   /** O caminho atual vai correndo (atalhos como "minha sala"). */
@@ -2226,6 +2353,30 @@ export class World {
     return best;
   }
 
+  private editSaved: { view: ViewMode; overview: boolean } | null = null;
+  private spaceDown = false;
+
+  /** Editor aberto: câmera aérea do prédio inteiro, livre (botão do meio arrasta). Ao fechar, volta como estava. */
+  setEditCam(on: boolean) {
+    if (on) {
+      if (this.editSaved) return;
+      this.editSaved = { view: this.view, overview: this.overview };
+      this.setView("aerea");
+      this.setOverview(true);
+      this.panOffset.set(0, 0, 0);
+      this.camTarget.set(0, 0, 0);
+    } else {
+      const s = this.editSaved;
+      if (!s) return;
+      this.editSaved = null;
+      this.panOffset.set(0, 0, 0);
+      if (!s.overview) this.setOverview(false);
+      this.setView(s.view);
+    }
+    this.editing = on;
+    this.updateFrustum();
+  }
+
   /** Leva a câmera até um ponto (sem mexer o personagem). */
   focusOn(x: number, z: number) {
     const base = this.overview ? new THREE.Vector3() : this.me?.root.position.clone() ?? new THREE.Vector3();
@@ -2237,7 +2388,8 @@ export class World {
   panBy(dx: number, dz: number) {
     const { w, d } = this.layout.size;
     const base = this.overview ? new THREE.Vector3() : this.me?.root.position.clone() ?? new THREE.Vector3();
-    const lim = (v: number, half: number) => THREE.MathUtils.clamp(v, -half - 2, half + 2);
+    const m = this.editSaved ? 10 : 2;
+    const lim = (v: number, half: number) => THREE.MathUtils.clamp(v, -half - m, half + m);
     const tx = lim(this.camTarget.x + dx, w / 2);
     const tz = lim(this.camTarget.z + dz, d / 2);
     this.panOffset.set(tx - base.x, 0, tz - base.z);
@@ -2272,7 +2424,13 @@ export class World {
         e.preventDefault();
       }
     });
-    window.addEventListener("keyup", (e) => this.keys.delete(e.key.toLowerCase()));
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "Space" && !typing()) this.spaceDown = true;
+    });
+    window.addEventListener("keyup", (e) => {
+      if (e.code === "Space") this.spaceDown = false;
+      this.keys.delete(e.key.toLowerCase());
+    });
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.running = false;
@@ -2283,7 +2441,13 @@ export class World {
 
     const el = this.labels.domElement;
     el.addEventListener("wheel", (e) => {
-      this.zoom = THREE.MathUtils.clamp(this.zoom * (e.deltaY > 0 ? 0.9 : 1.1), this.fitZoom(), 3.2);
+      const edit = !!this.editSaved;
+      this.zoom = THREE.MathUtils.clamp(this.zoom * (e.deltaY > 0 ? 0.9 : 1.1), this.fitZoom() * (edit ? 0.6 : 1), 3.2);
+      if (edit) {
+        this.updateFrustum();
+        e.preventDefault();
+        return;
+      }
       // afastou até o prédio inteiro caber: vira a visão de mapa (e volta ao aproximar)
       if (!this.overview && this.zoom <= this.fitZoom() * 1.02) this.setOverview(true, false);
       else if (this.overview && this.zoom > this.fitZoom() * 1.3) this.setOverview(false, false);
@@ -2297,8 +2461,10 @@ export class World {
     let dragged = false;
     el.addEventListener("pointerdown", (e) => {
       lastPointer = e.pointerType || "mouse";
-      if (e.pointerType === "touch" || e.button !== 0 || (e.target as HTMLElement) !== el) return;
-      if (this.editing && !this.canPanEdit?.()) return;
+      if (e.pointerType === "touch" || (e.target as HTMLElement) !== el) return;
+      const free = !!this.editSaved && (e.button === 1 || (e.button === 0 && this.spaceDown));
+      if (free) e.preventDefault(); // botão do meio: sem o "rolar automático" do navegador
+      else if (e.button !== 0 || (this.editing && !this.canPanEdit?.())) return;
       drag = { id: e.pointerId, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, moved: false };
       dragged = false;
     });
@@ -2357,6 +2523,7 @@ export class World {
         }
         const obj = this.pickItem(e);
         const it = obj && this.layout.items.find((i) => i.id === obj.userData.itemId);
+        if (it && obj && obj.userData.puse) obj.userData.pon = performance.now() + 4000;
         if (it && DEFS[it.type]?.interactive && this.onItemClick?.(it, e.clientX, e.clientY)) return;
       }
       // qualquer clique no chão ou numa cadeira abre a confirmação de ir até lá
@@ -2975,6 +3142,7 @@ export class World {
     }
     this.updateDoors(dt);
     this.updateScreens();
+    this.updatePack();
     this.updatePool(dt);
     this.onFrame?.();
   }
@@ -2988,13 +3156,27 @@ export class World {
 export class Janitor {
   avatar: Avatar;
   private pts: THREE.Vector3[] = [];
-  private stops: { at: number; until: number; idx: number }[] = [];
+  private stops: { at: number; until: number; idx: number; dir: number }[] = [];
   private cycle = 1;
-  private mop: THREE.Group;
-  private sign: THREE.Group;
   private lastPos = new THREE.Vector3();
-  static readonly SPEED = 1.25; // m/s, andar tranquilo
-  static readonly CLEAN_SECS = 7;
+  // carrinho de limpeza e o que tem nele
+  private cart: THREE.Group;
+  private cartMop: THREE.Group;
+  private cartSign: THREE.Group;
+  private cartSpray: THREE.Group;
+  private cartCloth: THREE.Mesh;
+  // o que vai na mão
+  private handMop: THREE.Group;
+  private handSpray: THREE.Group;
+  private handCloth: THREE.Mesh;
+  // no chão
+  private sign: THREE.Group;
+  private wet: THREE.Mesh;
+  private wetMat: THREE.MeshBasicMaterial;
+  private mist: THREE.Mesh[] = [];
+  private wetUntil = 0;
+  static readonly SPEED = 1.15; // m/s, empurrando o carrinho
+  static readonly CLEAN_SECS = 12;
 
   constructor(private world: World) {
     this.avatar = new Avatar(
@@ -3013,26 +3195,102 @@ export class Janitor {
       false,
     );
     this.avatar.label.classList.add("npc");
-    // esfregão na mão
-    const stick = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.15, 0.05), new THREE.MeshToonMaterial({ color: 0xb98a55 }));
-    stick.position.y = -0.3;
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 0.2), new THREE.MeshToonMaterial({ color: 0xe9e4d6 }));
-    head.position.y = -0.86;
-    this.mop = new THREE.Group();
-    this.mop.add(stick, head);
-    this.avatar.char.hand.add(this.mop);
-    // plaquinha de "piso molhado"
-    const yel = new THREE.MeshToonMaterial({ color: 0xf2c14e });
-    const a = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.5, 0.03), yel);
-    a.position.set(0, 0.24, 0.08);
-    a.rotation.x = -0.3;
-    const b = a.clone();
-    b.position.z = -0.08;
-    b.rotation.x = 0.3;
-    this.sign = new THREE.Group();
-    this.sign.add(a, b);
+    const mat = (c: number, o: Partial<THREE.MeshToonMaterialParameters> = {}) => new THREE.MeshToonMaterial({ color: c, ...o });
+    const bx = (w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0) => {
+      const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+      b.position.set(x, y, z);
+      return b;
+    };
+    const wood = mat(0xb98a55);
+    const cloth = mat(0xe9e4d6);
+    const yel = mat(0xf2c14e);
+    const steel = mat(0x8a96a3);
+    const blue = mat(0x5ec8ff);
+    const lime = mat(0xc8f501);
+
+    // rodo/esfregão: cabo + cabeça com franjas
+    const mkMop = () => {
+      const g = new THREE.Group();
+      g.add(bx(0.045, 1.2, 0.045, wood, 0, 0, 0));
+      g.add(bx(0.4, 0.06, 0.14, steel, 0, -0.6, 0));
+      for (let i = -3; i <= 3; i++) g.add(bx(0.045, 0.09, 0.12, cloth, i * 0.055, -0.67, 0));
+      return g;
+    };
+    // borrifador: frasco azul com gatilho branco
+    const mkSpray = () => {
+      const g = new THREE.Group();
+      g.add(bx(0.09, 0.18, 0.07, blue, 0, 0, 0));
+      g.add(bx(0.05, 0.06, 0.05, cloth, 0, 0.12, 0));
+      g.add(bx(0.03, 0.03, 0.08, cloth, 0, 0.15, 0.05));
+      return g;
+    };
+    // plaquinha "piso molhado" (aberta em A)
+    const mkSign = (open: boolean) => {
+      const g = new THREE.Group();
+      const a = bx(0.3, 0.5, 0.03, yel, 0, 0.24, open ? 0.08 : 0.015);
+      a.rotation.x = open ? -0.3 : 0;
+      const b = a.clone();
+      b.position.z = open ? -0.08 : -0.015;
+      b.rotation.x = open ? 0.3 : 0;
+      // faixa preta com o "!" desenhado em blocos
+      const ink = mat(0x2a2a2a);
+      g.add(a, b, bx(0.04, 0.14, 0.01, ink, 0, 0.3, open ? 0.105 : 0.035), bx(0.04, 0.035, 0.01, ink, 0, 0.18, open ? 0.115 : 0.035));
+      return g;
+    };
+
+    // ---- carrinho (frente = +z) ----
+    this.cart = new THREE.Group();
+    const c = this.cart;
+    c.add(bx(0.62, 0.05, 0.9, steel, 0, 0.16, 0)); // prateleira de baixo
+    c.add(bx(0.62, 0.04, 0.5, steel, 0, 0.62, -0.18)); // prateleira de cima
+    for (const [x, z] of [[-0.29, -0.42], [0.29, -0.42], [-0.29, 0.06], [0.29, 0.06]]) c.add(bx(0.04, 0.62, 0.04, steel, x, 0.33, z));
+    c.add(bx(0.04, 0.55, 0.04, steel, -0.25, 0.9, -0.45), bx(0.04, 0.55, 0.04, steel, 0.25, 0.9, -0.45), bx(0.54, 0.05, 0.05, steel, 0, 1.16, -0.45)); // alça
+    for (const [x, z] of [[-0.28, -0.38], [0.28, -0.38], [-0.28, 0.38], [0.28, 0.38]]) {
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.05, 10), mat(0x1f1f1f));
+      w.rotation.z = Math.PI / 2;
+      w.position.set(x, 0.07, z);
+      c.add(w);
+    }
+    // balde amarelo com espremedor azul, na frente
+    c.add(bx(0.44, 0.3, 0.36, yel, 0, 0.34, 0.24), bx(0.4, 0.03, 0.32, mat(0x3b8fd0, { transparent: true, opacity: 0.85 }), 0, 0.47, 0.24), bx(0.46, 0.08, 0.1, mat(0x3b6fc0), 0, 0.52, 0.1));
+    // saco de lixo
+    c.add(bx(0.34, 0.32, 0.3, mat(0x2a2a2a), 0, 0.36, -0.22));
+    // frascos na prateleira de cima
+    c.add(bx(0.08, 0.16, 0.08, mat(0xff7aa8), -0.2, 0.72, -0.05), bx(0.1, 0.2, 0.08, mat(0xffffff), -0.06, 0.74, -0.32));
+    this.cartMop = mkMop();
+    this.cartMop.position.set(0.08, 1.06, 0.24);
+    this.cartMop.rotation.z = 0.12;
+    this.cartSpray = mkSpray();
+    this.cartSpray.position.set(0.12, 0.73, -0.1);
+    this.cartCloth = bx(0.18, 0.04, 0.14, lime, 0.12, 0.66, -0.3);
+    this.cartSign = mkSign(false);
+    this.cartSign.position.set(0.33, 0.12, -0.2);
+    this.cartSign.rotation.y = Math.PI / 2;
+    c.add(this.cartMop, this.cartSpray, this.cartCloth, this.cartSign);
+
+    // ---- itens na mão (mão direita) ----
+    this.handMop = mkMop();
+    this.handMop.position.y = -0.15;
+    this.handSpray = mkSpray();
+    this.handSpray.position.set(0, -0.08, 0.06);
+    this.handCloth = bx(0.16, 0.04, 0.12, lime, 0, -0.06, 0.04);
+    const hand = this.avatar.char.hand;
+    hand.add(this.handMop, this.handSpray, this.handCloth);
+
+    // ---- no chão: plaquinha aberta, mancha molhada e névoa do borrifador ----
+    this.sign = mkSign(true);
     this.sign.visible = false;
-    world.scene.add(this.avatar.root, this.sign);
+    this.wetMat = new THREE.MeshBasicMaterial({ color: 0x5aa9e6, transparent: true, opacity: 0, depthWrite: false });
+    this.wet = new THREE.Mesh(new THREE.CircleGeometry(1, 28), this.wetMat);
+    this.wet.rotation.x = -Math.PI / 2;
+    this.wet.visible = false;
+    const mistMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthWrite: false });
+    for (let i = 0; i < 7; i++) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.05), mistMat);
+      m.visible = false;
+      this.mist.push(m);
+    }
+    world.scene.add(this.avatar.root, this.cart, this.sign, this.wet, ...this.mist);
   }
 
   /** Monta a rota passando pelas áreas do escritório (refaz quando o mapa muda). */
@@ -3041,68 +3299,76 @@ export class Janitor {
     if (!L) return;
     const wanted: THREE.Vector3[] = [];
     const { w, d } = L.size;
+    void d;
     // corredor central e salas (centro de cada uma, um pouco para dentro da porta)
     wanted.push(new THREE.Vector3(-w / 2 + 3, 0, -0.5), new THREE.Vector3(0, 0, -0.5), new THREE.Vector3(w / 2 - 3, 0, -0.5));
     for (const z of L.zones) wanted.push(new THREE.Vector3(z.x, 0, z.z));
     // ordena em volta do centro, para fazer uma volta só
     wanted.sort((p, q) => Math.atan2(p.z, p.x) - Math.atan2(q.z, q.x));
+    // precisa de espaço para ele e o carrinho ao lado
     const free = (p: THREE.Vector3) => {
       for (let r = 0; r < 3; r += 0.5)
         for (const [dx, dz] of [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r], [r, r], [-r, -r], [r, -r], [-r, r]]) {
           const q = new THREE.Vector3(p.x + dx, 0, p.z + dz);
-          if (!this.world.blocked(q.x, q.z, 0.35)) return q;
+          if (!this.world.blocked(q.x, q.z, 0.6)) return q;
         }
       return null;
     };
-    const stopsAt = wanted.map(free).filter((p): p is THREE.Vector3 => !!p);
-    this.pts = [];
-    this.stops = [];
     let tdist = 0;
-    for (let i = 0; i < stopsAt.length; i++) {
-      const from = stopsAt[i];
-      const to = stopsAt[(i + 1) % stopsAt.length];
-      const seg = this.world.findPath(from, to);
-      if (!seg.length) continue;
-      if (!this.pts.length) this.pts.push(from.clone());
-      // parada para limpar no começo do trecho
-      this.stops.push({ at: tdist, until: tdist + Janitor.CLEAN_SECS, idx: this.pts.length - 1 });
-      tdist += Janitor.CLEAN_SECS;
-      let prev = this.pts[this.pts.length - 1];
-      for (const p of seg) {
-        tdist += prev.distanceTo(p) / Janitor.SPEED;
-        this.pts.push(p.clone());
-        prev = p;
+    this.world.ignoreLocks = true;
+    try {
+      const stopsAt = wanted.map(free).filter((p): p is THREE.Vector3 => !!p);
+      this.pts = [];
+      this.stops = [];
+      for (let i = 0; i < stopsAt.length; i++) {
+        const from = stopsAt[i];
+        const to = stopsAt[(i + 1) % stopsAt.length];
+        const seg = this.world.findPath(from, to);
+        if (!seg.length) continue;
+        if (!this.pts.length) this.pts.push(from.clone());
+        // direção em que ele chegou (o carrinho para do lado, virado para lá)
+        const last = this.pts[this.pts.length - 1];
+        const prev = this.pts.length > 1 ? this.pts[this.pts.length - 2] : null;
+        const dir = prev ? Math.atan2(last.x - prev.x, last.z - prev.z) : Math.atan2(seg[0].x - last.x, seg[0].z - last.z);
+        this.stops.push({ at: tdist, until: tdist + Janitor.CLEAN_SECS, idx: this.pts.length - 1, dir });
+        tdist += Janitor.CLEAN_SECS;
+        let p0 = last;
+        for (const p of seg) {
+          tdist += p0.distanceTo(p) / Janitor.SPEED;
+          this.pts.push(p.clone());
+          p0 = p;
+        }
       }
+    } finally {
+      this.world.ignoreLocks = false;
     }
     this.cycle = Math.max(1, tdist);
   }
 
-  /** Posição na rota para o instante `t` (segundos). */
+  /** Posição na rota para o instante `t` (segundos): igual para todo mundo, sai do relógio. */
   update(dt: number) {
     const av = this.avatar;
     if (this.pts.length < 2) {
-      av.root.visible = false;
+      av.root.visible = this.cart.visible = false;
       return;
     }
-    av.root.visible = true;
-    let t = (Date.now() / 1000) % this.cycle;
-    let cleaning = false;
+    av.root.visible = this.cart.visible = true;
+    const t = (Date.now() / 1000) % this.cycle;
+    let stop: { at: number; until: number; idx: number; dir: number } | null = null;
     let pos = this.pts[0].clone();
-    // anda pelos trechos descontando as paradas
     let cursor = 0;
     let i = 0;
     for (const st of this.stops) {
       if (t < st.at) break;
       if (t < st.until) {
-        cleaning = true;
+        stop = st;
         pos = this.pts[st.idx].clone();
-        i = -1;
         break;
       }
       cursor = st.until;
       i = st.idx;
     }
-    if (!cleaning) {
+    if (!stop) {
       let left = (t - cursor) * Janitor.SPEED;
       pos = this.pts[i].clone();
       for (let k = i; k < this.pts.length - 1 && left > 0; k++) {
@@ -3119,31 +3385,214 @@ export class Janitor {
       }
     }
     const moved = pos.distanceTo(this.lastPos);
-    if (moved > 1e-3 && moved < 1) av.targetDir = Math.atan2(pos.x - this.lastPos.x, pos.z - this.lastPos.z);
+    if (!stop && moved > 1e-3 && moved < 1) av.targetDir = Math.atan2(pos.x - this.lastPos.x, pos.z - this.lastPos.z);
     else if (moved >= 1) av.body.rotation.y = av.targetDir;
     this.lastPos.copy(pos);
     av.root.position.copy(pos);
-    av.moving = !cleaning && moved > 1e-4;
+    av.moving = !stop && moved > 1e-4;
+    const ce = stop ? t - stop.at : -1;
+    if (stop) av.targetDir = this.faceFor(stop.dir, ce);
     let d = av.targetDir - av.body.rotation.y;
     d = Math.atan2(Math.sin(d), Math.cos(d));
-    av.body.rotation.y += d * Math.min(1, dt * 8);
+    av.body.rotation.y += d * Math.min(1, dt * (stop ? 7 : 8));
     av.update(dt, false);
-    // esfregando: braço vai e volta, plaquinha no chão ao lado
-    if (cleaning) {
-      const s = Math.sin(performance.now() / 180);
-      av.char.armR.rotation.set(-0.5 + s * 0.35, 0, 0);
-      av.char.armL.rotation.set(-0.6 + s * 0.35, 0, 0);
-      this.sign.visible = true;
-      this.sign.position.set(pos.x + 0.7, 0, pos.z + 0.4);
-    } else {
-      av.char.armR.rotation.x = Math.max(av.char.armR.rotation.x, -0.2);
+    if (stop) this.clean(stop, pos, ce);
+    else this.push(pos);
+    this.updateWet(pos, ce, stop);
+  }
+
+  /** Para onde ele olha em cada etapa da limpeza (carrinho fica do lado direito). */
+  private faceFor(dir: number, ce: number) {
+    const toCart = dir - Math.PI / 2;
+    if (ce < 0.8) return dir;
+    if (ce < 3.0) return ce < 1.6 ? toCart : ce < 2.0 ? dir + 0.5 : toCart; // pega a placa, põe no chão, volta ao balde
+    if (ce < 7.5) return dir;
+    if (ce < 8.6) return toCart;
+    if (ce < 10.0) return dir - 0.2; // borrifa e passa o pano na frente
+    if (ce < 11.0) return ce < 10.5 ? dir + 0.5 : toCart;
+    return dir;
+  }
+
+  /** Andando: carrinho na frente, duas mãos na alça. */
+  private push(pos: THREE.Vector3) {
+    const av = this.avatar;
+    const c = av.char;
+    const yaw = av.body.rotation.y;
+    this.cart.position.set(pos.x + Math.sin(yaw) * 0.85, 0, pos.z + Math.cos(yaw) * 0.85);
+    this.cart.rotation.y = yaw;
+    c.armR.rotation.set(-1.15, 0, 0.12);
+    c.armL.rotation.set(-1.15, 0, -0.12);
+    c.root.rotation.x = 0.08; // corpo um pouco à frente, fazendo força
+    this.show({ cartMop: true, cartSign: true, cartSpray: true, cartCloth: true });
+    this.sign.visible = false;
+    for (const m of this.mist) m.visible = false;
+  }
+
+  private show(o: { handMop?: boolean; handSpray?: boolean; handCloth?: boolean; cartMop?: boolean; cartSign?: boolean; cartSpray?: boolean; cartCloth?: boolean }) {
+    this.handMop.visible = !!o.handMop;
+    this.handSpray.visible = !!o.handSpray;
+    this.handCloth.visible = !!o.handCloth;
+    this.cartMop.visible = !!o.cartMop;
+    this.cartSign.visible = !!o.cartSign;
+    this.cartSpray.visible = !!o.cartSpray;
+    this.cartCloth.visible = !!o.cartCloth;
+  }
+
+  /** As etapas da parada (12 s): estaciona, placa, rodo, borrifador e pano, recolhe e segue. */
+  private clean(st: { dir: number }, pos: THREE.Vector3, ce: number) {
+    const c = this.avatar.char;
+    const dir = st.dir;
+    const right = new THREE.Vector3(-Math.cos(dir), 0, Math.sin(dir)); // lado direito dele
+    const fwd = new THREE.Vector3(Math.sin(dir), 0, Math.cos(dir));
+    // carrinho estacionado do lado direito dele
+    const park = Math.min(1, ce / 0.8);
+    const cartA = new THREE.Vector3(pos.x + fwd.x * 0.85, 0, pos.z + fwd.z * 0.85);
+    const cartB = new THREE.Vector3(pos.x + right.x * 0.9 + fwd.x * 0.2, 0, pos.z + right.z * 0.9 + fwd.z * 0.2);
+    this.cart.position.lerpVectors(cartA, cartB, park * park * (3 - 2 * park));
+    this.cart.rotation.y = dir;
+    const ease = (x: number) => {
+      const v = Math.min(1, Math.max(0, x));
+      return v * v * (3 - 2 * v);
+    };
+    const reach = (k: number, low = false) => {
+      // braço direito vai até o carrinho (ou até o chão) e volta
+      c.armR.rotation.set(low ? -0.4 - k * 0.5 : -0.4 - k * 0.9, 0, 0.1 + k * 0.25);
+      c.root.rotation.x = k * (low ? 0.35 : 0.15);
+    };
+    const signSpot = new THREE.Vector3(pos.x + fwd.x * 0.6 - right.x * 0.7, 0, pos.z + fwd.z * 0.6 - right.z * 0.7);
+    this.sign.position.copy(signSpot);
+    this.sign.rotation.y = dir;
+    for (const m of this.mist) m.visible = false;
+    this.handMop.position.y = -0.15;
+    c.armL.rotation.set(-0.15, 0, -0.1);
+    c.root.rotation.x = 0;
+
+    if (ce < 0.8) {
+      // estacionando
+      c.armR.rotation.set(-1.15, 0, 0.12);
+      c.armL.rotation.set(-1.15, 0, -0.12);
+      this.show({ cartMop: true, cartSign: true, cartSpray: true, cartCloth: true });
       this.sign.visible = false;
+    } else if (ce < 2.0) {
+      // pega a plaquinha no carrinho (0,8–1,4) e coloca no chão (1,6–2,0)
+      const inHand = ce > 1.15 && ce < 1.8;
+      reach(ce < 1.6 ? Math.sin(((ce - 0.8) / 0.8) * Math.PI) : Math.sin(((ce - 1.6) / 0.4) * Math.PI), ce >= 1.6);
+      this.show({ cartMop: true, cartSign: ce < 1.15, cartSpray: true, cartCloth: true });
+      this.sign.visible = ce >= 1.8;
+      if (inHand) {
+        // placa dobrada na mão
+        this.sign.visible = true;
+        const hp = new THREE.Vector3();
+        c.hand.getWorldPosition(hp);
+        this.sign.position.set(hp.x, Math.max(0, hp.y - 0.5), hp.z);
+      }
+    } else if (ce < 3.0) {
+      // tira o rodo do balde (2,0–2,5) e torce no espremedor (2,5–3,0)
+      const k = ease((ce - 2.0) / 0.5);
+      const wring = ce > 2.5 ? Math.abs(Math.sin((ce - 2.5) * 12)) * 0.25 : 0;
+      c.armR.rotation.set(-1.0 - k * 0.3 + wring, 0, 0.2);
+      c.armL.rotation.set(-0.9 + wring, 0, -0.1);
+      this.show({ handMop: ce > 2.3, cartMop: ce <= 2.3, cartSpray: true, cartCloth: true });
+      this.handMop.rotation.set(0.15, 0, 0);
+      this.sign.visible = true;
+    } else if (ce < 7.5) {
+      // passa o rodo em "8": inclina, gira o tronco, empurra e puxa, arrasta os pés
+      const u = ce - 3.0;
+      const sweep = Math.sin(u * 2.4);
+      const push = Math.sin(u * 4.8);
+      const yaw = sweep * 0.45;
+      this.avatar.body.rotation.y = dir + yaw;
+      c.root.rotation.x = 0.22 + push * 0.04;
+      c.root.rotation.z = -sweep * 0.06;
+      c.armR.rotation.set(-0.85 + push * 0.22, 0, 0.05 - sweep * 0.2);
+      c.armL.rotation.set(-1.0 + push * 0.22, 0, -0.35 - sweep * 0.15);
+      c.legL.rotation.x = Math.sin(u * 2.4) * 0.18;
+      c.legR.rotation.x = -Math.sin(u * 2.4) * 0.18;
+      // cabeça do rodo encostada no chão e acompanhando a varrida
+      this.handMop.rotation.set(0.55 + push * 0.12, 0, sweep * 0.35);
+      this.handMop.position.y = 0.12; // escorrega no punho para a cabeça encostar no chão
+      this.show({ handMop: true, cartSpray: true, cartCloth: true });
+      this.sign.visible = true;
+    } else if (ce < 8.6) {
+      // mergulha o rodo no balde (sobe e desce) e larga lá
+      const dip = Math.abs(Math.sin((ce - 7.5) * 7)) * 0.3;
+      c.armR.rotation.set(-1.1 + dip, 0, 0.25);
+      c.armL.rotation.set(-0.9 + dip, 0, -0.05);
+      this.handMop.rotation.set(0.1, 0, 0);
+      this.show({ handMop: ce < 8.3, cartMop: ce >= 8.3, cartSpray: ce < 8.45, handSpray: ce >= 8.45, cartCloth: true });
+      this.sign.visible = true;
+    } else if (ce < 10.0) {
+      // borrifa (8,6–9,2) e passa o pano em círculos (9,2–10,0)
+      if (ce < 9.2) {
+        const squeeze = Math.sin((ce - 8.6) * 18) > 0.3;
+        c.armR.rotation.set(-1.35, 0, 0.05);
+        c.armL.rotation.set(-0.2, 0, -0.1);
+        this.show({ handSpray: true, cartMop: true, cartCloth: true });
+        // névoa saindo da mão para a frente
+        const hp = new THREE.Vector3();
+        c.hand.getWorldPosition(hp);
+        const yaw = this.avatar.body.rotation.y;
+        const f = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+        this.mist.forEach((m, k) => {
+          const life = ((ce - 8.6) * 2.2 + k / this.mist.length) % 1;
+          m.visible = squeeze || life < 0.6;
+          m.position.set(hp.x + f.x * (0.15 + life * 0.7) + Math.sin(k * 7.1) * 0.08 * life, hp.y + 0.05 + Math.cos(k * 3.3) * 0.08 * life, hp.z + f.z * (0.15 + life * 0.7));
+          m.scale.setScalar(0.5 + life * 1.6);
+        });
+      } else {
+        const a = (ce - 9.2) * 9;
+        c.armR.rotation.set(-1.1 + Math.sin(a) * 0.18, 0, 0.12 + Math.cos(a) * 0.18);
+        c.armL.rotation.set(-0.2, 0, -0.1);
+        c.root.rotation.x = 0.12;
+        this.show({ handCloth: true, cartMop: true, cartSpray: true });
+      }
+      this.sign.visible = true;
+    } else if (ce < 11.0) {
+      // guarda o pano, pega a plaquinha do chão (10,0–10,5) e põe no carrinho (10,5–11,0)
+      const low = ce < 10.5;
+      reach(low ? Math.sin(((ce - 10.0) / 0.5) * Math.PI) : Math.sin(((ce - 10.5) / 0.5) * Math.PI), low);
+      this.show({ cartMop: true, cartSpray: true, cartCloth: true, cartSign: ce >= 10.8 });
+      this.sign.visible = ce < 10.8;
+      if (ce > 10.3 && ce < 10.8) {
+        const hp = new THREE.Vector3();
+        c.hand.getWorldPosition(hp);
+        this.sign.position.set(hp.x, Math.max(0, hp.y - 0.5), hp.z);
+      }
+    } else {
+      // mãos na alça, pronto para seguir
+      const k = ease((ce - 11.0) / 0.6);
+      c.armR.rotation.set(-0.4 - k * 0.75, 0, 0.12);
+      c.armL.rotation.set(-0.4 - k * 0.75, 0, -0.12);
+      this.show({ cartMop: true, cartSign: true, cartSpray: true, cartCloth: true });
+      this.sign.visible = false;
+    }
+  }
+
+  /** Mancha molhada: cresce enquanto ele passa o rodo e some devagar depois que ele sai. */
+  private updateWet(pos: THREE.Vector3, ce: number, stop: { dir: number } | null) {
+    const now = performance.now();
+    if (stop && ce >= 3.0) {
+      const fwd = new THREE.Vector3(Math.sin(stop.dir), 0, Math.cos(stop.dir));
+      const grow = Math.min(1, (ce - 3.0) / 4.5);
+      this.wet.position.set(pos.x + fwd.x * 0.75, 0.012, pos.z + fwd.z * 0.75);
+      this.wet.scale.set(0.35 + grow * 0.65, 0.3 + grow * 0.45, 1);
+      this.wet.rotation.z = -stop.dir;
+      this.wetMat.opacity = 0.42;
+      this.wet.visible = true;
+      this.wetUntil = now + 6000;
+    } else if (this.wet.visible) {
+      const left = (this.wetUntil - now) / 6000;
+      if (left <= 0) this.wet.visible = false;
+      else this.wetMat.opacity = 0.42 * left;
     }
   }
 
   dispose() {
     this.avatar.dispose();
+    this.cart.removeFromParent();
     this.sign.removeFromParent();
+    this.wet.removeFromParent();
+    for (const m of this.mist) m.removeFromParent();
   }
 }
 

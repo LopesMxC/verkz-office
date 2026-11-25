@@ -1,0 +1,8 @@
+<!doctype html><html><body style="margin:0;background:#12141a"><script type="module">
+import { openImageBank, PROVIDERS } from "./imagebank.ts";
+const cols=["#3b6fc0","#c8f501","#e0874a","#4fae4a","#8a6cc9","#e58aa8","#4fb7d9","#f2c14e"];
+const mkimg=(i)=>{const c=document.createElement("canvas");c.width=300;c.height=225;const g=c.getContext("2d");const gr=g.createLinearGradient(0,0,300,225);gr.addColorStop(0,cols[i%8]);gr.addColorStop(1,cols[(i*3+2)%8]);g.fillStyle=gr;g.fillRect(0,0,300,225);g.fillStyle="rgba(255,255,255,.25)";g.beginPath();g.moveTo(0,225);g.lineTo(90,110+i*6%40);g.lineTo(170,190);g.lineTo(230,100);g.lineTo(300,225);g.fill();return c.toDataURL()};
+window.fetch=async()=>({json:async()=>({results:Array.from({length:12},(_,i)=>({id:i,thumbnail:mkimg(i),url:"",width:1200,height:800,creator:["Ana Lima","J. Souza","M. Reis"][i%3],foreign_landing_url:""}))})});
+openImageBank({query:"montanhas"}).then(()=>{});
+setTimeout(()=>{document.getElementById("ib-go").click();setTimeout(()=>{document.querySelectorAll(".ib-c")[2].click();window.done=true},400)},200);
+</script></body></html>

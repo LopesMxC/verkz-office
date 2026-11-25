@@ -1,9 +1,12 @@
 import * as THREE from "three";
 import { CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
-import { buildItem, DEFS, imageToDataUrl, Item, Layout, levelIds, levelName, levelView, mergeLevel, PALETTE, perimeterWalls, PHOTO_TYPES, WALL_MOUNT, Zone } from "./furniture";
+import { rugPreview, RUG_PATTERNS, RUG_PALETTES, RUG_STYLES, RUG_PATTERN_NAMES, rugPalette } from "./rugs";
+import { buildItem, DEFS, RUG_RE, PLANT_VARIANTS, imageToDataUrl, Item, Layout, levelIds, levelName, levelView, mergeLevel, PALETTE, perimeterWalls, PHOTO_TYPES, ROLES, WALL_MOUNT, Zone, WINDOW_STYLES, DOOR_STYLES, OfficeStyle } from "./furniture";
 import type { World } from "./world";
 import { icon } from "./icons";
-import { furnitureThumbs } from "./thumbs";
+import { ensureThumbs } from "./thumbs";
+import { REG as PACK } from "../pack";
+import { openImageBank } from "../pack/imagebank";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const uid = (p: string) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -29,7 +32,15 @@ export const FLOORS: [string, string, string][] = [
   ["ceramica", "Cerâmica", "#bcbfc8"],
   ["porcelanato", "Porcelanato", "#e4e2dc"],
   ["concreto", "Concreto", "#a9a8a4"],
+  ["madeira-clara", "Madeira clara", "#e3c698"],
+  ["espinha", "Espinha de peixe", "#a97a4d"],
+  ["xadrez", "Xadrez", "#23252c"],
+  ["marmore", "Mármore", "#ebe9e4"],
+  ["ardosia", "Ardósia", "#3b3f48"],
 ];
+
+/** Molduras de janela prontas. */
+const FRAME_COLORS = ["#f7f5f0", "#2e3139", "#0D0D0D", "#9a6b45", "#C8F501", "#c0392b"];
 
 /** Cores prontas para móveis, tapetes e pisos (e o seletor livre ao lado). */
 const COLORS = ["#C8F501", "#0D0D0D", "#f4f1ea", "#9aa0ab", "#5d606c", "#c0392b", "#e67e22", "#f2c14e", "#27ae60", "#16a085", "#3b6fc0", "#2c3e8f", "#8a6cc9", "#d65db1", "#b98557", "#6e4a32"];
@@ -47,6 +58,24 @@ const CATEGORIES: [string, string, RegExp][] = [
   ["lazer", "Lazer e descanso", /^(radio|speaker|p_(radio_small|radio_retro|radio_console|boombox|speaker_.*|tv_vintage|jukebox|turntable|gramophone|soundbar|studio_monitors)|pool_table|ping_pong|arcade|bed.*|beanbag|tv|p_(foosball|dartboard|videogame|guitar|keyboard|basket|hammock|lounge))$/],
   ["banheiro", "Banheiro", /^(toilet|sink|stall|k_towelrail|p_(towel|hamper|mirror))$/],
 ];
+
+// categorias do pacote novo (uma por categoria do pacote)
+{
+  const by = new Map<string, string[]>();
+  for (const p of PACK) (by.get(p.cat) ?? by.set(p.cat, []).get(p.cat)!).push(p.id);
+  for (const [name, ids] of by) CATEGORIES.push(["pk:" + name, name, new RegExp("^(" + ids.join("|") + ")$")]);
+}
+
+const catCounts = new Map<string, number>();
+/** Quantos móveis a categoria tem (para mostrar no seletor). */
+function catCount(c: [string, string, RegExp]) {
+  let n = catCounts.get(c[0]);
+  if (n === undefined) {
+    n = PALETTE.filter((t) => t !== "floor_logo" && !isWall(t) && c[2].test(t) && !(c[0] === "todos" && t.startsWith("pk_"))).length;
+    catCounts.set(c[0], n);
+  }
+  return n;
+}
 
 type Tool = null | "zone" | "wall" | "erase" | string; // string = tipo de móvel
 
@@ -78,11 +107,21 @@ export class Editor {
   private tab: "moveis" | "salas" | "predio" = "moveis";
   private filter = "";
   private tool: Tool = null;
+  /** Fora da gestão: clicar numa janela do escritório a troca por parede lisa (para pendurar quadro). */
+  private winMode = false;
   private withWalls = true;
   private quickSize = "media";
   private category = "todos";
   private quickPriv = true;
   private rot = 0;
+  /** Posição livre: sem grade, sem ímã nas paredes e com giro em qualquer ângulo (fica salvo neste aparelho). */
+  private free = (() => {
+    try {
+      return localStorage.getItem("verkz-editor-free") === "1";
+    } catch {
+      return false;
+    }
+  })();
   private ghost: THREE.Object3D | null = null;
   private selected: Item | null = null;
   private selZone: string | null = null;
@@ -91,6 +130,9 @@ export class Editor {
   private quick: CSS2DObject;
   private dragStart: THREE.Vector3 | null = null;
   private preview: THREE.Mesh;
+  /** Sala sendo arrastada para outro lugar. */
+  private zdrag: { z: Zone; sx: number; sz: number; dx: number; dz: number; moved: boolean; ok: boolean } | null = null;
+  private zdragDone = false;
 
   constructor(private world: World, hud: HTMLElement, private onSave: (l: Layout) => void, private toast: (m: string) => void) {
     this.panel = document.createElement("div");
@@ -128,9 +170,39 @@ export class Editor {
     el.addEventListener("mousemove", (e) => this.onMouseMove(e));
     el.addEventListener("mousedown", (e) => this.onMouseDown(e));
     el.addEventListener("mouseup", (e) => this.onMouseUp(e));
+    el.addEventListener("mouseleave", () => {
+      if (this.zdrag) {
+        this.zdrag = null;
+        this.preview.removeFromParent();
+      }
+    });
     window.addEventListener("keydown", (e) => {
-      if (!this.active || document.activeElement instanceof HTMLInputElement) return;
-      if (e.key === "r" || e.key === "R") this.rotate();
+      const ae = document.activeElement;
+      // só campos de texto seguram as teclas (o controle de altura/ângulo e as caixas de marcar não)
+      if (!this.active || (ae instanceof HTMLInputElement && !["range", "checkbox", "color"].includes(ae.type)) || ae instanceof HTMLSelectElement || ae instanceof HTMLTextAreaElement) return;
+      if (ae instanceof HTMLInputElement && ae.type === "range" && e.key.startsWith("Arrow")) ae.blur(); // setas movem o móvel, não o controle
+      if (e.key === "r" || e.key === "R") this.rotate(e.shiftKey ? 90 : undefined);
+      if (this.selected && !this.tool && !LOCKED.has(this.selected.type) && (e.key === "PageUp" || e.key === "PageDown")) {
+        // PageUp/PageDown sobem e descem o móvel (2 cm; Shift 10 cm)
+        const st = e.shiftKey ? 0.1 : 0.02;
+        this.selected.y = Math.max(-0.8, Math.min(3, Math.round(((this.selected.y ?? 0) + (e.key === "PageUp" ? st : -st)) * 100) / 100));
+        e.preventDefault();
+        this.apply();
+        this.renderPanel();
+      }
+      if (this.selected && !this.tool && !LOCKED.has(this.selected.type) && e.key.startsWith("Arrow")) {
+        // setas empurram o móvel selecionado (livre: 10 cm, Shift 2 cm; com grade: meio metro)
+        const st = this.free ? (e.shiftKey ? 0.02 : 0.1) : 0.5;
+        const dx = e.key === "ArrowRight" ? st : e.key === "ArrowLeft" ? -st : 0;
+        const dz = e.key === "ArrowDown" ? st : e.key === "ArrowUp" ? -st : 0;
+        const nx = Math.round((this.selected.x + dx) * 100) / 100, nz = Math.round((this.selected.z + dz) * 100) / 100;
+        e.preventDefault();
+        if (this.allowed(nx, nz)) {
+          this.selected.x = nx;
+          this.selected.z = nz;
+          this.apply();
+        }
+      }
       if ((e.key === "d" || e.key === "D") && this.selected) this.duplicate();
       if (e.key === "Delete" || e.key === "Backspace") this.removeSelected();
       if (e.key === "Escape") {
@@ -156,6 +228,7 @@ export class Editor {
 
   open() {
     this.active = true;
+    this.winMode = false;
     // editando, o personagem fica em pé (sentado ele "flutuaria" se a cadeira mudasse de lugar)
     this.world.standUp();
     this.lv = this.world.level;
@@ -164,15 +237,20 @@ export class Editor {
     this.original = JSON.stringify(this.world.fullLayout);
     this.world.onFloorClick = (p, e) => this.onClick(p, e);
     // arrastar o mapa vale no editor, menos quando o arraste desenha sala ou parede
-    this.world.canPanEdit = () => this.tool !== "zone" && this.tool !== "wall";
+    // (na aba Salas o arraste com o botão esquerdo muda a sala de lugar; o mapa anda com o botão do meio)
+    this.world.canPanEdit = () => this.tool !== "zone" && this.tool !== "wall" && !(this.tab === "salas" && !this.limit);
+    this.world.setEditCam(true);
     this.panel.classList.remove("hidden");
     this.setTool(null);
+    this.toast("Visão aérea: segure o botão do meio do mouse para mover a câmera. Na aba Salas, arraste uma sala para mudar de lugar.");
   }
 
   private close() {
     this.active = false;
     this.world.onFloorClick = undefined;
     this.world.canPanEdit = undefined;
+    this.zdrag = null;
+    this.world.setEditCam(false);
     this.panel.classList.add("hidden");
     this.clearGhost();
     this.selected = null;
@@ -318,15 +396,17 @@ export class Editor {
   }
 
   private snap(p: THREE.Vector3) {
+    if (this.free) return { x: Math.round(p.x * 100) / 100, z: Math.round(p.z * 100) / 100 };
     return { x: Math.round(p.x * 2) / 2, z: Math.round(p.z * 2) / 2 };
   }
 
-  private rotate() {
+  private rotate(step = this.free ? 15 : 90) {
     if (this.selected) {
-      this.selected.rot = (this.selected.rot + 90) % 360;
+      this.selected.rot = (Math.round(this.selected.rot) + step) % 360;
       this.apply();
+      this.renderPanel();
     } else {
-      this.rot = (this.rot + 90) % 360;
+      this.rot = (this.rot + step) % 360;
       if (this.ghost) this.ghost.rotation.y = -(this.rot * Math.PI) / 180;
     }
   }
@@ -396,6 +476,12 @@ export class Editor {
   }
 
   private removeRoomWalls(z: Zone) {
+    const gone = new Set(this.roomWalls(z));
+    this.draft.items = this.draft.items.filter((it) => !gone.has(it));
+  }
+
+  /** Paredes que cercam a sala (as dela e as soltas na borda). */
+  private roomWalls(z: Zone) {
     const { i0, i1, j0, j1 } = this.roomCells(z);
     const near = (it: Item) => {
       if (it.room === z.id) return true;
@@ -406,7 +492,7 @@ export class Editor {
       const onRow = (Math.abs(it.z - j0) < 1.01 || Math.abs(it.z - j1) < 1.01) && inX;
       return !this.insideStrict(it, i0, i1, j0, j1) && (onCol || onRow);
     };
-    this.draft.items = this.draft.items.filter((it) => !near(it));
+    return this.draft.items.filter(near);
   }
 
   private insideStrict(it: Item, i0: number, i1: number, j0: number, j1: number) {
@@ -616,7 +702,7 @@ export class Editor {
 
   /** Quadro de pendurar perto de uma parede inteira (fundo do prédio): encosta nela, virado para dentro. */
   private wallSnap(it: Item) {
-    if (!WALL_MOUNT.has(it.type)) return;
+    if (this.free || !WALL_MOUNT.has(it.type)) return;
     const { W, D } = this.half();
     if (it.z < -D + 1.6) {
       it.z = -D + 0.15;
@@ -627,11 +713,59 @@ export class Editor {
     }
   }
 
+  // ------------------------------------------------------------------ mover sala
+  /** Tudo que anda junto com a sala: paredes dela e móveis dentro (não o elevador nem as paredes de fora). */
+  private roomItems(z: Zone) {
+    const x0 = z.x - z.w / 2 - 0.01, x1 = z.x + z.w / 2 + 0.01, z0 = z.z - z.d / 2 - 0.01, z1 = z.z + z.d / 2 + 0.01;
+    return this.draft.items.filter((it) => {
+      if (it.type === "elevator" || DEFS[it.type]?.outdoor || this.onPerimeter(it.x, it.z)) return false;
+      if (it.room) return it.room === z.id;
+      return it.x >= x0 && it.x <= x1 && it.z >= z0 && it.z <= z1;
+    });
+  }
+
+  /** Dá para pôr a sala deslocada (dx, dz)? Dentro do prédio, sem bater em outra sala nem em móvel de fora. */
+  private canMoveRoom(z: Zone, dx: number, dz: number) {
+    const { W, D } = this.half();
+    const x0 = z.x + dx - z.w / 2, x1 = z.x + dx + z.w / 2, z0 = z.z + dz - z.d / 2, z1 = z.z + dz + z.d / 2;
+    if (x0 < -W + 0.5 || x1 > W - 0.5 || z0 < -D + 0.5 || z1 > D - 0.5) return false;
+    if (this.draft.zones.some((o) => o !== z && x0 < o.x + o.w / 2 && x1 > o.x - o.w / 2 && z0 < o.z + o.d / 2 && z1 > o.z - o.d / 2)) return false;
+    const mine = new Set(this.roomItems(z));
+    return !this.draft.items.some(
+      (it) => !mine.has(it) && (DEFS[it.type]?.blocks || isWall(it.type)) && !DEFS[it.type]?.outdoor && !this.onPerimeter(it.x, it.z) && it.x > x0 - 0.01 && it.x < x1 + 0.01 && it.z > z0 - 0.01 && it.z < z1 + 0.01,
+    );
+  }
+
+  private commitRoomMove(z: Zone, dx: number, dz: number) {
+    for (const it of this.roomItems(z)) {
+      it.x += dx;
+      it.z += dz;
+    }
+    z.x += dx;
+    z.z += dz;
+    this.apply();
+    this.renderPanel();
+  }
+
   // ------------------------------------------------------------------ mouse
   private onMouseMove(e: MouseEvent) {
     if (!this.active) return;
     const p = this.world.pickFloor(e);
     if (!p) return;
+    if (this.zdrag) {
+      const d = this.zdrag;
+      d.dx = Math.round(p.x - d.sx);
+      d.dz = Math.round(p.z - d.sz);
+      if (!d.moved && (d.dx || d.dz)) d.moved = true;
+      if (d.moved) {
+        d.ok = this.canMoveRoom(d.z, d.dx, d.dz);
+        (this.preview.material as THREE.MeshBasicMaterial).color.set(d.ok ? 0xc8f501 : 0xff5252);
+        this.preview.scale.set(d.z.w, d.z.d, 1);
+        this.preview.position.set(d.z.x + d.dx, 0.06, d.z.z + d.dz);
+        this.world.scene.add(this.preview);
+      }
+      return;
+    }
     if (this.ghost) {
       const s = this.snap(p);
       // prévia já encostada na parede, como vai ficar
@@ -671,6 +805,14 @@ export class Editor {
   }
 
   private onMouseDown(e: MouseEvent) {
+    if (this.active && !this.limit && !this.tool && this.tab === "salas" && e.button === 0) {
+      const p = this.world.pickFloor(e);
+      const z = p && this.draft.zones.filter((zn) => Math.abs(p.x - zn.x) <= zn.w / 2 && Math.abs(p.z - zn.z) <= zn.d / 2).sort((a, b) => a.w * a.d - b.w * b.d)[0];
+      if (p && z) {
+        this.zdrag = { z, sx: p.x, sz: p.z, dx: 0, dz: 0, moved: false, ok: true };
+        return;
+      }
+    }
     if (!this.active || (this.tool !== "zone" && this.tool !== "wall") || e.button !== 0) return;
     const p = this.world.pickFloor(e);
     if (!p) return;
@@ -682,6 +824,22 @@ export class Editor {
   }
 
   private onMouseUp(e: MouseEvent) {
+    if (this.zdrag) {
+      const d = this.zdrag;
+      this.zdrag = null;
+      this.preview.removeFromParent();
+      (this.preview.material as THREE.MeshBasicMaterial).color.set(0xc8f501);
+      if (d.moved) {
+        this.zdragDone = true; // o clique que vem junto com o soltar não deve selecionar outra coisa
+        this.selZone = d.z.id;
+        if (d.ok && (d.dx || d.dz)) {
+          this.commitRoomMove(d.z, d.dx, d.dz);
+          this.toast(`${d.z.name} movida`);
+        } else if (!d.ok) this.toast("Não cabe aí: tem outra sala ou móvel no caminho");
+        this.highlight();
+      }
+      return;
+    }
     if (!this.active || !this.dragStart) return;
     const start = this.dragStart;
     this.dragStart = null;
@@ -723,13 +881,42 @@ export class Editor {
 
   private onClick(p: THREE.Vector3, e: MouseEvent): boolean {
     if (!this.active) return false;
+    if (this.zdragDone) {
+      this.zdragDone = false;
+      return true;
+    }
+    if (this.limit && this.winMode) {
+      const o = this.world.pickItem(e);
+      const w = o ? this.draft.items.find((i) => i.id === o.userData.itemId) : null;
+      if (w?.type === "window_wall") {
+        w.type = "wall";
+        this.apply();
+        this.toast("Janela removida: agora dá para pendurar quadros");
+      } else this.toast("Clique em uma janela para removê-la");
+      return true;
+    }
     if (this.limit) {
       // fora da gestão: só móveis (paredes, salas, prédio e elevador ficam com a gestão)
       const obj0 = this.world.pickItem(e);
       const it0 = obj0 ? this.draft.items.find((i) => i.id === obj0.userData.itemId) : null;
       if (it0 && LOCKED.has(it0.type)) {
-        this.toast("Paredes, salas e prédio só a gestão muda");
-        return true;
+        // pendurar um quadro (ou mover o que está selecionado) numa parede é só móvel: a parede em si não muda
+        const placing = !!this.tool && this.tool !== "erase";
+        const moving = !this.tool && !!this.selected && !LOCKED.has(this.selected.type);
+        if (!placing && !moving) {
+          this.toast("Paredes, salas e prédio só a gestão muda");
+          return true;
+        }
+        if (moving && this.selected) {
+          const s1 = this.snap(p);
+          if (this.allowed(s1.x, s1.z)) {
+            this.selected.x = s1.x;
+            this.selected.z = s1.z;
+            this.wallSnap(this.selected);
+            this.apply();
+          }
+          return true;
+        }
       }
       if ((this.tool && this.tool !== "erase") || (this.selected && !it0)) {
         const s0 = this.snap(p);
@@ -755,7 +942,15 @@ export class Editor {
       this.draft.items.push(it);
       this.syncElevator(it);
       this.apply();
-      if (!e.shiftKey) this.setTool(null); // Shift mantém o móvel para colocar vários
+      if (!e.shiftKey) {
+        this.setTool(null); // Shift mantém o móvel para colocar vários
+        // o móvel recém-colocado já fica selecionado: altura, ângulo e cor podem ser mexidos na hora e depois
+        if (!LOCKED.has(it.type)) {
+          this.selected = it;
+          this.highlight();
+          this.renderPanel();
+        }
+      }
       return true;
     }
     if (this.tab === "salas") {
@@ -797,29 +992,60 @@ export class Editor {
   }
 
   private renderPanel() {
-    const thumbs = furnitureThumbs();
     const cat = CATEGORIES.find((c) => c[0] === this.category) ?? CATEGORIES[0];
-    const types = PALETTE.filter((t) => t !== "floor_logo" && !isWall(t) && !(this.limit && LOCKED.has(t)) && DEFS[t].label.toLowerCase().includes(this.filter.toLowerCase()) && (this.filter ? true : cat[2].test(t)));
+    const types = PALETTE.filter((t) => t !== "floor_logo" && !isWall(t) && !(this.limit && LOCKED.has(t)) && DEFS[t].label.toLowerCase().includes(this.filter.toLowerCase()) && (this.filter ? true : cat[2].test(t) && !(cat[0] === "todos" && t.startsWith("pk_"))));
+    const thumbs = ensureThumbs(types);
     const colorRow = (attr: string, cur?: string) =>
       `<div class="colors">${COLORS.map((c) => `<button class="floor-sw ${cur?.toLowerCase() === c.toLowerCase() ? "sel" : ""}" data-${attr}="${c}" title="${c}" style="background:${c}"></button>`).join("")}
         <label class="floor-sw pick" title="Outra cor"><input type="color" data-${attr}-pick value="${cur ?? "#C8F501"}">${icon("plus", 13)}</label>
         <button class="floor-sw none ${cur ? "" : "sel"}" data-${attr}="" title="Cor original">${icon("x", 13)}</button></div>`;
     const sel = this.selected;
+    const rs = sel?.cfg?.rs as { p: number; c: number; f?: string } | undefined;
+    const rugCur = { p: rs?.p ?? 17, c: rs?.c ?? 0, f: rs?.f ?? (sel && /oval/.test(sel.type) ? "o" : sel && /round/.test(sel.type) ? "c" : "r") };
+    const plant = sel && PLANT_VARIANTS[sel.type] ? (sel.cfg?.tr ?? {}) : null;
+    const rugPanel = sel && RUG_RE.test(sel.type) ? `
+          <div class="label">Formato</div>
+          <div class="levels">${[["r", "Retangular"], ["o", "Oval"], ["c", "Redondo"]].map(([k, l]) => `<button class="chip ${rugCur.f === k ? "accent" : ""}" data-rf="${k}">${l}</button>`).join("")}</div>
+          <div class="label">Desenho (${RUG_PATTERNS})</div>
+          <div class="rug-grid">${Array.from({ length: RUG_PATTERNS }, (_, i) => `<button class="rug-sw ${rs && rugCur.p === i ? "sel" : ""}" data-rp="${i}" title="${RUG_PATTERN_NAMES[i]}"><img src="${rugPreview(i, rugCur.c, rugCur.f)}" alt=""></button>`).join("")}</div>
+          <div class="label">Paleta (${RUG_PALETTES})</div>
+          <div class="rug-grid pal">${Array.from({ length: RUG_PALETTES }, (_, i) => { const [a, b, c] = rugPalette(i); return `<button class="rug-sw ${rs && rugCur.c === i ? "sel" : ""}" data-rc="${i}" title="Paleta ${i + 1}" style="background:linear-gradient(90deg, ${a} 34%, ${b} 34% 67%, ${c} 67%)"></button>`; }).join("")}</div>
+          <button class="btn secondary sm block" data-rrand>${icon("rotate", 15)} Estilo aleatório</button>
+          <div class="note">${RUG_STYLES} estilos de tapete. ${rs ? `Desenho ${rugCur.p + 1}, paleta ${rugCur.c + 1}.` : "Escolha um desenho para trocar o tapete original."}</div>` : "";
+    const plantPanel = plant && sel ? `
+          <div class="label">Modelo</div>
+          <div class="levels">${PLANT_VARIANTS[sel.type].map(([k, l]) => `<button class="chip ${plant.v === k ? "accent" : ""}" data-pv="${k}">${l}</button>`).join("")}</div>
+          <div class="label">Tamanho</div>
+          <div class="levels">${[[0.7, "Pequeno"], [1, "Normal"], [1.3, "Grande"], [1.7, "Enorme"]].map(([k, l]) => `<button class="chip ${(plant.s ?? 1) === k ? "accent" : ""}" data-ps="${k}">${l}</button>`).join("")}</div>
+          <div class="label">Cor das folhas</div>
+          ${colorRow("pleaf", plant.l)}
+          <div class="label">Cor do tronco</div>
+          ${colorRow("ptrunk", plant.t)}` : "";
 
     const moveis = `
       ${sel ? `<div class="sel-card">
           <div class="panel-head"><div class="t-m">${esc(DEFS[sel.type]?.label ?? sel.type)}</div><span class="chip accent">Selecionado</span></div>
           <div class="note">Clique no piso para levar o item até lá.</div>
-          ${PHOTO_TYPES.has(sel.type) ? `<button class="btn secondary sm block" data-photo>${icon("image", 15)} ${sel.cfg?.img ? "Trocar a imagem" : "Escolher imagem do computador"}</button>` : `<div class="label">Cor</div>
+          ${PHOTO_TYPES.has(sel.type) ? `<button class="btn secondary sm block" data-photo>${icon("image", 15)} ${sel.cfg?.img ? "Trocar a imagem" : "Escolher imagem do computador"}</button><button class="btn secondary sm block" data-photobank>${icon("search", 15)} Banco de imagens</button>${sel.cfg?.credit ? `<div class="hint">Foto: ${esc(sel.cfg.credit)}</div>` : ""}` : rugPanel ? rugPanel : plantPanel ? plantPanel : `<div class="label">Cor</div>
           ${colorRow("icolor", sel.color)}`}
+          <label class="field"><span class="label">Altura extra: <b data-h-v>${Math.round((sel.y ?? 0) * 100)} cm</b></span><input type="range" min="-80" max="300" step="1" value="${Math.round((sel.y ?? 0) * 100)}" data-height></label>
+          <label class="field"><span class="label">Ângulo: <b data-angle-v>${Math.round(sel.rot)}°</b></span><input type="range" min="0" max="359" step="1" value="${Math.round(sel.rot)}" data-angle></label>
           <div class="editor-actions">
             <button class="btn secondary sm" data-a="rot">${icon("rotate", 15)} Girar</button>
             <button class="btn secondary sm" data-a="dup">${icon("copy", 15)} Duplicar</button>
             <button class="btn danger sm" data-a="del">${icon("trash", 15)}</button>
           </div>
         </div>` : ""}
+      ${this.limit ? `<button class="btn ${this.winMode ? "primary" : "secondary"} sm block" data-a="winmode">${icon("eraser", 15)} Remover janela do escritório</button>${this.winMode ? `<div class="note">Clique em uma janela para trocá-la por parede lisa.</div>` : ""}` : ""}
+      <label class="toggle-row"><span>Posição livre<br><span class="t-s c3">Sem grade nem ímã; gira em qualquer ângulo. Setas empurram o móvel.</span></span><span class="switch"><input type="checkbox" data-free ${this.free ? "checked" : ""}><span></span></span></label>
       <label class="search">${icon("search", 16)}<input placeholder="Buscar móvel" value="${esc(this.filter)}" data-search></label>
-      <div class="cats">${CATEGORIES.map(([k, l]) => `<button class="chip ${this.category === k ? "accent" : ""}" data-cat="${k}">${l}</button>`).join("")}</div>
+      <label class="field cat-field"><span class="label">Categoria</span><select class="input" data-catsel>
+        ${(() => {
+          const opt = (c: [string, string, RegExp]) => `<option value="${c[0]}" ${this.category === c[0] ? "selected" : ""}>${esc(c[1])} (${catCount(c)})</option>`;
+          const basic = CATEGORIES.filter((c) => !c[0].startsWith("pk:")), more = CATEGORIES.filter((c) => c[0].startsWith("pk:"));
+          return `<optgroup label="Principais">${basic.map(opt).join("")}</optgroup><optgroup label="Coleções">${more.map(opt).join("")}</optgroup>`;
+        })()}
+      </select></label>
       <div class="tiles">
         ${types.map((t) => `<button class="tile ${this.tool === t ? "sel" : ""}" data-t="${t}"><img src="${thumbs[t]}" alt=""><span>${DEFS[t].label}</span></button>`).join("") || `<div class="empty">Nada encontrado.</div>`}
       </div>
@@ -845,7 +1071,7 @@ export class Editor {
       <div class="label">Ou desenhe no piso</div>
       <button class="btn ${this.tool === "zone" ? "primary" : "secondary"} block" data-t="zone">${icon("room", 16)} ${this.tool === "zone" ? "Arraste no piso para desenhar" : "Nova sala"}</button>
       <label class="toggle-row"><span>Criar com paredes e porta</span><span class="switch"><input type="checkbox" data-withwalls ${this.withWalls ? "checked" : ""}><span></span></span></label>
-      <div class="note">Clique numa sala no piso para editar.</div>
+      <div class="note">Clique numa sala no piso para editar. Arraste a sala para mudar de lugar (paredes e móveis vão junto). Botão do meio do mouse move a câmera, a roda dá zoom.</div>
       ${this.draft.zones
         .map((z) => {
           const open = z.id === this.selZone;
@@ -854,6 +1080,16 @@ export class Editor {
             <div class="room-name">${z.private ? icon("lock", 14).replace('class="ico"', 'class="ico lock"') : ""}<input data-zname value="${esc(z.name)}" maxlength="30"><button class="icon-plain plain-edit" data-zopen title="Editar">${icon(open ? "chevron-up" : "chevron-down", 16)}</button></div>
             ${open ? `
               <div class="toggle-row"><span class="c2">Privada: só quem está dentro ouve</span><span class="switch"><input type="checkbox" data-zpriv ${z.private ? "checked" : ""}><span></span></span></div>
+              <div class="label">Cor das paredes da sala</div>
+              ${colorRow("zwall", this.roomWalls(z).find((i) => i.color)?.color)}
+              <div class="label">Porta da sala</div>
+              <div class="levels"><button class="chip ${z.door ? "" : "accent"}" data-zdoor="">Padrão</button>${DOOR_STYLES.map(([k, l]) => `<button class="chip ${z.door === k ? "accent" : ""}" data-zdoor="${k}">${l}</button>`).join("")}</div>
+              <div class="label">Cargo da sala</div>
+              <select class="input" data-zrole>
+                <option value="">Sem cargo (sala livre)</option>
+                ${[...ROLES, ...(z.role && !ROLES.includes(z.role) ? [z.role] : [])].map((r) => `<option ${z.role === r ? "selected" : ""}>${esc(r)}</option>`).join("")}
+              </select>
+              <div class="note">Quem tem esse cargo nasce nessa sala e o botão "Ir para a minha sala" leva até ela. Mais de uma sala pode ter o mesmo cargo.</div>
               <div class="label">Piso</div>
               <div class="floors">${FLOORS.map(([k, l, c]) => `<button class="floor-sw ${floor === k ? "sel" : ""}" data-floor="${k}" title="${l}" style="background:${c}"></button>`).join("")}</div>
               <div class="label">Cor do piso</div>
@@ -884,7 +1120,26 @@ export class Editor {
         </div>
         <div class="note">Cada andar novo já vem com paredes, janelas e o elevador no mesmo lugar do térreo. Elevador colocado em qualquer andar aparece em todos.</div>
       </div>`;
+    const st: OfficeStyle = this.full?.style ?? this.draft.style ?? {};
+    const chips = (attr: string, list: [string, string][], cur: string | undefined, def: string) =>
+      `<div class="levels">${list.map(([k, l]) => `<button class="chip ${(cur ?? def) === k ? "accent" : ""}" data-${attr}="${k}">${l}</button>`).join("")}</div>`;
+    const estilo = `
+      <div class="room open">
+        <div class="t-m">Estilo do escritório</div>
+        <div class="label">Cor das paredes</div>
+        ${colorRow("swall", st.wall)}
+        <div class="label">Piso do salão</div>
+        <div class="floors">${FLOORS.map(([k, l, c]) => `<button class="floor-sw ${st.floor === k ? "sel" : ""}" data-sfloor="${k}" title="${l}" style="background:${c}"></button>`).join("")}<button class="floor-sw none ${st.floor ? "" : "sel"}" data-sfloor="" title="Madeira original">${icon("x", 13)}</button></div>
+        <div class="label">Janelas</div>
+        ${chips("swin", WINDOW_STYLES, st.window, "classica")}
+        <div class="label">Moldura das janelas</div>
+        <div class="colors">${FRAME_COLORS.map((c) => `<button class="floor-sw ${st.frame?.toLowerCase() === c.toLowerCase() ? "sel" : ""}" data-sframe="${c}" title="${c}" style="background:${c}"></button>`).join("")}<button class="floor-sw none ${st.frame ? "" : "sel"}" data-sframe="" title="Original">${icon("x", 13)}</button></div>
+        <div class="label">Portas</div>
+        ${chips("sdoor", DOOR_STYLES, st.door, "madeira")}
+        <div class="note">Vale para o prédio todo e para todos os andares. Cada sala pode ter cor de parede e porta próprias (aba Salas).</div>
+      </div>`;
     const predio = `
+      ${estilo}
       ${andares}
       ${this.lv ? `<div class="note">O tamanho do prédio é o mesmo em todos os andares. Para mudar, edite no térreo.</div>` : `
       <div class="room open">
@@ -943,10 +1198,15 @@ export class Editor {
         this.highlight();
       }),
     );
-    q("[data-t]").forEach((b) => b.addEventListener("click", () => this.setTool(this.tool === b.dataset.t ? null : b.dataset.t!)));
+    q("[data-t]").forEach((b) => b.addEventListener("click", () => (this.winMode = false, this.setTool(this.tool === b.dataset.t ? null : b.dataset.t!))));
     q("[data-a]").forEach((b) =>
       b.addEventListener("click", () => {
         const a = b.dataset.a;
+        if (a === "winmode") {
+          this.winMode = !this.winMode;
+          if (this.winMode) this.setTool(null);
+          this.renderPanel();
+        }
         if (a === "rot") this.rotate();
         if (a === "dup") this.duplicate();
         if (a === "del") this.removeSelected();
@@ -985,12 +1245,33 @@ export class Editor {
       }),
     );
     q("[data-level]").forEach((b) => b.addEventListener("click", () => (b.dataset.level === "add" ? this.addLevel() : this.removeTopLevel())));
-    q("[data-cat]").forEach((b) =>
-      b.addEventListener("click", () => {
-        this.category = b.dataset.cat!;
-        this.renderPanel();
-      }),
-    );
+    this.panel.querySelector<HTMLInputElement>("[data-free]")?.addEventListener("change", (e) => {
+      this.free = (e.target as HTMLInputElement).checked;
+      try {
+        localStorage.setItem("verkz-editor-free", this.free ? "1" : "0");
+      } catch { /* sem armazenamento */ }
+      this.toast(this.free ? "Posição livre ligada" : "Grade ligada");
+    });
+    const hgt = this.panel.querySelector<HTMLInputElement>("[data-height]");
+    hgt?.addEventListener("input", () => {
+      if (!this.selected) return;
+      this.selected.y = Number(hgt.value) / 100;
+      const v = this.panel.querySelector("[data-h-v]");
+      if (v) v.textContent = `${hgt.value} cm`;
+      this.apply();
+    });
+    const angle = this.panel.querySelector<HTMLInputElement>("[data-angle]");
+    angle?.addEventListener("input", () => {
+      if (!this.selected) return;
+      this.selected.rot = Number(angle.value);
+      const v = this.panel.querySelector("[data-angle-v]");
+      if (v) v.textContent = `${angle.value}°`;
+      this.apply();
+    });
+    this.panel.querySelector<HTMLSelectElement>("[data-catsel]")?.addEventListener("change", (e) => {
+      this.category = (e.target as HTMLSelectElement).value;
+      this.renderPanel();
+    });
     const colorWire = (attr: string, set: (c: string | undefined, live?: boolean) => void) => {
       q(`[data-${attr}]`).forEach((b) => b.addEventListener("click", () => set(b.dataset[attr] || undefined)));
       const pick = this.panel.querySelector<HTMLInputElement>(`[data-${attr}-pick]`);
@@ -1009,6 +1290,77 @@ export class Editor {
       this.apply();
       if (!live) this.renderPanel();
     });
+    const patchRug = (patch: Partial<{ p: number; c: number; f: string }>) => {
+      const it = this.selected;
+      if (!it) return;
+      const cur = (it.cfg?.rs as { p: number; c: number; f?: string } | undefined) ?? { p: 17, c: 0 };
+      it.cfg = { ...(it.cfg ?? {}), rs: { ...cur, ...patch } };
+      delete it.color;
+      this.apply();
+      this.renderPanel();
+    };
+    q("[data-rp]").forEach((b) => b.addEventListener("click", () => patchRug({ p: Number(b.dataset.rp) })));
+    q("[data-rc]").forEach((b) => b.addEventListener("click", () => patchRug({ c: Number(b.dataset.rc) })));
+    q("[data-rf]").forEach((b) => b.addEventListener("click", () => patchRug({ f: b.dataset.rf })));
+    this.panel.querySelector("[data-rrand]")?.addEventListener("click", () => patchRug({ p: Math.floor(Math.random() * RUG_PATTERNS), c: Math.floor(Math.random() * RUG_PALETTES) }));
+    const patchPlant = (patch: Record<string, unknown>) => {
+      const it = this.selected;
+      if (!it) return;
+      const tr = { ...(it.cfg?.tr ?? {}), ...patch };
+      for (const k of Object.keys(tr)) if (tr[k] === undefined) delete tr[k];
+      it.cfg = { ...(it.cfg ?? {}), tr };
+      this.apply();
+      this.renderPanel();
+    };
+    q("[data-pv]").forEach((b) => b.addEventListener("click", () => patchPlant({ v: b.dataset.pv })));
+    q("[data-ps]").forEach((b) => b.addEventListener("click", () => patchPlant({ s: Number(b.dataset.ps) })));
+    colorWire("pleaf", (c) => patchPlant({ l: c }));
+    colorWire("ptrunk", (c) => patchPlant({ t: c }));
+    const setStyle = (f: (s: OfficeStyle) => void) => {
+      const s: OfficeStyle = { ...(this.full.style ?? {}) };
+      f(s);
+      for (const k of Object.keys(s) as (keyof OfficeStyle)[]) if (!s[k]) delete s[k];
+      const next = Object.keys(s).length ? s : undefined;
+      this.full.style = next;
+      this.draft.style = next;
+      this.apply();
+      this.renderPanel();
+    };
+    colorWire("swall", (c) => setStyle((s) => (s.wall = c)));
+    q("[data-sfloor]").forEach((b) => b.addEventListener("click", () => setStyle((s) => (s.floor = b.dataset.sfloor || undefined))));
+    q("[data-swin]").forEach((b) => b.addEventListener("click", () => setStyle((s) => (s.window = b.dataset.swin === "classica" ? undefined : b.dataset.swin))));
+    q("[data-sframe]").forEach((b) => b.addEventListener("click", () => setStyle((s) => (s.frame = b.dataset.sframe || undefined))));
+    q("[data-sdoor]").forEach((b) => b.addEventListener("click", () => setStyle((s) => (s.door = b.dataset.sdoor === "madeira" ? undefined : b.dataset.sdoor))));
+    colorWire("zwall", (c) => {
+      const z = this.draft.zones.find((x) => x.id === this.selZone);
+      if (!z) return;
+      for (const it of this.roomWalls(z)) {
+        if (!isWall(it.type)) continue;
+        if (c) it.color = c;
+        else delete it.color;
+      }
+      this.apply();
+      this.renderPanel();
+    });
+    q("[data-zdoor]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const z = this.draft.zones.find((x) => x.id === this.selZone);
+        if (!z) return;
+        z.door = b.dataset.zdoor || undefined;
+        if (!z.door) delete z.door;
+        this.apply();
+        this.renderPanel();
+      }),
+    );
+    this.panel.querySelector("[data-photobank]")?.addEventListener("click", async () => {
+      const it = this.selected;
+      if (!it) return;
+      const pick = await openImageBank({ max: it.type === "photo_desk" ? 320 : 560 });
+      if (!pick || this.selected !== it) return;
+      it.cfg = { ...(it.cfg ?? {}), img: pick.dataUrl, aspect: pick.aspect, credit: pick.credit };
+      this.apply();
+      this.renderPanel();
+    });
     this.panel.querySelector("[data-photo]")?.addEventListener("click", () => {
       const it = this.selected;
       if (!it) return;
@@ -1020,7 +1372,7 @@ export class Editor {
         if (!f) return;
         try {
           const { img, aspect } = await imageToDataUrl(f, it.type === "photo_desk" ? 320 : 560);
-          it.cfg = { ...(it.cfg ?? {}), img, aspect };
+          it.cfg = { ...(it.cfg ?? {}), img, aspect, credit: undefined };
           this.apply();
           this.renderPanel();
         } catch (e) {
@@ -1046,6 +1398,11 @@ export class Editor {
       row.querySelector("[data-zopen]")!.addEventListener("click", () => {
         this.selZone = this.selZone === z.id ? null : z.id;
         this.highlight();
+        this.renderPanel();
+      });
+      row.querySelector<HTMLSelectElement>("[data-zrole]")?.addEventListener("change", (e) => {
+        z.role = (e.target as HTMLSelectElement).value || undefined;
+        this.apply();
         this.renderPanel();
       });
       row.querySelector<HTMLInputElement>("[data-zpriv]")?.addEventListener("change", (e) => {

@@ -18,10 +18,18 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       LIVEKIT_ROOM: verkz-office
       BIND: 0.0.0.0:8080
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ASR_URL: http://asr:8090 # transcrição NVIDIA (Gemini fica de reserva)
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - office-data:/data
+    restart: unless-stopped
+
+  asr:
+    build: ../asr
+    environment:
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY}
     restart: unless-stopped
 
   caddy:

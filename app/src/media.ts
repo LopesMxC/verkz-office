@@ -333,6 +333,21 @@ export class Media {
     return pub && !pub.isMuted && pub.isSubscribed ? (pub.videoTrack as RemoteVideoTrack | undefined) : undefined;
   }
 
+  /** Quem está presente para a gravação (eu + quem eu ouço ou está na minha sala) e o vídeo da câmera de cada um. */
+  recCams(): { name: string; el: HTMLVideoElement | null; me: boolean }[] {
+    const out: { name: string; el: HTMLVideoElement | null; me: boolean }[] = [];
+    const mine = this.camOn ? (this.world.me?.bubble.querySelector("video") as HTMLVideoElement | null) : null;
+    out.push({ name: "", el: mine, me: true });
+    for (const [id, av] of this.world.others) {
+      const p = this.room.remoteParticipants.get(id);
+      if (!p) continue;
+      if (!((this.levels.get(id) ?? 0) > 0 || this.sameRoom(id))) continue;
+      const el = this.hasCam(id) ? (av.bubble.querySelector("video") as HTMLVideoElement | null) : null;
+      out.push({ name: p.name || av.info.name || "Alguém", el, me: false });
+    }
+    return out;
+  }
+
   /** Câmera ligada (mesmo que ainda não assinada). */
   hasCam(id: string) {
     const pub = this.room.remoteParticipants.get(id)?.getTrackPublication(Track.Source.Camera);

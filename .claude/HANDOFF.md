@@ -438,3 +438,86 @@ Identity no LiveKit = id do peer no servidor.
   Quem adiciona escolhe o tempo (prefs.padLen, padrão 8 s) — não é configuração da gestão. Ids "s:<uuid>" tocam do servidor (cache).
   O X de remover aparece para quem subiu (ids em localStorage "verkz-my-sounds") e para a gestão.
   Sons antigos do IndexedDB sobem sozinhos uma vez (flag "verkz-pad-migrated").
+
+## App 0.6.9 / servidor 0.18.1 — Seu Zé com carrinho + clima rotativo
+- `Janitor` (world.ts) reescrito: empurra um carrinho de limpeza (balde com espremedor, rodo, borrifador, pano, placa dobrada, saco de lixo) com as duas mãos na alça.
+- Parada de 12 s por área (`CLEAN_SECS`), etapas por tempo `ce`: estaciona o carrinho do lado direito (0–0,8) → pega a placa e põe no chão (0,8–2) → tira o rodo do balde e torce (2–3) → rodo em "8" com tronco girando, inclinação e pés arrastando (3–7,5) → molha no balde e guarda (7,5–8,6) → borrifa com névoa e passa o pano em círculos (8,6–10) → recolhe a placa (10–11) → mãos na alça (11–12).
+- Mancha molhada cresce enquanto ele passa o rodo e some em 6 s. Tudo derivado de `Date.now()`, igual para todos.
+- Atenção: personagem olha para +z com yaw 0, o lado direito dele é (-cos θ, 0, sin θ).
+- Clima: `env.weather` vazio/"auto" agora é **rotativo** (`rotatingWeather` em env.ts, bloco de 25 min, sol 45 / nublado 30 / chuva 17 / tempestade 8, nunca chove 2 blocos seguidos, neve só no inverno). "real" = Open-Meteo da cidade. `applyEnv` roda a cada 60 s.
+- Deploy: imagem `verkz-office-server:0.18.1` (só web, FROM 0.18.0), contexto em /home/claude/ctx18.
+
+## App 0.6.10 / servidor 0.18.2 — PREPARADO, NÃO PUBLICADO (aguardando aval do Lucas)
+- Quadros: editor.ts — fora da gestão, clicar numa parede com item na mão (ou item selecionado) não dispara "só a gestão muda"; a parede em si continua travada.
+- Remover janela: botão "Remover janela do escritório" (winMode) no editor de quem não é gestão; troca window_wall por wall. Servidor: `is_wall_swap` em check_furniture_edit libera a troca (mesmo x/z/rot).
+- Telas dos PCs: ScreenFx com minFilter mipmap (sem cintilar de longe); app só troca após 2,5 s estável; tela liga só para quem está a ≤1,15 m (a mais próxima).
+- Deploy preparado em /home/claude/ctx20 (FROM dc99012ad299 web + 0ca07f0d1091 build; diffs pequenos). NÃO enviar sem confirmação.
+- PACOTE DE ASSETS (app/pack/, só prévia, não importado pelo app): 650 itens em 16 categorias (desks, chairs, computers, cameras, printers, it, audio, storage, lounge, meeting, kitchen, decor, lighting, reception, leisure, podcast), imagebank.ts (seletor Openverse/Wikimedia/Unsplash/Pexels/Pixabay para quadros com foto). Prévia: `npx vite` e abrir /pack/preview.html?cat=...&page=N. Integração pendente de aprovação: DEFS/paleta do editor, interações (print/scan/coffee...), pickPhoto → openImageBank.
+- Seu Zé e salas trancadas: `World.ignoreLocks` (ligado só dentro de `Janitor.plan`) tira as portas trancadas da colisão ao montar a rota; `updateDoors` abre a porta para ele mesmo trancada.
+
+## 0.6.11 (app) — assets integrados (PREPARADO, NÃO PUBLICADO)
+- `app/pack` (650 itens, ids pk_*) agora é importado por furniture.ts: entram em DEFS/PALETTE; wall -> WALL_MOUNT (altura MOUNT_Y), tabletop sobe 0.76 (tampo), ceiling 2.45. Animação/uso: world.updatePack() chama p.tick; clique em item com `use` liga por 4 s.
+- Editor: 16 categorias novas (uma por categoria do pacote, chips "pk:*"); "Todos" não lista pk_*; miniaturas sob demanda (thumbs.ts: ensureThumbs).
+- Quadros com foto: botão "Banco de imagens" (pack/imagebank.ts, max 560/320 px, <=70 KB, cfg.credit).
+- Corrigido no pack: pufes e pendente globo (scl helper).
+- Servidor sem mudança (0.18.2). Deploy web-only: delta do bundle sobre 0.18.2 (base de imagem tem fonte 0.6.3, não use patches de .ts).
+
+## Transcrição NVIDIA (PREPARADA, NÃO PUBLICADA)
+- `asr/` = sidecar Python (nvidia-riva-client, Parakeet multilíngue pt-BR, função 71203149-...) com POST /transcribe; corta em pedaços de 40 s e chama 3 em paralelo (220 s de áudio em ~5 s no teste).
+- server/rec.rs: se ASR_URL estiver definido, NVIDIA transcreve e o Gemini só resume o texto; se a NVIDIA falhar, o Gemini faz tudo (áudio). generateContent agora tenta de novo em 429/5xx (0, 8, 25, 60 s).
+- Chave: variável NVIDIA_API_KEY do serviço asr na stack (NUNCA no repositório). Stack precisa de novo serviço `asr` (build de asr/) e ASR_URL=http://asr:8090 no servidor.
+
+## 0.6.12 — editor em visão aérea
+- Ao abrir o editor: `world.setEditCam(true)` (câmera aérea, prédio inteiro, livre); ao fechar volta ao modo anterior.
+- Botão do meio (ou Espaço + arrastar) move a câmera; roda dá zoom (até 0,6x do enquadramento total).
+- Aba Salas (só gestão): arrastar uma sala a move com paredes e móveis dentro (`roomItems`), passo de 1 m, prévia verde/vermelha (`canMoveRoom`: dentro do prédio, sem sobrepor sala/móvel). Elevador e paredes externas não andam.
+- Não testado no navegador (sem servidor local): só tsc e vite build.
+
+## 0.6.13 — cargo da sala
+- Editor, aba Salas: seletor "Cargo da sala" (ROLES agora em furniture.ts, usado também no main.ts). Etiqueta da sala mostra "Nome · Cargo".
+
+## 0.6.14 — estilo do escritório
+- Layout.style (OfficeStyle): cor das paredes, janela (classica/ampla/grade/faixa), moldura, porta (madeira/branca/escura/verde/vidro), piso do salão. Editor, aba Prédio. furniture.setOfficeStyle() é chamado em world.setLayout.
+- Por sala (aba Salas): cor das paredes (item.color nas paredes da sala) e Zone.door.
+- Pisos novos: madeira-clara, espinha, xadrez, marmore, ardosia (world.makeFloorTexture -> paint()).
+- Servidor NÃO protege `style` contra edição de quem não é gestão (só a UI esconde): adicionar em check_furniture_edit numa próxima versão do servidor.
+
+## 0.6.15 — tapetes e plantas
+- src/rugs.ts: 25 desenhos x 50 paletas = 1250 estilos x 3 formatos (cfg.rs = {p,c,f}). Tipos rugc_* e qualquer rug/pk_tapete aceitam o estilo no editor (todos os usuários).
+- Árvore/pinheiro/arbusto: cfg.tr = {v modelo, s tamanho, l folhas, t tronco}; modelo agora é fixo pelo id (antes sorteava a cada carga).
+
+## 0.6.16 — Mapa revisado em cima do layout atual (aprovado pelo Lucas, zip entregue)
+- Planta 50x26 m do mapa antigo, gerada por `tools/gen_atual_revisado.py` (`python3 tools/gen_atual_revisado.py > server/src/default_layout.json`). Layout `version: 9`. Proposta 4 "Pátio central" descartada (`default_layout_proposta4.json`, `tools/gen_proposta4.py`).
+- Sala do CEO no canto esquerdo (onde ficam as placas, 8x13 m, decorada), SDR 1 (antiga sala do CEO) e SDR 2 (antiga biblioteca), salão do meio sem mesas (só decoração), uma única sala de reunião mediana (embaixo à direita), janelas `style.window = "ampla"` com moldura grafite, `env.weather = "sol"` fixo.
+- Parede de vidro: `window_wall` com `cfg: { glass: true }` (furniture.ts, buildWall).
+- O servidor troca o mapa salvo pelo `default_layout.json` quando a versão dele é maior (o antigo vira `layout.v8.backup.json`). O mapa fica embutido no binário do servidor: publicar exige rebuild do servidor.
+- Falta: publicar o servidor (imagem nova na stack 4), jogos do videogame, PC gamer funcional.
+
+## 0.6.17 — piso único, SDR simples e 1.240 assets novos (zip entregue; PUBLICADO em 25/11/2026 como verkz-office-server:0.18.6 (stack 4))
+- Piso: todas as zonas e `style.floor` = "madeira". Salas SDR: só 1 mesa + 1 cadeira cada (ultrawide + MacBook na mesa).
+- Pacote 2 em app/pack: x.ts (animação comum `tickAll`: LED/ventoinha/telas/juntas), ultra.ts (248 ultrawide planos e curvos 1800R/1000R, tela contínua por fatias), gamer.ts (312: gabinetes x 12 LEDs, setups completos, notebooks e consoles), mac.ts (106), robot.ts (156 braços e robôs animados), techx.ts (184), oriente.ts (234 China/Japão). Total do pacote: 1.890.
+- "Funcional" = LED/ventoinhas/telas animadas; clicar liga o modo em uso por 4 s (RGB arco-íris, ventoinha rápida, tela alterna apps).
+- Layout v9 (`tools/gen_atual_revisado.py`): CEO com ultrawide + setup gamer, cantinho oriental e tech no salão, mahjong. `env.weather = "sol"`.
+- Deploy do servidor: pendente (precisa rebuild da imagem; Portainer exige o procedimento de contexto/delta).
+- Piso: madeira em tudo, exceto Cozinha e Banheiros (porcelanato). Tapetes escuros (paletas escuras) em todas as salas.
+- Salas privadas voltaram aos carpetes de cor originais (sem tapetes novos); piso do mundo cortado no eixo das paredes externas (world.ts). CEO: piso madeira normal + tapete preto com borda lima (rugc_xl/oval, estilo 0 paleta 0).
+- CEO: tapete de sala inteira rugc_xxl (7,4x12,4, estilo 0 paleta 0: preto com borda lima).
+
+- **Produção (25/11/2026):** imagem verkz-office-server:0.18.6 = 0.18.5 + binário recompilado (layout v9 embutido) + web 0.6.17 (index-Dr_16Yy9.js). Build: contexto tgz (_ctx4, ~1 MB) baixado pelo navegador do raw.githubusercontent e enviado por POST /api/endpoints/1/docker/build (header X-CSRF-Token vem de qualquer GET /api/status); o parâmetro `remote=` (git) não funcionou no Portainer. Stack 4 atualizada via PUT /api/stacks/4. Layout antigo guardado em layout.v8.backup.json no volume.
+
+- **0.18.7 (25/11/2026):** salão central reorganizado (layout v10): nada na frente das portas (validador "na frente da porta" em tools/gen_atual_revisado.py), itens de parede só entre vãos, grupos de sofás/mesa no eixo, coluna tecnológica na parede leste. Spawn por cargo (main.ts roleSeat): sala marcada com o cargo; sem marcação, sala cujo nome cita o cargo. Imagem verkz-office-server:0.18.7 construída no Portainer; publicado na stack 4.
+
+- **0.6.19 / imagem 0.18.8 (25/11/2026):** (1) Editor: painel de 420 px, grade automática sem corte, categorias num seletor com contagem (Principais / Coleções) em vez de dezenas de chips. (2) Pacote `pack/mesas.ts`: 288 mesas de trabalho (24 modelos x 12 acabamentos, categoria "Mesas de trabalho"). (3) Expulsar: o app agora derruba LiveKit, fecha reunião e limpa o mapa ao receber "kicked" (antes só fechava o socket e a pessoa seguia na chamada); o servidor remove a presença na hora, derruba o participante no LiveKit (RemoveParticipant) e segura 60 s a reentrada automática de quem foi tirado. Imagem 0.18.8 construída no Portainer; publicado na stack 4.
+
+- **0.6.20 / imagem 0.18.9 (25/11/2026):** tela de entrada mostra "Versão x.y.z" (vite define __APP_VERSION__ do package.json; no app nativo vem do Tauri) e o servidor manda Cache-Control: no-cache (o navegador não prende a página antiga). A 0.18.8 (editor, mesas, expulsão) está publicada na stack 4. Imagem 0.18.9 construída; falta trocar a tag da stack 4 (0.18.8 -> 0.18.9) — o bloqueio automático negou; precisa da autorização do Lopes.
+
+- **0.6.21 / imagem 0.18.10 (25/11/2026):** editor com "Posição livre" (alternador no painel de móveis, salvo em localStorage "verkz-editor-free"): sem grade de 0,5 m, sem ímã de quadros na parede, ângulo livre (controle deslizante 0–359 no card do móvel; R gira 15° em modo livre, Shift+R 90°), setas empurram o móvel selecionado (10 cm; Shift 2 cm). `footprint()` calcula a caixa de colisão de qualquer ângulo. Imagem 0.18.10 construída; a stack 4 foi trocada para 0.18.10 (publicado).
+
+- **0.6.22 (+0.6.23: PageUp/PageDown corrigido, o foco no controle bloqueava a tecla) (25/11/2026):** altura por item no editor (`Item.y`, metros; controle "Altura extra" -80..300 cm no card do móvel, PageUp/PageDown 2 cm, Shift 10 cm); monitores ultrawide agora são "de mesa" (assentam a 0,76 m). Pacote de build `_ctx10.tgz` (imagem 0.18.11 sobre 0.18.10) está no branch tmp-deploy-0.18.3; publicado como 0.18.11 na stack 4 (0.6.24: móvel recém-colocado fica selecionado para editar).
+
+## 0.6.25 — todas as caixas de som tocam música
+- Todas as caixas/rádios/jukebox/toca-discos do pacote "Som e áudio" (pk_snd_*) agora abrem o menu do rádio (link YouTube/Spotify), via `isSpeakerType` em furniture.ts. Pulsam enquanto tocam (`world.playingItems`).
+- Publicado: imagem 0.18.12 na stack 4.
+
+## 0.6.26 — cadeiras e sofás novos dá para sentar (publicado, imagem 0.18.13)
+- world.ts registra em SEATS todas as cadeiras/bancos (pack "Cadeiras e bancos") e sofás/poltronas/puffs (pk_lng_*, mesa_sofa) + sofa, sofa_plain, p_sofa_l, p_lounge. `SEAT_H` dá a altura do assento (banco alto 0.78, sofá 0.42); `Avatar.seatY`; o estado `sit` na rede leva a altura. main.ts: `SEAT_SOFT` impede nascer em sofá ao entrar pelo cargo.

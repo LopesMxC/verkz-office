@@ -7,7 +7,7 @@ export type Api = (path: string, init?: RequestInit) => Promise<Response>;
 /**
  * Grava a reunião do ponto de vista de quem clicou em "Gravar":
  * o áudio que essa pessoa ouve (respeitando salas privadas e distância),
- * a própria voz e a tela compartilhada, se houver. O arquivo vai para o
+ * a própria voz, a tela compartilhada (se houver) e as câmeras de quem está presente. O arquivo vai para o
  * servidor em partes a cada 10 s, então quase nada se perde se o app fechar.
  */
 export class Recorder {
@@ -66,7 +66,7 @@ export class Recorder {
     const stream = new MediaStream([...video.getVideoTracks(), ...this.dest.stream.getAudioTracks()]);
     const types = ["video/webm;codecs=vp8,opus", "video/webm", "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4"];
     this.mime = types.find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
-    this.rec = new MediaRecorder(stream, { mimeType: this.mime || undefined, videoBitsPerSecond: 800_000, audioBitsPerSecond: 64_000 });
+    this.rec = new MediaRecorder(stream, { mimeType: this.mime || undefined, videoBitsPerSecond: 1_100_000, audioBitsPerSecond: 64_000 });
     this.mime = this.rec.mimeType || this.mime || "video/webm";
     this.rec.ondataavailable = (e) => {
       if (e.data.size) this.enqueue(e.data);
@@ -192,11 +192,60 @@ export class Recorder {
     const screens = [...this.media.screens.values()];
     const s = screens.find((x) => !x.local) ?? screens[0];
     const v = s?.el;
-    if (v && v.videoWidth) {
-      const k = Math.min(W / v.videoWidth, H / v.videoHeight);
+    const people = this.media.recCams().map((p) => ({ ...p, name: p.me ? this.myName() : p.name }));
+    for (const p of people) this.participants.add(p.name);
+    const hasScreen = !!(v && v.videoWidth);
+    // tela compartilhada: ocupa a esquerda e as câmeras ficam numa coluna à direita; sem tela, grade só de câmeras
+    const tiles = (x0: number, y0: number, w: number, h: number, cols: number, rows: number) => {
+      const gap = 10;
+      const tw = (w - gap * (cols - 1)) / cols;
+      const th = (h - gap * (rows - 1)) / rows;
+      people.forEach((p, i) => {
+        if (i >= cols * rows) return;
+        const x = x0 + (i % cols) * (tw + gap);
+        const y = y0 + Math.floor(i / cols) * (th + gap);
+        c.fillStyle = "#1d2029";
+        c.fillRect(x, y, tw, th);
+        const ev = p.el;
+        if (ev && ev.videoWidth && ev.readyState >= 2) {
+          const k = Math.max(tw / ev.videoWidth, th / ev.videoHeight);
+          const sw = tw / k;
+          const sh = th / k;
+          c.drawImage(ev, (ev.videoWidth - sw) / 2, (ev.videoHeight - sh) / 2, sw, sh, x, y, tw, th);
+        } else {
+          c.fillStyle = "#2c3140";
+          c.beginPath();
+          c.arc(x + tw / 2, y + th / 2 - 8, Math.min(tw, th) * 0.22, 0, Math.PI * 2);
+          c.fill();
+          c.fillStyle = "#C8F501";
+          c.textAlign = "center";
+          c.font = `700 ${Math.round(Math.min(tw, th) * 0.2)}px Montserrat, sans-serif`;
+          c.fillText(p.name.trim().slice(0, 1).toUpperCase() || "?", x + tw / 2, y + th / 2 + Math.min(tw, th) * 0.04);
+        }
+        c.fillStyle = "rgba(13,13,13,.7)";
+        c.fillRect(x, y + th - 30, Math.min(tw, 14 + p.name.length * 12), 30);
+        c.fillStyle = "#FFFFFF";
+        c.textAlign = "left";
+        c.font = "600 16px Montserrat, sans-serif";
+        c.fillText(p.name.slice(0, 24), x + 8, y + th - 9);
+      });
+    };
+    if (hasScreen) {
+      const sideW = people.length ? 300 : 0;
+      const aw = W - sideW - (sideW ? 10 : 0);
+      const k = Math.min(aw / v.videoWidth, H / v.videoHeight);
       const w = v.videoWidth * k;
       const h = v.videoHeight * k;
-      c.drawImage(v, (W - w) / 2, (H - h) / 2, w, h);
+      c.drawImage(v, (aw - w) / 2, (H - h) / 2, w, h);
+      if (people.length) tiles(W - sideW, 0, sideW, H, 1, Math.min(people.length, 5));
+    } else if (people.length > 1 || people[0]?.el) {
+      const n = Math.min(people.length, 12);
+      const cols = Math.ceil(Math.sqrt(n * (W / H) * 0.75));
+      tiles(20, 70, W - 40, H - 90, cols, Math.ceil(n / cols));
+      c.textAlign = "center";
+      c.fillStyle = "#C8F501";
+      c.font = "700 24px Montserrat, sans-serif";
+      c.fillText(this.title || "Reunião", W / 2, 46);
     } else {
       c.textAlign = "center";
       c.fillStyle = "#C8F501";

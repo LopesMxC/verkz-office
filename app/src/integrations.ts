@@ -119,8 +119,11 @@ export interface UpdateInfo {
   notes?: string;
   install: (onProgress?: (pct: number) => void) => Promise<void>;
 }
+declare const __APP_VERSION__: string;
+/** Versão do pacote web (vem do package.json no build). */
+export const WEB_VERSION: string = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "";
 export async function appVersion() {
-  if (!isNative) return "web";
+  if (!isNative) return WEB_VERSION ? `web ${WEB_VERSION}` : "web";
   const { getVersion } = await import("@tauri-apps/api/app");
   return getVersion();
 }

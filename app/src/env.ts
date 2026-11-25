@@ -10,7 +10,8 @@ export type Weather = "sol" | "nublado" | "chuva" | "tempestade" | "neve";
 export type Season = "primavera" | "verao" | "outono" | "inverno";
 
 export interface EnvConfig {
-  weather?: "auto" | Weather;
+  /** "auto"/vazio = rotativo (muda sozinho, igual para todos); "real" = clima da cidade. */
+  weather?: "auto" | "real" | Weather;
   season?: "auto" | Season;
   holiday?: "auto" | "nenhum" | string;
   /** Liga o ciclo de dia e noite pelo horário real. */
@@ -44,6 +45,28 @@ export function seasonByDate(d = new Date()): Season {
   if (md >= 1221 || md < 320) return "verao";
   if (md >= 320 && md < 621) return "outono";
   return "inverno";
+}
+
+/** Clima rotativo: troca a cada 25 min, sorteado pelo relógio (todo mundo vê o mesmo).
+ *  Mais sol e nublado do que chuva; nunca chove dois blocos seguidos; neve só no inverno e rara. */
+export function rotatingWeather(now = Date.now(), season: Season = seasonByDate()): Weather {
+  const BLOCK = 25 * 60 * 1000;
+  const pick = (b: number): Weather => {
+    let h = (b * 2654435761) >>> 0;
+    h = Math.imul(h ^ (h >>> 15), 2246822519) >>> 0;
+    h = (h ^ (h >>> 13)) >>> 0;
+    const r = (h % 1000) / 1000;
+    if (season === "inverno" && r > 0.95) return "neve";
+    if (r < 0.45) return "sol";
+    if (r < 0.75) return "nublado";
+    if (r < 0.92) return "chuva";
+    return "tempestade";
+  };
+  const b = Math.floor(now / BLOCK);
+  const w = pick(b);
+  const wet = (x: Weather) => x === "chuva" || x === "tempestade";
+  if (wet(w) && wet(pick(b - 1))) return "nublado";
+  return w;
 }
 
 /** Converte o código WMO do Open-Meteo no nosso clima. */

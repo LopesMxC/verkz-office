@@ -1,9 +1,11 @@
+import { REG as PACK } from "../pack";
 import { geo } from "./geo";
 import * as THREE from "three";
 import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 import { LOGO_PATH, NEON } from "./logo";
 import { pixelTexture, rng, toon } from "./toon";
 import { model } from "./models";
+import { buildRug, type RugStyle } from "./rugs";
 import { widgetTexture } from "./widgets";
 
 export interface Item {
@@ -18,7 +20,12 @@ export interface Item {
   room?: string;
   /** Cor escolhida no editor (#rrggbb). */
   color?: string;
+  /** Altura extra em metros (escolhida no editor): sobe ou desce o móvel em relação à posição normal. */
+  y?: number;
 }
+
+/** Cargos da equipe: cada um pode ter a sua sala no mapa (zona com `role`). */
+export const ROLES = ["SDR", "Closer", "Editor", "Gestor", "Head", "CEO"];
 
 export interface Zone {
   id: string;
@@ -34,6 +41,45 @@ export interface Zone {
   floorColor?: string;
   /** Cargo dono da sala (quem tem esse cargo nasce aqui). */
   role?: string;
+  /** Estilo das portas desta sala (senão vale o do escritório). */
+  door?: string;
+}
+
+/** Estilo geral do escritório (configurado no editor, aba Prédio). */
+export interface OfficeStyle {
+  /** Cor das paredes (#rrggbb). */
+  wall?: string;
+  /** Estilo das janelas: classica, ampla, grade, faixa. */
+  window?: string;
+  /** Cor da moldura das janelas (#rrggbb). */
+  frame?: string;
+  /** Estilo das portas: madeira, vidro, escura, branca, verde. */
+  door?: string;
+  /** Piso do salão (fora das salas): uma das chaves de piso. */
+  floor?: string;
+}
+
+export const WINDOW_STYLES: [string, string][] = [
+  ["classica", "Clássica"],
+  ["ampla", "Ampla"],
+  ["grade", "Grade"],
+  ["faixa", "Faixa alta"],
+];
+export const DOOR_STYLES: [string, string][] = [
+  ["madeira", "Madeira"],
+  ["branca", "Branca"],
+  ["escura", "Grafite"],
+  ["verde", "Verde VERKZ"],
+  ["vidro", "Vidro"],
+];
+
+let curStyle: OfficeStyle = {};
+/** O mundo avisa o estilo do layout antes de montar paredes e portas. */
+export function setOfficeStyle(s?: OfficeStyle) {
+  curStyle = s ?? {};
+}
+export function officeStyle() {
+  return curStyle;
 }
 
 export interface Layout {
@@ -48,6 +94,8 @@ export interface Layout {
   floorColor?: string;
   /** Andares de cima (o térreo são `items` e `zones`). Mesmo tamanho de prédio. */
   levels?: Level[];
+  /** Estilo geral: cor das paredes, janelas, portas e piso do salão. */
+  style?: OfficeStyle;
 }
 
 export interface Level {
@@ -174,8 +222,8 @@ const cushionTex = pixelTexture(8, 8, (g) => {
   g.fillRect(0, 7, 8, 1);
   g.fillRect(7, 0, 1, 8);
 });
-const screenTex = (a: string, b: string) =>
-  pixelTexture(12, 8, (g) => {
+const screenTex = (a: string, b: string) => {
+  const t = pixelTexture(12, 8, (g) => {
     g.fillStyle = "#1d2433";
     g.fillRect(0, 0, 12, 8);
     g.fillStyle = a;
@@ -184,6 +232,10 @@ const screenTex = (a: string, b: string) =>
     g.fillRect(1, 5, 4, 2);
     g.fillRect(6, 5, 5, 1);
   });
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  return t;
+};
 
 const M = {
   wall: toon("#ffffff", { map: plaster }),
@@ -317,6 +369,72 @@ function screenPanel(tex: THREE.Texture) {
 
 /** Materiais das telas de computador (o mundo troca por telas animadas quando alguém senta na mesa). */
 export const SCREEN_MATS: THREE.Material[] = [M.screenA, M.screenB, M.screenC];
+
+/** Tapetes: qualquer um pode ter o desenho trocado (item.cfg.rs = { p, c, f }). */
+export const RUG_RE = /^(rug|pk_tapete)/;
+const rugDef = (label: string, w: number, d: number, f: string): Def => ({
+  label,
+  w,
+  d,
+  blocks: false,
+  build: (it) => buildRug(w, d, { p: it?.cfg?.rs?.p ?? 17, c: it?.cfg?.rs?.c ?? 0, f: it?.cfg?.rs?.f ?? f }),
+});
+
+/** Plantas do jardim: modelo, tamanho e cores podem ser trocados (item.cfg.tr = { v, s, l, t }). */
+export const PLANT_VARIANTS: Record<string, [string, string][]> = {
+  tree: [["tree_oak", "Carvalho"], ["tree_fat", "Copa larga"], ["tree_pine", "Pinheiro"], ["tree_pine_tall", "Pinheiro alto"], ["round", "Redonda"]],
+  pine: [["tree_pine", "Pinheiro"], ["tree_pine_tall", "Pinheiro alto"], ["tree_oak", "Carvalho"], ["tree_fat", "Copa larga"], ["round", "Redonda"]],
+  bush: [["bush", "Arbusto"], ["bush_large", "Arbusto grande"], ["round", "Redondo"]],
+};
+const hashStr = (s: string) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
+
+/** Pinta só a folhagem (verdes) e o tronco (marrons) de um modelo de planta. */
+function tintPlant(obj: THREE.Object3D, leaf?: string, trunk?: string) {
+  if (!leaf && !trunk) return;
+  const L = leaf ? new THREE.Color(leaf) : null;
+  const T = trunk ? new THREE.Color(trunk) : null;
+  const lh = { h: 0, s: 0, l: 0 };
+  const th = { h: 0, s: 0, l: 0 };
+  L?.getHSL(lh);
+  T?.getHSL(th);
+  const done = new Map<THREE.Material, THREE.Material>();
+  const fix = (mat: THREE.Material) => {
+    const hit = done.get(mat);
+    if (hit) return hit;
+    const src = mat as THREE.MeshToonMaterial;
+    if (!src.color) return mat;
+    const o = { h: 0, s: 0, l: 0 };
+    src.color.getHSL(o);
+    const green = o.h > 0.15 && o.h < 0.5 && o.s > 0.12;
+    const target = green ? L : T;
+    const t = green ? lh : th;
+    if (!target) return mat;
+    const c = src.clone();
+    c.color.setHSL(t.h, t.s, THREE.MathUtils.clamp(o.l * 0.5 + t.l * 0.5, 0.04, 0.96));
+    done.set(mat, c);
+    return c;
+  };
+  obj.traverse((m) => {
+    const mesh = m as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+    mesh.material = Array.isArray(mesh.material) ? mesh.material.map(fix) : fix(mesh.material);
+  });
+}
+
+function plantBuild(kind: "tree" | "pine" | "bush", size: number, it: Item | undefined, fallback: () => THREE.Object3D): THREE.Object3D {
+  const vars = PLANT_VARIANTS[kind];
+  const tr = it?.cfg?.tr ?? {};
+  // sem escolha: o modelo vem do id do item (sempre o mesmo, não sorteia a cada recarga)
+  const key: string = tr.v ?? vars[it ? hashStr(it.id) % Math.min(2, vars.length) : 0][0];
+  const fb = key === "round" ? fallback() : null;
+  const o = fb ?? model(key, size, size, { fit: "width" }) ?? fallback();
+  const g = new THREE.Group();
+  g.add(o);
+  tintPlant(o, tr.l, tr.t);
+  const sc = Number(tr.s) > 0 ? Math.max(0.5, Math.min(2, Number(tr.s))) : 1;
+  g.scale.setScalar(sc);
+  return g;
+}
 
 export const DEFS: Record<string, Def> = {
   wall: {
@@ -687,6 +805,14 @@ export const DEFS: Record<string, Def> = {
     })(),
   },
   rug_oval: { label: "Tapete oval", w: 3, d: 2, blocks: false, build: () => model("rug_oval", 3, 2) ?? new THREE.Group() },
+  rugc_s: rugDef("Tapete estilo (pequeno)", 2, 1.4, "r"),
+  rugc_m: rugDef("Tapete estilo (médio)", 3, 2, "r"),
+  rugc_l: rugDef("Tapete estilo (grande)", 4, 3, "r"),
+  rugc_xl: rugDef("Tapete estilo (extra grande)", 6, 4, "r"),
+  rugc_xxl: rugDef("Tapete estilo (sala inteira)", 7.4, 12.4, "r"),
+  rugc_runner: rugDef("Tapete estilo (passadeira)", 4, 1.2, "r"),
+  rugc_oval: rugDef("Tapete estilo (oval)", 3.2, 2.2, "o"),
+  rugc_round: rugDef("Tapete estilo (redondo)", 2.4, 2.4, "c"),
   lamp: {
     label: "Luminária",
     w: 0.5,
@@ -1031,7 +1157,7 @@ export const DEFS: Record<string, Def> = {
     d: 1.6,
     blocks: true,
     outdoor: true,
-    build: () => model(Math.random() > 0.5 ? "tree_oak" : "tree_fat", 1.8, 1.8, { fit: "width" }) ?? group(cyl(0.16, 0.22, 1.1, M.trunk, 0, 0, 0, 6), blob(0.85, M.leaf, 0, 1.55, 0)),
+    build: (it) => plantBuild("tree", 1.8, it, () => group(cyl(0.16, 0.22, 1.1, M.trunk, 0, 0, 0, 6), blob(0.85, M.leaf, 0, 1.55, 0))),
   },
   pine: {
     label: "Pinheiro",
@@ -1039,7 +1165,7 @@ export const DEFS: Record<string, Def> = {
     d: 1.2,
     blocks: true,
     outdoor: true,
-    build: () => model(Math.random() > 0.5 ? "tree_pine" : "tree_pine_tall", 1.5, 1.5, { fit: "width" }) ?? group(cyl(0.12, 0.16, 0.8, M.trunk), blob(0.7, M.leafDark, 0, 1.4, 0)),
+    build: (it) => plantBuild("pine", 1.5, it, () => group(cyl(0.12, 0.16, 0.8, M.trunk), blob(0.7, M.leafDark, 0, 1.4, 0))),
   },
   bush: {
     label: "Arbusto",
@@ -1047,7 +1173,7 @@ export const DEFS: Record<string, Def> = {
     d: 1,
     blocks: true,
     outdoor: true,
-    build: () => model(Math.random() > 0.5 ? "bush" : "bush_large", 1.1, 1.1, { fit: "width" }) ?? group(blob(0.42, M.leafDark, 0, 0.32, 0), blob(0.34, M.leaf, 0.25, 0.4, 0.1)),
+    build: (it) => plantBuild("bush", 1.1, it, () => group(blob(0.42, M.leafDark, 0, 0.32, 0), blob(0.34, M.leaf, 0.25, 0.4, 0.1))),
   },
   flower: { label: "Flores", w: 0.5, d: 0.5, blocks: false, outdoor: true, build: () => model("flower", 0.5, 0.5, { fit: "width" }) ?? new THREE.Group() },
   rock: { label: "Pedra", w: 0.7, d: 0.7, blocks: true, outdoor: true, build: () => model("rock", 0.7, 0.7) ?? blob(0.3, M.grey, 0, 0.2, 0) },
@@ -1252,6 +1378,8 @@ export const PHOTO_TYPES = new Set(["photo_wall", "photo_big", "photo_easel", "p
 export const WALL_MOUNT = new Set(["photo_wall", "photo_big", "frame_wide", "frame_medium"]);
 /** Altura da base dos itens de pendurar (m). */
 export const MOUNT_Y = 1.15;
+const PACK_TABLE_Y = 0.76;
+const PACK_CEIL_Y = 2.45;
 
 /** Reduz a imagem escolhida para guardar no escritório (lado maior até `max` px, JPEG). */
 export async function imageToDataUrl(file: File, max = 480): Promise<{ img: string; aspect: number }> {
@@ -1288,7 +1416,11 @@ export function footprint(it: Item) {
   const d = DEFS[it.type];
   if (!d) return { w: 1, d: 1 };
   const r = ((it.rot % 360) + 360) % 360;
-  return r === 90 || r === 270 ? { w: d.d, d: d.w } : { w: d.w, d: d.d };
+  if (r === 0 || r === 180) return { w: d.w, d: d.d };
+  if (r === 90 || r === 270) return { w: d.d, d: d.w };
+  // ângulo livre: caixa que envolve o móvel girado
+  const a = (r * Math.PI) / 180, co = Math.abs(Math.cos(a)), si = Math.abs(Math.sin(a));
+  return { w: d.w * co + d.d * si, d: d.w * si + d.d * co };
 }
 
 const grayCache = new WeakMap<THREE.Texture, THREE.Texture>();
@@ -1365,9 +1497,14 @@ export function tintObject(obj: THREE.Object3D, hex: string) {
 
 export function buildItem(it: Item): THREE.Object3D {
   const def = DEFS[it.type];
-  const obj = def ? def.build(it) : box(1, 1, 1, M.grey);
+  let obj = def ? def.build(it) : box(1, 1, 1, M.grey);
+  // tapete com desenho escolhido no editor
+  if (def && RUG_RE.test(it.type) && it.cfg?.rs && !it.type.startsWith("rugc_")) {
+    const f0 = it.cfg.rs.f ?? (/oval/.test(it.type) ? "o" : /redond|round/.test(it.type) ? "c" : "r");
+    obj = buildRug(def.w, def.d, { ...(it.cfg.rs as RugStyle), f: f0 });
+  }
   if (it.color && /^#[0-9a-f]{6}$/i.test(it.color) && !WALL_TYPES.has(it.type)) tintObject(obj, it.color);
-  obj.position.set(it.x, 0, it.z);
+  obj.position.set(it.x, WALL_TYPES.has(it.type) ? 0 : Number(it.y) || 0, it.z);
   obj.rotation.y = -(it.rot * Math.PI) / 180;
   obj.userData.itemId = it.id;
   return obj;
@@ -1389,6 +1526,28 @@ const wallMats = {
   sill: toon("#cfc8ba"),
   glass: toon("#a9dcf2", { transparent: true, opacity: 0.55 }),
 };
+
+const wallCache = new Map<string, typeof wallMats>();
+const HEX = /^#[0-9a-f]{6}$/i;
+/** Acabamento das paredes na cor pedida (e moldura de janela), com cache. */
+function wallMatsFor(color?: string, frame?: string) {
+  const c = color && HEX.test(color) ? color : "";
+  const fr = frame && HEX.test(frame) ? frame : "";
+  if (!c && !fr) return wallMats;
+  const key = c + "|" + fr;
+  let m = wallCache.get(key);
+  if (!m) {
+    m = { ...wallMats };
+    if (c) {
+      const col = new THREE.Color(c);
+      m.face = toon(col);
+      m.side = toon(col.clone().multiplyScalar(0.92));
+    }
+    if (fr) m.frame = toon(fr);
+    wallCache.set(key, m);
+  }
+  return m;
+}
 
 /** Vizinhos de uma parede (há parede encostada em cada lado?). */
 export interface WallLinks {
@@ -1415,7 +1574,14 @@ export function buildWall(it: Item, nb: WallLinks, tall: boolean): THREE.Object3
   if (nb.zn) arms.push({ dx: 0, dz: -1 });
   if (!arms.length) arms.push({ dx: 1, dz: 0 }, { dx: -1, dz: 0 });
   const alongX = nb.xp || nb.xn || !(nb.zp || nb.zn);
-  const mats = [wallMats.side, wallMats.side, wallMats.cap, wallMats.base, wallMats.face, wallMats.face];
+  const wm = wallMatsFor(it.color ?? curStyle.wall, curStyle.frame);
+  const mats = [wm.side, wm.side, wm.cap, wm.base, wm.face, wm.face];
+  // estilo da janela: altura do parapeito e da verga, divisórias
+  // parede de vidro (cfg.glass): vidro de quase o pé-direito inteiro, sem divisórias (sala de reunião)
+  const win = it.cfg?.glass
+    ? [0.12, 2.6, 0, false]
+    : ({ classica: [0.9, 2.15, 1, false], ampla: [0.6, 2.35, 0, false], grade: [0.9, 2.15, 3, true], faixa: [1.55, 2.25, 2, false] }[curStyle.window ?? "classica"] ?? [0.9, 2.15, 1, false]);
+  const [sill, top, mullV, mullH] = win as [number, number, number, boolean];
   const piece = (w: number, h: number, d: number, x: number, y: number, z: number, m: THREE.Material | THREE.Material[] = mats) => {
     const b = box(w, h, d, m, x, y, z);
     g.add(b);
@@ -1431,8 +1597,8 @@ export function buildWall(it: Item, nb: WallLinks, tall: boolean): THREE.Object3
     const d = a.dz ? len : T;
     if (isWindow && (alongX ? a.dx : a.dz)) {
       // janela: parapeito, vidro com moldura, verga
-      piece(w, 0.9, d, cx, 0, cz);
-      piece(w, H - 2.15, d, cx, 2.15, cz);
+      piece(w, sill, d, cx, 0, cz);
+      piece(w, H - top, d, cx, top, cz);
     } else piece(w, H, d, cx, 0, cz);
     // rodapé escuro
     piece(a.dx ? len : T + 0.02, 0.1, a.dz ? len : T + 0.02, cx, 0, cz, wallMats.base);
@@ -1442,15 +1608,21 @@ export function buildWall(it: Item, nb: WallLinks, tall: boolean): THREE.Object3
     const sx = alongX ? span : T * 0.5;
     const sz = alongX ? T * 0.5 : span;
     // vidro
-    const glass = new THREE.Mesh(geo.box(alongX ? span : 0.04, 1.25, alongX ? 0.04 : span), wallMats.glass);
-    glass.position.set(0, 0.9 + 0.625, 0);
+    const gh = top - sill;
+    const glass = new THREE.Mesh(geo.box(alongX ? span : 0.04, gh, alongX ? 0.04 : span), wm.glass);
+    glass.position.set(0, sill + gh / 2, 0);
     g.add(glass);
-    // moldura e divisória
-    const fr = (w: number, h: number, d: number, x: number, y: number, z: number) => piece(w, h, d, x, y, z, wallMats.frame);
-    fr(sx, 0.06, sz, 0, 0.88, 0); // peitoril
-    fr(sx, 0.06, sz, 0, 2.1, 0);
-    fr(alongX ? 0.05 : T * 0.55, 1.25, alongX ? T * 0.55 : 0.05, 0, 0.92, 0); // divisória do meio
-    piece(alongX ? span : T + 0.12, 0.05, alongX ? T + 0.12 : span, 0, 0.86, 0, wallMats.sill);
+    // moldura e divisórias
+    const fr = (w: number, h: number, d: number, x: number, y: number, z: number) => piece(w, h, d, x, y, z, wm.frame);
+    fr(sx, 0.06, sz, 0, sill - 0.02, 0); // peitoril
+    fr(sx, 0.06, sz, 0, top - 0.05, 0);
+    // divisórias verticais (1 = uma no meio; 0 = vidro inteiro)
+    for (let k = 1; k <= mullV; k++) {
+      const off = (k / (mullV + 1) - 0.5) * span;
+      fr(alongX ? 0.05 : T * 0.55, gh - 0.05, alongX ? T * 0.55 : 0.05, alongX ? off : 0, sill + 0.02, alongX ? 0 : off);
+    }
+    if (mullH) fr(sx, 0.045, sz, 0, sill + gh / 2, 0);
+    piece(alongX ? span : T + 0.12, 0.05, alongX ? T + 0.12 : span, 0, sill - 0.04, 0, wm.sill);
   }
   g.position.set(it.x, 0, it.z);
   g.userData.itemId = it.id;
@@ -1463,7 +1635,8 @@ export function buildWall(it: Item, nb: WallLinks, tall: boolean): THREE.Object3
  */
 export function wallSegment(len: number, h: number, y0 = 0, baseboard = true): THREE.Group {
   const g = new THREE.Group();
-  const mats = [wallMats.side, wallMats.side, wallMats.cap, wallMats.base, wallMats.face, wallMats.face];
+  const wm = wallMatsFor(curStyle.wall, curStyle.frame);
+  const mats = [wm.side, wm.side, wm.cap, wm.base, wm.face, wm.face];
   g.add(box(len, h, WALL_T, mats, 0, y0, 0));
   if (baseboard && y0 === 0) g.add(box(len, 0.1, WALL_T + 0.02, wallMats.base, 0, 0, 0));
   return g;
@@ -1471,7 +1644,7 @@ export function wallSegment(len: number, h: number, y0 = 0, baseboard = true): T
 
 /** Batente da porta (moldura clara em volta do vão). */
 export function doorJamb(h: number): THREE.Mesh {
-  return box(0.06, h, WALL_T + 0.04, wallMats.frame, 0, 0, 0);
+  return box(0.06, h, WALL_T + 0.04, wallMatsFor(undefined, curStyle.frame).frame, 0, 0, 0);
 }
 
 /** Retângulos de colisão de uma parede fina (pilar + braços), em coordenadas do mundo. */
@@ -2525,4 +2698,27 @@ const NEW_DEFS: Record<string, Def> = {
   },
 };
 Object.assign(DEFS, NEW_DEFS);
+/** Caixas de som, rádios, jukebox e toca-discos do pacote novo: todos tocam música (YouTube/Spotify), como o rádio. */
+const SPEAKER_PACK = /^pk_snd_(book|torre|sbar|bt|teto|sub|smart|estudio|vinil|radio|jukebox|boombox)/;
+export const isSpeakerType = (t: string) => SPEAKER_PACK.test(t);
+// ---------- pacote novo (pk_*): mesas, câmeras, computadores, impressoras, som, podcast, decoração...
+for (const p of PACK) {
+  DEFS[p.id] = {
+    label: p.label,
+    interactive: SPEAKER_PACK.test(p.id) || undefined,
+    w: p.w,
+    d: p.d,
+    blocks: p.blocks,
+    build: () => {
+      const g = new THREE.Group();
+      const o = p.build();
+      o.position.y += p.tabletop ? PACK_TABLE_Y : p.mount === "wall" ? MOUNT_Y : p.mount === "ceiling" ? PACK_CEIL_Y : 0;
+      g.add(o);
+      if (p.tick || p.use) Object.assign(g.userData, { ptick: p.tick, puse: p.use, pon: 0 });
+      return g;
+    },
+  };
+  if (p.mount === "wall") WALL_MOUNT.add(p.id);
+  PALETTE.push(p.id);
+}
 for (const k of ["p_corkboard", "p_dartboard", "p_neon_ring", "p_clock_wall", "p_mirror", "p_towel"]) WALL_MOUNT.add(k);
