@@ -1,0 +1,40 @@
+--- /tmp/z069/server/src/main.rs	2026-11-24 09:14:38.000000000 -0400
++++ src/server/src/main.rs	2026-11-24 21:04:42.335839960 -0400
+@@ -44,6 +44,8 @@
+     data_dir: PathBuf,
+     gemini_key: String,
+     gemini_model: String,
++    /// Sidecar de transcrição (NVIDIA Parakeet). Vazio = só Gemini.
++    asr_url: String,
+     /// Client ID do app do Spotify (developer.spotify.com): vai para o app, cada pessoa só clica em "Conectar".
+     spotify_client_id: String,
+ }
+@@ -715,6 +717,7 @@
+         data_dir: PathBuf::from(env("DATA_DIR", "./data")),
+         gemini_key: env("GEMINI_API_KEY", "").trim().to_string(),
+         gemini_model: env("GEMINI_MODEL", "gemini-flash-latest"),
++        asr_url: env("ASR_URL", "").trim().trim_end_matches('/').to_string(),
+     };
+     tokio::fs::create_dir_all(&cfg.data_dir).await.ok();
+ 
+@@ -787,6 +790,11 @@
+ 
+ /// Confere se uma edição feita por quem não é da gestão mexeu só nos móveis.
+ /// Prédio (tamanho, andares, piso, clima), salas e paredes (e o elevador) são só da gestão.
++fn is_wall_swap(a: &Value, b: &Value) -> bool {
++    let wall = |v: &Value| matches!(v["type"].as_str(), Some("wall") | Some("window_wall"));
++    wall(a) && wall(b) && a["x"] == b["x"] && a["z"] == b["z"] && a["rot"] == b["rot"]
++}
++
+ fn check_furniture_edit(old: &Value, new: &Value) -> Result<(), String> {
+     if old["size"] != new["size"] || old["zones"] != new["zones"] || old["spawn"] != new["spawn"] || old["env"] != new["env"] {
+         return Err("Só a gestão pode mudar o prédio e as salas.".into());
+@@ -802,6 +810,8 @@
+     for (id, it) in &a {
+         match b.get(id) {
+             Some(n) if n == it => {}
++            // trocar janela por parede lisa (e voltar) é liberado: o lugar e o giro não mudam
++            Some(n) if is_wall_swap(it, n) => {}
+             Some(n) if locked(it) || locked(n) => return Err("Só a gestão pode mexer em paredes.".into()),
+             None if locked(it) => return Err("Só a gestão pode apagar paredes.".into()),
+             _ => {}

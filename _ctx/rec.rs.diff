@@ -1,0 +1,193 @@
+--- /tmp/z069/server/src/rec.rs	2026-11-20 22:00:23.000000000 -0400
++++ src/server/src/rec.rs	2026-11-24 21:05:11.780238596 -0400
+@@ -206,7 +206,7 @@
+         }
+     }
+     out.sort_by(|a, b| b["started"].as_u64().cmp(&a["started"].as_u64()));
+-    Json(json!({"recordings": out, "keep_days": KEEP_SECS / 86400, "ai": !st.cfg.gemini_key.is_empty()})).into_response()
++    Json(json!({"recordings": out, "keep_days": KEEP_SECS / 86400, "ai": !st.cfg.gemini_key.is_empty() || !st.cfg.asr_url.is_empty()})).into_response()
+ }
+ 
+ pub async fn file(State(st): State<Shared>, Path(id): Path<String>, h: HeaderMap, Query(q): Query<KeyQuery>) -> Response {
+@@ -326,8 +326,8 @@
+ 
+ async fn transcribe(st: &Shared, dir: &std::path::Path) -> Result<(), String> {
+     let key = st.cfg.gemini_key.clone();
+-    if key.is_empty() {
+-        return Err("A chave do Gemini não está configurada no servidor (GEMINI_API_KEY).".into());
++    if key.is_empty() && st.cfg.asr_url.is_empty() {
++        return Err("Nenhum serviço de transcrição configurado no servidor (ASR_URL ou GEMINI_API_KEY).".into());
+     }
+     let meta = read_meta(dir).await.ok_or("meta.json sumiu")?;
+     let ext = meta["ext"].as_str().unwrap_or("webm");
+@@ -351,7 +351,22 @@
+         return Err("A gravação não tem áudio.".into());
+     }
+ 
+-    let http = reqwest::Client::builder().timeout(Duration::from_secs(600)).build().map_err(|e| e.to_string())?;
++    let http = reqwest::Client::builder().timeout(Duration::from_secs(900)).build().map_err(|e| e.to_string())?;
++
++    // 1b) principal: NVIDIA (Parakeet) transcreve; o Gemini só resume. Se falhar, o Gemini faz tudo (backup).
++    let mut nvidia_err = String::new();
++    if !st.cfg.asr_url.is_empty() {
++        match transcribe_nvidia(st, &http, dir, &meta, bytes.clone()).await {
++            Ok(()) => return Ok(()),
++            Err(e) => {
++                tracing::warn!("NVIDIA falhou, usando o Gemini: {e}");
++                nvidia_err = e;
++            }
++        }
++    }
++    if key.is_empty() {
++        return Err(format!("A transcrição da NVIDIA falhou ({nvidia_err}) e não há chave do Gemini para reserva."));
++    }
+ 
+     // 2) envia o áudio para o Gemini (Files API, envio em uma etapa)
+     let started = http
+@@ -443,15 +458,7 @@
+         ]}],
+         "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema}
+     });
+-    let resp = http
+-        .post(format!("{GEMINI}/v1beta/models/{}:generateContent", st.cfg.gemini_model))
+-        .header("x-goog-api-key", &key)
+-        .json(&body)
+-        .send()
+-        .await
+-        .map_err(|e| format!("Gemini fora do ar: {e}"))?;
+-    let ok = resp.status().is_success();
+-    let result = if ok { Ok(resp.json::<Value>().await.map_err(|e| e.to_string())?) } else { Err(gemini_error(resp).await) };
++    let result = gemini_generate(st, &http, &key, &body).await;
+ 
+     // o arquivo no Google não é mais necessário
+     let _ = http.delete(format!("{GEMINI}/v1beta/{name}")).header("x-goog-api-key", &key).send().await;
+@@ -478,3 +485,129 @@
+     let msg = v["error"]["message"].as_str().unwrap_or("erro desconhecido");
+     format!("Gemini respondeu {code}: {}", msg.chars().take(300).collect::<String>())
+ }
++
++/// Chama o Gemini com nova tentativa quando está sobrecarregado (503/429/500).
++async fn gemini_generate(st: &Shared, http: &reqwest::Client, key: &str, body: &Value) -> Result<Value, String> {
++    let mut last = String::new();
++    for (i, wait) in [0u64, 8, 25, 60].iter().enumerate() {
++        if *wait > 0 {
++            tokio::time::sleep(Duration::from_secs(*wait)).await;
++        }
++        let resp = match http
++            .post(format!("{GEMINI}/v1beta/models/{}:generateContent", st.cfg.gemini_model))
++            .header("x-goog-api-key", key)
++            .json(body)
++            .send()
++            .await
++        {
++            Ok(r) => r,
++            Err(e) => {
++                last = format!("Gemini fora do ar: {e}");
++                continue;
++            }
++        };
++        if resp.status().is_success() {
++            return resp.json::<Value>().await.map_err(|e| e.to_string());
++        }
++        let retry = matches!(resp.status().as_u16(), 429 | 500 | 502 | 503 | 504);
++        last = gemini_error(resp).await;
++        if !retry || i == 3 {
++            break;
++        }
++    }
++    Err(last)
++}
++
++fn mmss(secs: u64) -> String {
++    format!("{:02}:{:02}", secs / 60, secs % 60)
++}
++
++/// Transcrição pela NVIDIA (serviço ASR_URL) e resumo pelo Gemini a partir do texto.
++async fn transcribe_nvidia(st: &Shared, http: &reqwest::Client, dir: &std::path::Path, meta: &Value, audio: Vec<u8>) -> Result<(), String> {
++    let resp = http
++        .post(format!("{}/transcribe", st.cfg.asr_url))
++        .body(audio)
++        .send()
++        .await
++        .map_err(|e| format!("serviço de transcrição fora do ar: {e}"))?;
++    let ok = resp.status().is_success();
++    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
++    if !ok {
++        return Err(v["error"].as_str().unwrap_or("erro desconhecido").to_string());
++    }
++    let segs = v["segments"].as_array().cloned().unwrap_or_default();
++    if segs.is_empty() {
++        return Err("a NVIDIA não devolveu texto".into());
++    }
++    // nomes de quem falava em cada trecho, pela linha do tempo do app
++    let timeline: Vec<(u64, Vec<String>)> = tokio::fs::read_to_string(dir.join("timeline.json"))
++        .await
++        .ok()
++        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
++        .and_then(|v| v.as_array().cloned())
++        .map(|a| {
++            a.iter()
++                .map(|e| (e["t"].as_u64().unwrap_or(0), e["names"].as_array().map(|n| n.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()))
++                .collect()
++        })
++        .unwrap_or_default();
++    let who = |start: u64, end: u64| -> String {
++        let mut names: Vec<String> = Vec::new();
++        let before = timeline.iter().filter(|(t, _)| *t <= start).last();
++        for (t, n) in before.into_iter().chain(timeline.iter().filter(|(t, _)| *t > start && *t < end)) {
++            let _ = t;
++            for x in n {
++                if !names.contains(x) {
++                    names.push(x.clone());
++                }
++            }
++        }
++        if names.is_empty() { "Participante".into() } else { names.join(", ") }
++    };
++    let transcricao: Vec<Value> = segs
++        .iter()
++        .map(|s| {
++            let (a, b) = (s["start"].as_u64().unwrap_or(0), s["end"].as_u64().unwrap_or(0));
++            json!({"tempo": mmss(a), "quem": who(a, b), "fala": s["text"].as_str().unwrap_or("")})
++        })
++        .collect();
++    let plain: String = transcricao.iter().map(|t| format!("[{}] {}: {}\n", t["tempo"].as_str().unwrap_or(""), t["quem"].as_str().unwrap_or(""), t["fala"].as_str().unwrap_or(""))).collect();
++
++    // resumo, decisões e tarefas (Gemini, só texto; se estiver fora do ar a transcrição fica salva mesmo assim)
++    let mut notes = json!({"resumo": "", "decisoes": [], "tarefas": [], "transcricao": transcricao, "motor": "nvidia"});
++    let key = st.cfg.gemini_key.clone();
++    let participants = meta["participants"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
++    if key.is_empty() {
++        notes["resumo"] = json!("Resumo indisponível: falta a chave do Gemini no servidor. A transcrição está completa.");
++    } else {
++        let prompt = format!(
++            "Abaixo está a transcrição de uma reunião interna da VERKZ (agência de marketing), em português do Brasil. \
++             Participantes: {participants}. Os nomes em cada trecho são aproximados e o texto pode ter erros de reconhecimento de voz.\n\n\
++             Faça: 1) um resumo curto e objetivo (até 8 linhas); 2) as decisões tomadas; 3) as tarefas combinadas, com responsável e prazo quando ditos. \
++             Não invente nada que não foi dito. Responda só no formato JSON pedido.\n\n{plain}"
++        );
++        let schema = json!({"type":"OBJECT","properties":{
++            "resumo":{"type":"STRING"},
++            "decisoes":{"type":"ARRAY","items":{"type":"STRING"}},
++            "tarefas":{"type":"ARRAY","items":{"type":"OBJECT","properties":{"tarefa":{"type":"STRING"},"responsavel":{"type":"STRING"},"prazo":{"type":"STRING"}},"required":["tarefa"]}}
++        },"required":["resumo","decisoes","tarefas"]});
++        let body = json!({"contents":[{"parts":[{"text": prompt}]}],"generationConfig":{"responseMimeType":"application/json","responseSchema":schema}});
++        match gemini_generate(st, http, &key, &body).await {
++            Ok(res) => {
++                let text: String = res["candidates"][0]["content"]["parts"].as_array().map(|ps| ps.iter().filter_map(|p| p["text"].as_str()).collect()).unwrap_or_default();
++                match serde_json::from_str::<Value>(&text) {
++                    Ok(s) => {
++                        notes["resumo"] = s["resumo"].clone();
++                        notes["decisoes"] = s["decisoes"].clone();
++                        notes["tarefas"] = s["tarefas"].clone();
++                    }
++                    Err(_) => notes["resumo"] = json!("Resumo indisponível agora (o Gemini não respondeu direito). A transcrição está completa."),
++                }
++            }
++            Err(e) => notes["resumo"] = json!(format!("Resumo indisponível agora ({e}). A transcrição está completa.")),
++        }
++    }
++    tokio::fs::write(dir.join("notes.json"), serde_json::to_vec_pretty(&notes).unwrap()).await.map_err(|e| e.to_string())?;
++    info!("transcrição pronta (NVIDIA): {dir:?}");
++    Ok(())
++}
