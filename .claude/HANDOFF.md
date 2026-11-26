@@ -521,3 +521,13 @@ Identity no LiveKit = id do peer no servidor.
 
 ## 0.6.26 — cadeiras e sofás novos dá para sentar (publicado, imagem 0.18.13)
 - world.ts registra em SEATS todas as cadeiras/bancos (pack "Cadeiras e bancos") e sofás/poltronas/puffs (pk_lng_*, mesa_sofa) + sofa, sofa_plain, p_sofa_l, p_lounge. `SEAT_H` dá a altura do assento (banco alto 0.78, sofá 0.42); `Avatar.seatY`; o estado `sit` na rede leva a altura. main.ts: `SEAT_SOFT` impede nascer em sofá ao entrar pelo cargo.
+
+## 0.6.28 — lote do editor, cadeiras e Seu Zé (NÃO publicado; próxima imagem 0.18.14)
+- Editor: PageUp/PageDown funcionam com qualquer foco (select/busca) e também no item sendo colocado (`placeY/placeS`); +/- escala; item já colocado arrasta com o mouse (snap, parede, elevador) sem mover a câmera; slider Tamanho 20–400%; tapetes têm Largura/Profundidade (`Item.sx/sz`).
+- Quadros: `src/imgedit.ts` (editor de imagem: proporção, zoom, posição, brilho, contraste, girar) usado ao enviar foto ou escolher do banco; botão "Editar a imagem" no card do quadro.
+- Monitores (`puse==="screen"`): caixa invisível em volta; ligam quando há alguém (em pé ou sentado) dentro dela.
+- Cadeiras giratórias: botão `.swivel-btn` no canto inferior direito (segurar) e teclas `[` e `]`; `World.swivel()`, `syncChairs()`.
+- Câmera sem seguir o personagem: `freeCam` fixo no mundo + `clampCam()` (não sai do mapa).
+- Duas pessoas na mesma cadeira: `seatTakenBy`, aviso `onSeatBusy`; em empate, o menor id fica.
+- Seu Zé: rota com folga (`pathR`), `Janitor.collide()` (corpo circular e carrinho retangular girado) aplicado ao usuário local.
+- Para publicar: `_ctx14` sobre `verkz-office-server:0.18.13` -> tag 0.18.14 na stack 4 (precisa autorização do Lopes).

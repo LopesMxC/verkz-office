@@ -22,6 +22,10 @@ export interface Item {
   color?: string;
   /** Altura extra em metros (escolhida no editor): sobe ou desce o móvel em relação à posição normal. */
   y?: number;
+  /** Tamanho: escala geral (1 = normal), e esticar só a largura (sx) ou a profundidade (sz), útil em tapetes. */
+  s?: number;
+  sx?: number;
+  sz?: number;
 }
 
 /** Cargos da equipe: cada um pode ter a sua sala no mapa (zona com `role`). */
@@ -1382,7 +1386,7 @@ const PACK_TABLE_Y = 0.76;
 const PACK_CEIL_Y = 2.45;
 
 /** Reduz a imagem escolhida para guardar no escritório (lado maior até `max` px, JPEG). */
-export async function imageToDataUrl(file: File, max = 480): Promise<{ img: string; aspect: number }> {
+export async function imageToDataUrl(file: File, max = 480, quality = 0.82, cap = 70_000): Promise<{ img: string; aspect: number }> {
   if (!file.type.startsWith("image/")) throw new Error("Escolha um arquivo de imagem (JPG, PNG, WebP)");
   const url = URL.createObjectURL(file);
   try {
@@ -1400,10 +1404,10 @@ export async function imageToDataUrl(file: File, max = 480): Promise<{ img: stri
     g.fillStyle = "#ffffff";
     g.fillRect(0, 0, c.width, c.height);
     g.drawImage(im, 0, 0, c.width, c.height);
-    let q = 0.82;
+    let q = quality;
     let out = c.toDataURL("image/jpeg", q);
     // mantém cada imagem pequena (o escritório inteiro vai numa mensagem só)
-    while (out.length > 70_000 && q > 0.4) out = c.toDataURL("image/jpeg", (q -= 0.12));
+    while (out.length > cap && q > 0.4) out = c.toDataURL("image/jpeg", (q -= 0.12));
     return { img: out, aspect: im.naturalWidth / im.naturalHeight };
   } finally {
     URL.revokeObjectURL(url);
@@ -1416,11 +1420,14 @@ export function footprint(it: Item) {
   const d = DEFS[it.type];
   if (!d) return { w: 1, d: 1 };
   const r = ((it.rot % 360) + 360) % 360;
-  if (r === 0 || r === 180) return { w: d.w, d: d.d };
-  if (r === 90 || r === 270) return { w: d.d, d: d.w };
+  const k = WALL_TYPES.has(it.type) ? 1 : Number(it.s) || 1;
+  const dw = d.w * k * (WALL_TYPES.has(it.type) ? 1 : Number(it.sx) || 1);
+  const dd = d.d * k * (WALL_TYPES.has(it.type) ? 1 : Number(it.sz) || 1);
+  if (r === 0 || r === 180) return { w: dw, d: dd };
+  if (r === 90 || r === 270) return { w: dd, d: dw };
   // ângulo livre: caixa que envolve o móvel girado
   const a = (r * Math.PI) / 180, co = Math.abs(Math.cos(a)), si = Math.abs(Math.sin(a));
-  return { w: d.w * co + d.d * si, d: d.w * si + d.d * co };
+  return { w: dw * co + dd * si, d: dw * si + dd * co };
 }
 
 const grayCache = new WeakMap<THREE.Texture, THREE.Texture>();
@@ -1506,6 +1513,12 @@ export function buildItem(it: Item): THREE.Object3D {
   if (it.color && /^#[0-9a-f]{6}$/i.test(it.color) && !WALL_TYPES.has(it.type)) tintObject(obj, it.color);
   obj.position.set(it.x, WALL_TYPES.has(it.type) ? 0 : Number(it.y) || 0, it.z);
   obj.rotation.y = -(it.rot * Math.PI) / 180;
+  if (!WALL_TYPES.has(it.type)) {
+    const sc = Number(it.s) || 1;
+    const sx = Number(it.sx) || 1;
+    const sz = Number(it.sz) || 1;
+    if (sc !== 1 || sx !== 1 || sz !== 1) obj.scale.set(sc * sx, sc, sc * sz);
+  }
   obj.userData.itemId = it.id;
   return obj;
 }

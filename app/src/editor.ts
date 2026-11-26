@@ -7,6 +7,7 @@ import { icon } from "./icons";
 import { ensureThumbs } from "./thumbs";
 import { REG as PACK } from "../pack";
 import { openImageBank } from "../pack/imagebank";
+import { openImageEditor } from "./imgedit";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const uid = (p: string) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -178,18 +179,46 @@ export class Editor {
     });
     window.addEventListener("keydown", (e) => {
       const ae = document.activeElement;
-      // só campos de texto seguram as teclas (o controle de altura/ângulo e as caixas de marcar não)
-      if (!this.active || (ae instanceof HTMLInputElement && !["range", "checkbox", "color"].includes(ae.type)) || ae instanceof HTMLSelectElement || ae instanceof HTMLTextAreaElement) return;
+      if (!this.active) return;
+      const pg = e.key === "PageUp" || e.key === "PageDown";
+      const grow = ["+", "=", "-", "_"].includes(e.key);
+      // campos de texto seguram as teclas (menos PageUp/PageDown em caixas de uma linha); lista de categorias só deixa altura e tamanho
+      if (ae instanceof HTMLTextAreaElement || (ae instanceof HTMLInputElement && !["range", "checkbox", "color", "button"].includes(ae.type) && !pg)) return;
+      if (ae instanceof HTMLSelectElement && !pg && !grow) return;
       if (ae instanceof HTMLInputElement && ae.type === "range" && e.key.startsWith("Arrow")) ae.blur(); // setas movem o móvel, não o controle
-      if (e.key === "r" || e.key === "R") this.rotate(e.shiftKey ? 90 : undefined);
-      if (this.selected && !this.tool && !LOCKED.has(this.selected.type) && (e.key === "PageUp" || e.key === "PageDown")) {
-        // PageUp/PageDown sobem e descem o móvel (2 cm; Shift 10 cm)
-        const st = e.shiftKey ? 0.1 : 0.02;
-        this.selected.y = Math.max(-0.8, Math.min(3, Math.round(((this.selected.y ?? 0) + (e.key === "PageUp" ? st : -st)) * 100) / 100));
+      const stp = e.shiftKey ? 0.1 : 0.02;
+      if (pg && !LOCKED.has(this.selected?.type ?? "")) {
+        // PageUp/PageDown sobem e descem o móvel selecionado (2 cm; Shift 10 cm) ou o que vai ser colocado
         e.preventDefault();
-        this.apply();
-        this.renderPanel();
+        if (this.selected && !this.tool) {
+          this.selected.y = Math.max(-0.8, Math.min(3, Math.round(((this.selected.y ?? 0) + (e.key === "PageUp" ? stp : -stp)) * 100) / 100));
+          this.apply();
+          this.renderPanel();
+        } else if (this.tool && !["zone", "wall", "erase"].includes(this.tool)) {
+          this.placeY = Math.max(-0.8, Math.min(3, Math.round((this.placeY + (e.key === "PageUp" ? stp : -stp)) * 100) / 100));
+          if (this.ghost) this.ghost.position.y = this.placeY;
+          this.toast(`Altura ${Math.round(this.placeY * 100)} cm`);
+        }
+        return;
       }
+      if (grow && !(ae instanceof HTMLInputElement && !["range", "checkbox", "color", "button"].includes(ae.type))) {
+        // + e - aumentam e diminuem o móvel (5%; Shift 25%)
+        const f = (e.key === "+" || e.key === "=" ? 1 : -1) * (e.shiftKey ? 0.25 : 0.05);
+        if (this.selected && !this.tool && !LOCKED.has(this.selected.type)) {
+          this.selected.s = Math.max(0.2, Math.min(4, Math.round(((this.selected.s ?? 1) + f) * 100) / 100));
+          if (this.selected.s === 1) delete this.selected.s;
+          this.apply();
+          this.renderPanel();
+          e.preventDefault();
+        } else if (this.tool && !["zone", "wall", "erase"].includes(this.tool)) {
+          this.placeS = Math.max(0.2, Math.min(4, Math.round((this.placeS + f) * 100) / 100));
+          if (this.ghost) this.ghost.scale.setScalar(this.placeS);
+          this.toast(`Tamanho ${Math.round(this.placeS * 100)}%`);
+          e.preventDefault();
+        }
+        return;
+      }
+      if (e.key === "r" || e.key === "R") this.rotate(e.shiftKey ? 90 : undefined);
       if (this.selected && !this.tool && !LOCKED.has(this.selected.type) && e.key.startsWith("Arrow")) {
         // setas empurram o móvel selecionado (livre: 10 cm, Shift 2 cm; com grade: meio metro)
         const st = this.free ? (e.shiftKey ? 0.02 : 0.1) : 0.5;
@@ -238,7 +267,7 @@ export class Editor {
     this.world.onFloorClick = (p, e) => this.onClick(p, e);
     // arrastar o mapa vale no editor, menos quando o arraste desenha sala ou parede
     // (na aba Salas o arraste com o botão esquerdo muda a sala de lugar; o mapa anda com o botão do meio)
-    this.world.canPanEdit = () => this.tool !== "zone" && this.tool !== "wall" && !(this.tab === "salas" && !this.limit);
+    this.world.canPanEdit = (e) => this.tool !== "zone" && this.tool !== "wall" && !(this.tab === "salas" && !this.limit) && !this.itemUnder(e);
     this.world.setEditCam(true);
     this.panel.classList.remove("hidden");
     this.setTool(null);
@@ -364,7 +393,26 @@ export class Editor {
   }
 
   // ------------------------------------------------------------------ ferramentas
+  /** Móvel (não parede) sob o mouse, quando dá para arrastá-lo: sem ferramenta de colocar/apagar ativa. */
+  private itemUnder(e: MouseEvent): Item | null {
+    if (!this.active || this.tool || (this.tab === "salas" && !this.limit) || e.shiftKey) return null;
+    const o = this.world.pickItem(e);
+    const it = o ? this.draft.items.find((i) => i.id === o.userData.itemId) : null;
+    return it && !LOCKED.has(it.type) ? it : null;
+  }
+  /** Imagem original de cada quadro nesta sessão (para editar de novo sem perder qualidade). */
+  private origImg = new Map<string, string>();
+  private idrag: { it: Item; ox: number; oz: number; sx: number; sz: number; moved: boolean; obj: THREE.Object3D } | null = null;
+
+  /** Altura e tamanho do móvel que vai ser colocado (PageUp/PageDown, + e -). */
+  private placeY = 0;
+  private placeS = 1;
+
   private setTool(t: Tool) {
+    if (t !== this.tool) {
+      this.placeY = 0;
+      this.placeS = 1;
+    }
     this.tool = t;
     this.clearGhost();
     this.preview.removeFromParent();
@@ -752,6 +800,19 @@ export class Editor {
     if (!this.active) return;
     const p = this.world.pickFloor(e);
     if (!p) return;
+    if (this.idrag) {
+      const d = this.idrag;
+      const s = this.snap(new THREE.Vector3(p.x + d.ox, 0, p.z + d.oz));
+      if (!d.moved && Math.hypot(s.x - d.sx, s.z - d.sz) > 0.12) d.moved = true;
+      if (d.moved && this.allowed(s.x, s.z)) {
+        d.obj.position.x = s.x;
+        d.obj.position.z = s.z;
+        d.it.x = s.x;
+        d.it.z = s.z;
+        this.highlight();
+      }
+      return;
+    }
     if (this.zdrag) {
       const d = this.zdrag;
       d.dx = Math.round(p.x - d.sx);
@@ -772,7 +833,8 @@ export class Editor {
       const tmp: Item = { id: "ghost", type: String(this.tool), x: s.x, z: s.z, rot: this.rot };
       this.wallSnap(tmp);
       this.ghost.visible = true;
-      this.ghost.position.set(tmp.x, 0, tmp.z);
+      this.ghost.position.set(tmp.x, this.placeY, tmp.z);
+      this.ghost.scale.setScalar(this.placeS);
       this.ghost.rotation.y = -(tmp.rot * Math.PI) / 180;
     }
     if (this.dragStart && this.tool === "zone") {
@@ -805,6 +867,22 @@ export class Editor {
   }
 
   private onMouseDown(e: MouseEvent) {
+    this.zdragDone = false;
+    if (e.button === 0) {
+      const it = this.itemUnder(e);
+      const p = it ? this.world.pickFloor(e) : null;
+      const obj = it ? this.world.pickItem(e) : null;
+      if (it && p && obj) {
+        // arrastar o móvel: pega pelo ponto em que clicou
+        this.idrag = { it, ox: it.x - p.x, oz: it.z - p.z, sx: it.x, sz: it.z, moved: false, obj };
+        if (this.selected !== it) {
+          this.selected = it;
+          this.highlight();
+          this.renderPanel();
+        }
+        return;
+      }
+    }
     if (this.active && !this.limit && !this.tool && this.tab === "salas" && e.button === 0) {
       const p = this.world.pickFloor(e);
       const z = p && this.draft.zones.filter((zn) => Math.abs(p.x - zn.x) <= zn.w / 2 && Math.abs(p.z - zn.z) <= zn.d / 2).sort((a, b) => a.w * a.d - b.w * b.d)[0];
@@ -824,6 +902,18 @@ export class Editor {
   }
 
   private onMouseUp(e: MouseEvent) {
+    if (this.idrag) {
+      const d = this.idrag;
+      this.idrag = null;
+      if (d.moved) {
+        this.wallSnap(d.it);
+        this.syncElevator(d.it);
+        this.zdragDone = true; // o clique que vem junto com o soltar não deve selecionar outra coisa
+        this.apply();
+        this.renderPanel();
+      }
+      return;
+    }
     if (this.zdrag) {
       const d = this.zdrag;
       this.zdrag = null;
@@ -938,6 +1028,8 @@ export class Editor {
     if (this.tool) {
       const s = this.snap(p);
       const it: Item = { id: uid("i"), type: this.tool, x: s.x, z: s.z, rot: this.rot };
+      if (this.placeY) it.y = this.placeY;
+      if (this.placeS !== 1) it.s = this.placeS;
       this.wallSnap(it);
       this.draft.items.push(it);
       this.syncElevator(it);
@@ -1026,9 +1118,12 @@ export class Editor {
       ${sel ? `<div class="sel-card">
           <div class="panel-head"><div class="t-m">${esc(DEFS[sel.type]?.label ?? sel.type)}</div><span class="chip accent">Selecionado</span></div>
           <div class="note">Clique no piso para levar o item até lá.</div>
-          ${PHOTO_TYPES.has(sel.type) ? `<button class="btn secondary sm block" data-photo>${icon("image", 15)} ${sel.cfg?.img ? "Trocar a imagem" : "Escolher imagem do computador"}</button><button class="btn secondary sm block" data-photobank>${icon("search", 15)} Banco de imagens</button>${sel.cfg?.credit ? `<div class="hint">Foto: ${esc(sel.cfg.credit)}</div>` : ""}` : rugPanel ? rugPanel : plantPanel ? plantPanel : `<div class="label">Cor</div>
+          ${PHOTO_TYPES.has(sel.type) ? `<button class="btn secondary sm block" data-photo>${icon("image", 15)} ${sel.cfg?.img ? "Trocar a imagem" : "Escolher imagem do computador"}</button><button class="btn secondary sm block" data-photobank>${icon("search", 15)} Banco de imagens</button>${sel.cfg?.img ? `<button class="btn secondary sm block" data-photoedit>${icon("pencil", 15)} Editar a imagem</button>` : ""}${sel.cfg?.credit ? `<div class="hint">Foto: ${esc(sel.cfg.credit)}</div>` : ""}` : rugPanel ? rugPanel : plantPanel ? plantPanel : `<div class="label">Cor</div>
           ${colorRow("icolor", sel.color)}`}
           <label class="field"><span class="label">Altura extra: <b data-h-v>${Math.round((sel.y ?? 0) * 100)} cm</b></span><input type="range" min="-80" max="300" step="1" value="${Math.round((sel.y ?? 0) * 100)}" data-height></label>
+          <label class="field"><span class="label">Tamanho: <b data-s-v>${Math.round((sel.s ?? 1) * 100)}%</b></span><input type="range" min="20" max="400" step="5" value="${Math.round((sel.s ?? 1) * 100)}" data-size></label>
+          ${RUG_RE.test(sel.type) ? `<label class="field"><span class="label">Largura do tapete: <b data-sx-v>${Math.round((sel.sx ?? 1) * 100)}%</b></span><input type="range" min="20" max="400" step="5" value="${Math.round((sel.sx ?? 1) * 100)}" data-sx></label>
+          <label class="field"><span class="label">Profundidade do tapete: <b data-sz-v>${Math.round((sel.sz ?? 1) * 100)}%</b></span><input type="range" min="20" max="400" step="5" value="${Math.round((sel.sz ?? 1) * 100)}" data-sz></label>` : ""}
           <label class="field"><span class="label">Ângulo: <b data-angle-v>${Math.round(sel.rot)}°</b></span><input type="range" min="0" max="359" step="1" value="${Math.round(sel.rot)}" data-angle></label>
           <div class="editor-actions">
             <button class="btn secondary sm" data-a="rot">${icon("rotate", 15)} Girar</button>
@@ -1260,6 +1355,21 @@ export class Editor {
       if (v) v.textContent = `${hgt.value} cm`;
       this.apply();
     });
+    const sizeWire = (attr: string, key: "s" | "sx" | "sz") => {
+      const el = this.panel.querySelector<HTMLInputElement>(`[data-${attr}]`);
+      el?.addEventListener("input", () => {
+        if (!this.selected) return;
+        const v = Number(el.value) / 100;
+        if (v === 1) delete this.selected[key];
+        else this.selected[key] = v;
+        const l = this.panel.querySelector(`[data-${attr}-v]`);
+        if (l) l.textContent = `${el.value}%`;
+        this.apply();
+      });
+    };
+    sizeWire("size", "s");
+    sizeWire("sx", "sx");
+    sizeWire("sz", "sz");
     const angle = this.panel.querySelector<HTMLInputElement>("[data-angle]");
     angle?.addEventListener("input", () => {
       if (!this.selected) return;
@@ -1352,14 +1462,31 @@ export class Editor {
         this.renderPanel();
       }),
     );
+    const photoMax = (it: Item) => (it.type === "photo_desk" ? 320 : 560);
+    /** Abre o editor de imagem e põe o resultado no quadro. */
+    const editInto = async (it: Item, src: string, credit?: string) => {
+      this.origImg.set(it.id, src);
+      try {
+        const r = await openImageEditor(src, { max: photoMax(it) });
+        if (!r || !this.draft.items.includes(it)) return;
+        it.cfg = { ...(it.cfg ?? {}), img: r.img, aspect: r.aspect, credit };
+        this.apply();
+        this.renderPanel();
+      } catch (e) {
+        this.toast(String((e as Error).message ?? e));
+      }
+    };
     this.panel.querySelector("[data-photobank]")?.addEventListener("click", async () => {
       const it = this.selected;
       if (!it) return;
-      const pick = await openImageBank({ max: it.type === "photo_desk" ? 320 : 560 });
+      const pick = await openImageBank({ max: 900 });
       if (!pick || this.selected !== it) return;
-      it.cfg = { ...(it.cfg ?? {}), img: pick.dataUrl, aspect: pick.aspect, credit: pick.credit };
-      this.apply();
-      this.renderPanel();
+      await editInto(it, pick.dataUrl, pick.credit);
+    });
+    this.panel.querySelector("[data-photoedit]")?.addEventListener("click", () => {
+      const it = this.selected;
+      if (!it?.cfg?.img) return;
+      void editInto(it, this.origImg.get(it.id) ?? it.cfg.img, it.cfg.credit);
     });
     this.panel.querySelector("[data-photo]")?.addEventListener("click", () => {
       const it = this.selected;
@@ -1370,11 +1497,14 @@ export class Editor {
       inp.onchange = async () => {
         const f = inp.files?.[0];
         if (!f) return;
+        if (!f.type.startsWith("image/")) {
+          this.toast("Escolha um arquivo de imagem (JPG, PNG, WebP)");
+          return;
+        }
+        // reduz a foto grande antes de editar (o editor faz o corte e o resultado final pequeno)
         try {
-          const { img, aspect } = await imageToDataUrl(f, it.type === "photo_desk" ? 320 : 560);
-          it.cfg = { ...(it.cfg ?? {}), img, aspect, credit: undefined };
-          this.apply();
-          this.renderPanel();
+          const { img } = await imageToDataUrl(f, 1400, 0.9, 600_000);
+          await editInto(it, img, undefined);
         } catch (e) {
           this.toast(String((e as Error).message ?? e));
         }

@@ -250,7 +250,11 @@ function start() {
       if (soundPrefs.approach) approachChime();
     };
     media.onLocalState = (patch) => sendState(patch);
-    world.onSit = (on, y) => sendState({ sit: on ? (y && y !== 0.46 ? y : true) : null });
+    world.onSit = (on, y) => {
+      sendState({ sit: on ? (y && y !== 0.46 ? y : true) : null });
+      updateSwivelBtn();
+    };
+    world.onSeatBusy = (n) => toast(`${n} já está sentado aqui.`);
     media.onToggle = (_w, on) => toggleSound(on);
     // som real de porta, mais baixo conforme a distância
     const doorVol = (dist: number) => Math.max(0, 1 - dist / 9);
@@ -2206,6 +2210,37 @@ async function applyEnv() {
   if (world.holiday?.id !== holiday?.id) world.setHoliday(holiday);
 }
 
+// ------------------------------------------------------------ cadeira giratória (botão no canto da tela)
+let swivelBtn: HTMLButtonElement | null = null;
+function updateSwivelBtn() {
+  if (!swivelBtn) {
+    const b = document.createElement("button");
+    b.className = "swivel-btn hidden";
+    b.innerHTML = `${icon("rotate", 16)}<span>Girar cadeira</span>`;
+    b.title = "Segure para girar (ou use [ e ])";
+    b.addEventListener("pointerdown", (e) => {
+      b.setPointerCapture(e.pointerId);
+      world.swivel(1);
+    });
+    const stop = () => world.swivel(0);
+    b.addEventListener("pointerup", stop);
+    b.addEventListener("pointercancel", stop);
+    document.body.appendChild(b);
+    swivelBtn = b;
+    window.addEventListener("keydown", (e) => {
+      const a = document.activeElement;
+      if (a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement || a instanceof HTMLSelectElement || e.repeat) return;
+      const k = e.key.toLowerCase();
+      if ((k === "[" || k === "]") && world?.canSwivel()) world.swivel(k === "]" ? 1 : -1);
+    });
+    window.addEventListener("keyup", (e) => {
+      const k = e.key.toLowerCase();
+      if (k === "[" || k === "]") world?.swivel(0);
+    });
+  }
+  swivelBtn.classList.toggle("hidden", !world?.canSwivel());
+}
+
 // ------------------------------------------------------------ atividade (app em uso)
 let lastActivity = "";
 let activitySince = 0;
@@ -3814,7 +3849,7 @@ function roleSeat() {
   for (const pref of ["exec_chair", "office_chair", ""])
     for (const zn of zones) {
       const inside = (x: number, z: number) => Math.abs(x - zn.x) <= zn.w / 2 && Math.abs(z - zn.z) <= zn.d / 2;
-      const seat = world.layout.items.find((i) => SEATS[i.type] && !SEAT_SOFT.test(i.type) && (!pref || i.type === pref) && inside(i.x, i.z) && !taken(i.x, i.z));
+      const seat = world.layout.items.find((i) => SEATS[i.type] && !SEAT_SOFT.test(i.type) && !world.seatTakenBy(i) && (!pref || i.type === pref) && inside(i.x, i.z) && !taken(i.x, i.z));
       if (seat) return { zone: zn, seat };
     }
   return { zone: zones[0], seat: null };

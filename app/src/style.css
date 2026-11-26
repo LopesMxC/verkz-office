@@ -859,3 +859,9 @@ body.meet-mode #stage canvas, body.meet-mode .labels { visibility: hidden; }
 .rug-sw.sel, .rug-sw:hover { border-color: var(--accent); }
 
 .ver-tag { text-align: center; margin-top: -4px; }
+.imged .imged-stage { display: grid; place-items: center; background: #151515; border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-height: 140px; }
+.imged canvas { max-width: 100%; border-radius: 6px; box-shadow: 0 0 0 2px var(--accent); }
+
+.swivel-btn { position: fixed; right: 20px; bottom: 96px; z-index: 40; display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 999px; border: 1px solid var(--accent); background: rgba(13,13,13,.88); color: var(--text); font: 600 13px Montserrat, sans-serif; cursor: pointer; touch-action: none; user-select: none; }
+.swivel-btn:hover { background: rgba(30,30,30,.95); }
+.swivel-btn.hidden { display: none; }

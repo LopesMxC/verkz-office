@@ -417,6 +417,9 @@ export type WalkPlan = { x: number; z: number; seat: Item | null };
 
 export const SEATS: Record<string, number> = { chair: 0.55, office_chair: 0.55, wood_chair: 0.55, exec_chair: 0.55, stool: 0.5, armchair: 0.8, armchair_plain: 0.8, chair_c: 0.55, chair_b_wood: 0.55, stool_wood: 0.5, k_chair_a: 0.55, k_chair_b: 0.55, p_gamer_chair: 0.55, p_bench: 0.8 };
 
+/** Cadeiras e bancos giram (sofás, poltronas fixas e bancos compridos não). */
+export const canSwivelType = (t: string) => !!SEATS[t] && /chair|cadeira|stool|banco|office|exec/.test(t) && !/sofa|lng_|bench|namorados|armchair|mesa_sofa/.test(t);
+
 /** Altura do assento por móvel (m); quem não está aqui usa SEAT_Y. */
 export const SEAT_H: Record<string, number> = {};
 // cadeiras, bancos, sofás e poltronas do pacote novo: todos dá para sentar
@@ -1111,9 +1114,20 @@ export class World {
   /** A câmera volta sozinha para o personagem depois de arrastar o mapa (ou assim que ele anda). */
   followCam = true;
   private panAt = 0;
+  /** Com "câmera segue" desligado: ponto fixo do mundo onde a câmera fica parada. */
+  private freeCam: THREE.Vector3 | null = null;
+  /** Limite da câmera: o prédio com uma folga (maior no editor). */
+  private clampCam(v: THREE.Vector3) {
+    const { w, d } = this.layout.size;
+    const m = this.editSaved ? 10 : 2;
+    v.x = THREE.MathUtils.clamp(v.x, -w / 2 - m, w / 2 + m);
+    v.z = THREE.MathUtils.clamp(v.z, -d / 2 - m, d / 2 + m);
+    return v;
+  }
   /** Centraliza a câmera no personagem agora. */
   recenter() {
     this.panOffset.set(0, 0, 0);
+    this.freeCam = null;
     this.panAt = 0;
   }
   keys = new Set<string>();
@@ -1132,7 +1146,7 @@ export class World {
   onStep?: (run: boolean, vol: number) => void;
   editing = false;
   /** No editor: pode arrastar o mapa agora? (não pode enquanto desenha sala ou parede) */
-  canPanEdit?: () => boolean;
+  canPanEdit?: (e: MouseEvent) => boolean;
   env!: Environment;
   holiday: Holiday | null = null;
   decorGroup = new THREE.Group();
@@ -1694,6 +1708,51 @@ export class World {
     return g;
   }
 
+  /** Cadeira giratória: velocidade de giro (rad/s) enquanto o botão ou Q/E está apertado. */
+  private swivelRate = 0;
+  private swivelled = new Set<string>();
+  swivel(dir: -1 | 0 | 1) {
+    this.swivelRate = this.canSwivel() ? dir * 2.6 : 0;
+  }
+  /** Estou sentado numa cadeira que gira? */
+  canSwivel() {
+    if (!this.me?.sitting || !this.seatId) return false;
+    const seat = this.layout.items.find((i) => i.id === this.seatId);
+    return !!seat && canSwivelType(seat.type);
+  }
+  /** A cadeira acompanha quem está sentado nela (gira junto); as que ficam vazias voltam ao lugar. */
+  private syncChairs() {
+    const now = new Set<string>();
+    for (const a of [this.me, ...this.others.values()]) {
+      if (!a || !a.sitting || (a !== this.me && !this.sameLevel(a))) continue;
+      let seat: Item | null = null;
+      let bd = 0.55;
+      for (const it of this.layout.items) {
+        if (!canSwivelType(it.type)) continue;
+        const dd = Math.hypot(it.x - a.root.position.x, it.z - a.root.position.z);
+        if (dd < bd) {
+          bd = dd;
+          seat = it;
+        }
+      }
+      if (!seat) continue;
+      const o = this.itemGroup.children.find((c) => c.userData.itemId === seat!.id);
+      if (!o) continue;
+      o.rotation.y = a.body.rotation.y;
+      now.add(seat.id);
+    }
+    for (const id of this.swivelled) {
+      if (now.has(id)) continue;
+      const it = this.layout.items.find((i) => i.id === id);
+      const o = this.itemGroup.children.find((c) => c.userData.itemId === id);
+      if (it && o) o.rotation.y = -(it.rot * Math.PI) / 180;
+    }
+    this.swivelled = now;
+  }
+
+  /** Chamado quando a cadeira escolhida já tem alguém. */
+  onSeatBusy?: (name: string) => void;
+
   /** Levanta o personagem (ao abrir o editor ou se a cadeira dele saiu do lugar). */
   standUp() {
     if (!this.me?.sitting) return;
@@ -1919,9 +1978,32 @@ export class World {
   private updatePack() {
     const nowMs = performance.now();
     const t = nowMs / 1000;
+    // hitbox invisível dos monitores: quem chega perto (sentado ou em pé) faz o monitor funcionar
+    const people: THREE.Vector3[] = [];
+    for (const a of [this.me, ...this.others.values()]) if (a && (a === this.me || this.sameLevel(a))) people.push(a.root.position);
     for (const o of this.itemGroup.children) {
       const u = o.userData;
-      if (u.ptick && o.children[0]) u.ptick(o.children[0], t, nowMs < u.pon || this.playingItems.has(u.itemId));
+      if (!u.ptick || !o.children[0]) continue;
+      let on = nowMs < u.pon || this.playingItems.has(u.itemId);
+      if (!on && u.puse === "screen") {
+        const it = this.layout.items.find((i) => i.id === u.itemId);
+        const def = it && DEFS[it.type];
+        if (it && def) {
+          // caixa em volta do monitor, girada junto com ele: um pouco para os lados e bem mais para a frente
+          const a = (it.rot * Math.PI) / 180;
+          const c = Math.cos(a), s2 = Math.sin(a);
+          const hw = (def.w * (Number(it.s) || 1)) / 2 + 0.8;
+          for (const p of people) {
+            const lx = (p.x - it.x) * c - (p.z - it.z) * s2;
+            const lz = (p.x - it.x) * s2 + (p.z - it.z) * c;
+            if (Math.abs(lx) < hw && lz > -0.8 && lz < (def.d * (Number(it.s) || 1)) / 2 + 1.5) {
+              on = true;
+              break;
+            }
+          }
+        }
+      }
+      u.ptick(o.children[0], t, on);
     }
   }
 
@@ -1936,18 +2018,19 @@ export class World {
       this.scanScreens();
     }
     if (!this.screens.length) return;
-    const seated: { x: number; z: number; kind: AppKind }[] = [];
+    // hitbox do monitor: quem está sentado perto (1,15 m) ou em pé ao lado (1,3 m) liga a tela
+    const seated: { x: number; z: number; kind: AppKind; r: number }[] = [];
     for (const a of [this.me, ...this.others.values()]) {
-      if (!a || !a.sitting || (a !== this.me && !this.sameLevel(a))) continue;
+      if (!a || (a !== this.me && !this.sameLevel(a))) continue;
       const act = a.extra?.activity;
-      seated.push({ x: a.root.position.x, z: a.root.position.z, kind: act?.app ? appKind(act.app, act.title) : "work" });
+      seated.push({ x: a.root.position.x, z: a.root.position.z, kind: act?.app ? appKind(act.app, act.title) : "work", r: a.sitting ? 1.15 : 1.3 });
     }
     for (const sc of this.screens) {
       let seen: AppKind | null = null;
-      let best = 1.15; // só a tela de quem está sentado ali (antes pegava as mesas vizinhas)
+      let best = Infinity;
       for (const p of seated) {
         const dd = Math.hypot(p.x - sc.x, p.z - sc.z);
-        if (dd < best) {
+        if (dd < p.r && dd < best) {
           best = dd;
           seen = p.kind;
         }
@@ -2115,6 +2198,9 @@ export class World {
     return false;
   }
 
+  /** Folga do caminho (m): o zelador usa mais, por causa do carrinho. */
+  pathR = 0.3;
+
   /** A* simples numa grade de 0,5 m. */
   findPath(from: THREE.Vector3, to: THREE.Vector3): THREE.Vector3[] {
     const step = 0.5;
@@ -2131,7 +2217,7 @@ export class World {
       if (i < 0 || j < 0 || i >= nx || j >= nz) return false;
       const [x, z] = center(i, j);
       // mesma folga do movimento: se o caminho passa, o personagem passa
-      return !this.blocked(x, z, 0.3);
+      return !this.blocked(x, z, this.pathR);
     };
     if (!free(ti, tj)) {
       // procura a célula livre mais próxima do destino
@@ -2168,7 +2254,7 @@ export class World {
           out.unshift(new THREE.Vector3(x, 0, z));
           k = came.get(k);
         }
-        if (out.length && !this.blocked(to.x, to.z)) out[out.length - 1].set(to.x, 0, to.z);
+        if (out.length && !this.blocked(to.x, to.z, this.pathR)) out[out.length - 1].set(to.x, 0, to.z);
         return this.smoothPath(from, out);
       }
       if (closed.has(ck)) continue;
@@ -2196,7 +2282,7 @@ export class World {
     const n = Math.ceil(d / 0.15);
     for (let i = 1; i <= n; i++) {
       const t = i / n;
-      if (this.blocked(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t)) return false;
+      if (this.blocked(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t, Math.max(0.28, this.pathR - 0.02))) return false;
     }
     return true;
   }
@@ -2219,6 +2305,15 @@ export class World {
   /** Raio da "hitbox" do assento: andar até aqui dentro senta sozinho. */
   private static SIT_HIT = 0.32;
 
+  /** Outra pessoa já está sentada (ou chegando) nessa cadeira? */
+  seatTakenBy(seat: Item): Avatar | null {
+    for (const a of this.others.values()) {
+      if (!a.sitting || !this.sameLevel(a)) continue;
+      if (Math.hypot(a.root.position.x - seat.x, a.root.position.z - seat.z) < 0.55) return a;
+    }
+    return null;
+  }
+
   /** Assento cuja hitbox contém o ponto. */
   private seatAt(x: number, z: number): Item | null {
     let best: Item | null = null;
@@ -2226,7 +2321,7 @@ export class World {
     for (const it of this.layout.items) {
       if (!SEATS[it.type]) continue;
       const dd = Math.hypot(it.x - x, it.z - z);
-      if (dd < bd) {
+      if (dd < bd && !this.seatTakenBy(it)) {
         bd = dd;
         best = it;
       }
@@ -2236,6 +2331,10 @@ export class World {
 
   /** Senta nessa cadeira com animação: desliza até o centro e vira para a frente dela. */
   private sitOn(seat: Item, fromKeys: boolean) {
+    if (this.seatTakenBy(seat)) {
+      this.onSeatBusy?.(this.seatTakenBy(seat)!.info.name);
+      return;
+    }
     this.me.sitting = true;
     this.me.targetDir = -(seat.rot * Math.PI) / 180;
     this.seatId = seat.id;
@@ -2276,6 +2375,10 @@ export class World {
 
   /** Coloca o meu personagem sentado nessa cadeira (ao entrar no escritório). */
   sitAt(seat: Item) {
+    if (this.seatTakenBy(seat)) {
+      this.onSeatBusy?.(this.seatTakenBy(seat)!.info.name);
+      return;
+    }
     this.me.root.position.set(seat.x, 0, seat.z);
     this.me.targetDir = -(seat.rot * Math.PI) / 180;
     this.me.body.rotation.y = this.me.targetDir;
@@ -2379,6 +2482,10 @@ export class World {
 
   /** Leva a câmera até um ponto (sem mexer o personagem). */
   focusOn(x: number, z: number) {
+    if (!this.followCam && !this.overview) {
+      this.freeCam = this.clampCam(new THREE.Vector3(x, 0, z));
+      return;
+    }
     const base = this.overview ? new THREE.Vector3() : this.me?.root.position.clone() ?? new THREE.Vector3();
     this.panOffset.set(x - base.x, 0, z - base.z);
     this.panAt = performance.now() + 4000; // ver a pessoa/sala com calma antes de voltar
@@ -2392,7 +2499,8 @@ export class World {
     const lim = (v: number, half: number) => THREE.MathUtils.clamp(v, -half - m, half + m);
     const tx = lim(this.camTarget.x + dx, w / 2);
     const tz = lim(this.camTarget.z + dz, d / 2);
-    this.panOffset.set(tx - base.x, 0, tz - base.z);
+    if (!this.followCam && !this.overview) this.freeCam = new THREE.Vector3(tx, 0, tz);
+    else this.panOffset.set(tx - base.x, 0, tz - base.z);
     this.camTarget.set(tx, this.camTarget.y, tz);
     this.panAt = performance.now();
   }
@@ -2464,7 +2572,7 @@ export class World {
       if (e.pointerType === "touch" || (e.target as HTMLElement) !== el) return;
       const free = !!this.editSaved && (e.button === 1 || (e.button === 0 && this.spaceDown));
       if (free) e.preventDefault(); // botão do meio: sem o "rolar automático" do navegador
-      else if (e.button !== 0 || (this.editing && !this.canPanEdit?.())) return;
+      else if (e.button !== 0 || (this.editing && !this.canPanEdit?.(e))) return;
       drag = { id: e.pointerId, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, moved: false };
       dragged = false;
     });
@@ -3053,6 +3161,19 @@ export class World {
       const seat = this.seatAt(pos.x, pos.z);
       if (seat && seat.id !== this.leftSeat) this.sitOn(seat, true);
     }
+    // cadeira giratória: botão (ou Q/E) gira quem está sentado, e a cadeira vai junto
+    if (this.swivelRate && this.me.sitting) this.me.targetDir += this.swivelRate * dt;
+    else if (this.swivelRate) this.swivelRate = 0;
+    this.syncChairs();
+    // dois sentaram ao mesmo tempo na mesma cadeira: quem tem o menor id continua, o outro levanta
+    if (this.me.sitting && this.seatId) {
+      const mine = this.layout.items.find((i) => i.id === this.seatId);
+      const other = mine ? this.seatTakenBy(mine) : null;
+      if (other && other.info.id < this.me.info.id) {
+        this.standUp();
+        this.onSeatBusy?.(other.info.name);
+      }
+    }
     // sentado: desliza até o centro do assento (parte da animação de sentar)
     if (this.me.sitting && this.seatId) {
       const seat = this.layout.items.find((i) => i.id === this.seatId);
@@ -3065,6 +3186,11 @@ export class World {
           pos.z += dz * k;
         } else pos.set(seat.x, 0, seat.z);
       }
+    }
+    // Seu Zé e o carrinho dele são sólidos: ninguém atravessa
+    if (!this.level && !this.me.sitting && this.janitor) {
+      const before = pos.clone();
+      if (this.janitor.collide(pos, 0.28) && this.blocked(pos.x, pos.z, 0.2)) pos.copy(before);
     }
     this.me.moving = moving && !this.me.sitting;
     this.me.running = run && moving;
@@ -3089,13 +3215,19 @@ export class World {
 
     // câmera segue com suavidade
     // (somado ao deslocamento de quando a pessoa arrasta o mapa)
-    const base = this.overview ? new THREE.Vector3(0, 0, 0) : pos.clone();
+    let base = this.overview ? new THREE.Vector3(0, 0, 0) : pos.clone();
+    // câmera solta (não segue o personagem): fica parada no ponto do mundo escolhido
+    if (!this.followCam && !this.overview) {
+      if (!this.freeCam) this.freeCam = this.camTarget.clone();
+      base = this.freeCam.clone();
+      this.panOffset.set(0, 0, 0);
+    } else this.freeCam = null;
     // segue o personagem: depois de arrastar o mapa, volta sozinha (2,5 s parado ou na hora que ele anda)
     if (this.followCam && !this.overview && this.panOffset.lengthSq() > 0 && (moving || performance.now() - this.panAt > 2500)) {
       this.panOffset.multiplyScalar(Math.max(0, 1 - dt * (moving ? 4 : 2.5)));
       if (this.panOffset.lengthSq() < 0.0004) this.panOffset.set(0, 0, 0);
     }
-    this.camTarget.lerp(base.add(this.panOffset), Math.min(1, dt * (moving ? 6 : 4)));
+    this.camTarget.lerp(this.clampCam(base.add(this.panOffset)), Math.min(1, dt * (moving ? 6 : 4)));
     // vista isométrica (diagonal, como The Sims) ou aérea (direto de cima)
     if (this.view === "aerea") this.camera.position.set(this.camTarget.x, 40, this.camTarget.z);
     // 2D: quase de cima, com uma leve inclinação para ainda ver o rosto das pessoas
@@ -3310,7 +3442,7 @@ export class Janitor {
       for (let r = 0; r < 3; r += 0.5)
         for (const [dx, dz] of [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r], [r, r], [-r, -r], [r, -r], [-r, r]]) {
           const q = new THREE.Vector3(p.x + dx, 0, p.z + dz);
-          if (!this.world.blocked(q.x, q.z, 0.6)) return q;
+          if (!this.world.blocked(q.x, q.z, 0.95)) return q;
         }
       return null;
     };
@@ -3323,7 +3455,13 @@ export class Janitor {
       for (let i = 0; i < stopsAt.length; i++) {
         const from = stopsAt[i];
         const to = stopsAt[(i + 1) % stopsAt.length];
-        const seg = this.world.findPath(from, to);
+        // com folga para ele e o carrinho; se não passar (porta estreita), tenta com menos
+        let seg: THREE.Vector3[] = [];
+        for (const r of [0.75, 0.6, 0.45]) {
+          this.world.pathR = r;
+          seg = this.world.findPath(from, to);
+          if (seg.length) break;
+        }
         if (!seg.length) continue;
         if (!this.pts.length) this.pts.push(from.clone());
         // direção em que ele chegou (o carrinho para do lado, virado para lá)
@@ -3341,8 +3479,50 @@ export class Janitor {
       }
     } finally {
       this.world.ignoreLocks = false;
+      this.world.pathR = 0.3;
     }
     this.cycle = Math.max(1, tdist);
+  }
+
+  /** Empurra uma pessoa (ponto `p`, raio `r`) para fora do zelador e do carrinho dele. Devolve se mexeu. */
+  collide(p: THREE.Vector3, r: number): boolean {
+    if (!this.avatar.root.visible) return false;
+    let hit = false;
+    // corpo dele (círculo)
+    const jp = this.avatar.root.position;
+    let dx = p.x - jp.x;
+    let dz = p.z - jp.z;
+    const min = 0.38 + r;
+    let dist = Math.hypot(dx, dz);
+    if (dist < min) {
+      if (dist < 1e-4) {
+        dx = 1;
+        dz = 0;
+        dist = 1;
+      }
+      p.x = jp.x + (dx / dist) * min;
+      p.z = jp.z + (dz / dist) * min;
+      hit = true;
+    }
+    // carrinho (retângulo 0,62 x 0,9 girado)
+    const cp = this.cart.position;
+    const yaw = this.cart.rotation.y;
+    const c = Math.cos(yaw);
+    const s = Math.sin(yaw);
+    const lx = (p.x - cp.x) * c - (p.z - cp.z) * s;
+    const lz = (p.x - cp.x) * s + (p.z - cp.z) * c;
+    const hx = 0.33 + r;
+    const hz = 0.47 + r;
+    if (Math.abs(lx) < hx && Math.abs(lz) < hz) {
+      let nx = lx;
+      let nz = lz;
+      if (hx - Math.abs(lx) < hz - Math.abs(lz)) nx = Math.sign(lx || 1) * hx;
+      else nz = Math.sign(lz || 1) * hz;
+      p.x = cp.x + nx * c + nz * s;
+      p.z = cp.z - nx * s + nz * c;
+      hit = true;
+    }
+    return hit;
   }
 
   /** Posição na rota para o instante `t` (segundos): igual para todo mundo, sai do relógio. */
